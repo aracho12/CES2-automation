@@ -37,9 +37,21 @@ def run(config_path: str | Path) -> Dict:
     print(f"[TIMING] config_and_dirs: {timings['config_and_dirs']:.3f} s")
 
     # load species DB
+    # Priority: 1) absolute path in config, 2) relative to workdir, 3) bundled with package
     t0 = time.perf_counter()
-    species_db_dir = cfg.get("species_db", "species_db")
-    species_db = load_species_db(workdir / species_db_dir)
+    _package_dir = Path(__file__).parent.parent  # CES2-automation/
+    species_db_dir = cfg.get("species_db", None)
+    if species_db_dir is None:
+        species_db_path = _package_dir / "species_db"
+    else:
+        species_db_path = Path(species_db_dir)
+        if not species_db_path.is_absolute():
+            candidate = workdir / species_db_path
+            if candidate.exists():
+                species_db_path = candidate
+            else:
+                species_db_path = _package_dir / species_db_path
+    species_db = load_species_db(species_db_path)
     timings["species_db_load"] = time.perf_counter() - t0
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
 
