@@ -19,7 +19,7 @@ from .builder import (
 from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
 
-def run(config_path: str | Path) -> Dict:
+def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
     timings: Dict[str, float] = {}
 
@@ -56,8 +56,13 @@ def run(config_path: str | Path) -> Dict:
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
 
     # read slab + supercell
+    # Priority: --input/-i argument > config input.vasp_file
     t0 = time.perf_counter()
-    slab = read_vasp((workdir / cfg["input"]["vasp_file"]).as_posix())
+    if vasp_file is not None:
+        _vasp_path = Path(vasp_file).resolve()
+    else:
+        _vasp_path = (workdir / cfg["input"]["vasp_file"]).resolve()
+    slab = read_vasp(_vasp_path.as_posix())
     if cfg.get("cell", {}).get("require_orthogonal", True) and not is_orthogonal_cell(slab.cell.array):
         raise ValueError("Cell is not orthogonal. v0.2 still assumes orthogonal (matches your current writer).")
 
