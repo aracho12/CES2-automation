@@ -1,0 +1,282 @@
+from __future__ import annotations
+import json
+from pathlib import Path
+from typing import Dict, List, Tuple
+import numpy as np
+import time
+from ase.io import read, write
+
+from .config import load_config
+from .species import load_species_db
+from .vasp_io import read_vasp, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
+from .box import compute_box_meta
+from .composition import water_volume_L, counts_from_salts, compute_total_charge, adjust_with_counterions
+from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
+from .builder import (
+    write_species_xyz, make_type_registry, assign_mm_types_charges_by_order,
+    build_mm_connectivity, apply_slab_charging, masses_by_type_from_labels
+)
+from .lammps_writer import write_data_file_reference_style, DataFileFormat
+from .md_workflow import generate_md_bundle
+
+def run(config_path: str | Path) -> Dict:
+    start_time = time.perf_counter()
+    timings: Dict[str, float] = {}
+
+    cfg = load_config(config_path).raw
+    workdir = Path(cfg.get("project", {}).get("workdir","./")).resolve()
+    seed = int(cfg.get("project", {}).get("seed", 1234))
+    np.random.seed(seed)
+
+    build_dir = workdir / cfg.get("output", {}).get("build_dir","build")
+    export_dir = workdir / cfg.get("output", {}).get("export_dir","export")
+    build_dir.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    timings["config_and_dirs"] = time.perf_counter() - start_time
+    print(f"[TIMING] config_and_dirs: {timings['config_and_dirs']:.3f} s")
+
+    # load species DB
+    t0 = time.perf_counter()
+    species_db_dir = cfg.get("species_db", "species_db")
+    species_db = load_species_db(workdir / species_db_dir)
+    timings["species_db_load"] = time.perf_counter() - t0
+    print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
+
+    # read slab + supercell
+    t0 = time.perf_counter()
+    slab = read_vasp((workdir / cfg["input"]["vasp_file"]).as_posix())
+    if cfg.get("cell", {}).get("require_orthogonal", True) and not is_orthogonal_cell(slab.cell.array):
+        raise ValueError("Cell is not orthogonal. v0.2 still assumes orthogonal (matches your current writer).")
+
+    rep = tuple(int(x) for x in cfg["cell"]["supercell"])
+    slab_sc = make_supercell(slab, rep)
+    write_vasp((build_dir/"slab_supercell.vasp").as_posix(), slab_sc)
+    write_xyz((build_dir/"slab_supercell.xyz").as_posix(), slab_sc)
+    timings["slab_supercell"] = time.perf_counter() - t0
+    print(f"[TIMING] slab_supercell: {timings['slab_supercell']:.3f} s")
+
+    # box meta
+    t0 = time.perf_counter()
+    box = compute_box_meta(slab_sc,
+                           z_gap=float(cfg["electrolyte_box"]["z_gap"]),
+                           thickness=float(cfg["electrolyte_box"]["thickness"]),
+                           z_margin_top=float(cfg["electrolyte_box"]["z_margin_top"]))
+    (build_dir/"box_meta.json").write_text(json.dumps(box.__dict__, indent=2), encoding="utf-8")
+    timings["box_meta"] = time.perf_counter() - t0
+    print(f"[TIMING] box_meta: {timings['box_meta']:.3f} s")
+
+    # electrolyte recipe
+    t0 = time.perf_counter()
+    recipe = cfg["electrolyte_recipe"]
+    water_sid = recipe["water"]["species_id"]
+    n_water = int(recipe["water"]["count"])
+    rho = float(recipe["water"].get("density_g_per_ml", cfg.get("composition", {}).get("density_g_per_ml", 1.0)))
+    if water_sid not in species_db:
+        raise KeyError(f"Water species_id '{water_sid}' not found in species_db")
+
+    V_L = water_volume_L(n_water, rho)
+
+    counts = {water_sid: n_water}
+    # salts -> counts
+    salts = recipe.get("salts", [])
+    counts_salts = counts_from_salts(V_L, salts)
+    for sid, n in counts_salts.items():
+        counts[sid] = counts.get(sid, 0) + int(n)
+
+    # extras (explicit counts)
+    for ex in recipe.get("extras", []):
+        sid = ex["species_id"]
+        n = int(ex["count"])
+        counts[sid] = counts.get(sid, 0) + n
+
+    # charge control
+    q_electrode = float(cfg.get("charge_control", {}).get("q_electrode_user_value", 0.0))
+    q_target = float(cfg.get("charge_control", {}).get("q_target_total", 0.0))
+
+    net_charge_by_species = {sid: float(species_db[sid].net_charge) for sid in counts.keys()}
+    q_total = compute_total_charge({k:v for k,v in counts.items() if k!=water_sid}, net_charge_by_species, q_electrode)
+    # include water net charge too (usually 0)
+    q_total = compute_total_charge(counts, {sid: float(species_db[sid].net_charge) for sid in counts.keys()}, q_electrode)
+
+    counter_pool = recipe.get("counterion_pool", [])
+    if counter_pool:
+        # ensure net_charge map has entries
+        for sid in counter_pool:
+            if sid not in species_db:
+                raise KeyError(f"counterion_pool species_id '{sid}' not found in species_db")
+        net_charge_all = {sid: float(species_db[sid].net_charge) for sid in species_db.keys()}
+        counts_adj, q_final = adjust_with_counterions(
+            counts=counts,
+            net_charge_by_species=net_charge_all,
+            q_electrode=q_electrode,
+            q_target_total=q_target,
+            counterion_pool=counter_pool,
+            max_pair_search=int(recipe.get("counterion_pair_search", 2000))
+        )
+        counts = counts_adj
+        q_total = q_final
+
+    (build_dir/"composition_final.json").write_text(json.dumps({
+        "V_L_approx": V_L,
+        "counts": counts,
+        "Q_electrode": q_electrode,
+        "Q_target_total": q_target,
+        "Q_total_final": q_total
+    }, indent=2), encoding="utf-8")
+    timings["composition_and_charge"] = time.perf_counter() - t0
+    print(f"[TIMING] composition_and_charge: {timings['composition_and_charge']:.3f} s")
+
+    # write per-species xyz templates for packmol
+    t0 = time.perf_counter()
+    structures: List[StructureReq] = []
+    z_excl = recipe.get("z_exclusion", {})
+    water_excl = float(z_excl.get("water_A", 2.0))
+    ion_excl = float(z_excl.get("ions_A", 4.0))
+    neutral_excl = float(z_excl.get("neutral_A", 2.0))
+
+    species_order: List[Tuple[str,int]] = []
+    # packmol order: water first, then everything else sorted for reproducibility
+    # (you can override by giving explicit packmol_order in recipe)
+    order = recipe.get("packmol_order", None)
+    if order is None:
+        order = [water_sid] + sorted([sid for sid in counts.keys() if sid != water_sid])
+
+    for sid in order:
+        n = int(counts.get(sid, 0))
+        if n <= 0:
+            continue
+        sp = species_db[sid]
+        xyz_path = build_dir / f"{sid}.xyz"
+        write_species_xyz(xyz_path, sp)
+
+        # zmin by charge class
+        if abs(sp.net_charge) < 1e-12:
+            zmin = box.z_el_lo + (water_excl if sid == water_sid else neutral_excl)
+        else:
+            zmin = box.z_el_lo + ion_excl
+
+        structures.append(StructureReq(species_id=sid, xyz_file=xyz_path.name, count=n, zmin=zmin))
+        species_order.append((sid, n))
+
+    (build_dir/"species_order.json").write_text(json.dumps(species_order, indent=2), encoding="utf-8")
+    timings["species_xyz_and_order"] = time.perf_counter() - t0
+    print(f"[TIMING] species_xyz_and_order: {timings['species_xyz_and_order']:.3f} s")
+
+    # run packmol
+    t0 = time.perf_counter()
+    pack = cfg["packmol"]
+    job = PackmolJob(
+        binary=str(pack.get("binary","packmol")),
+        tolerance=float(pack.get("tolerance",2.0)),
+        maxit=int(pack.get("maxit",200)),
+        seed=seed,
+        Lx=box.Lx, Ly=box.Ly,
+        z_lo=box.z_el_lo, z_hi=box.z_el_hi,
+        output_xyz="mm_packmol.xyz",
+        structures=structures
+    )
+    inp = build_dir/"packmol.inp"
+    write_packmol_input(inp, job)
+    run_packmol(job.binary, inp, build_dir)
+    timings["packmol"] = time.perf_counter() - t0
+    print(f"[TIMING] packmol: {timings['packmol']:.3f} s")
+
+    mm_xyz = build_dir/"mm_packmol.xyz"
+    if not mm_xyz.exists():
+        raise RuntimeError("PACKMOL did not produce mm_packmol.xyz")
+
+    t0 = time.perf_counter()
+    mm = read(mm_xyz.as_posix())
+    n_mm = len(mm)
+
+    combined = mm + slab_sc
+    cell = slab_sc.cell.copy()
+    cell[2,2] = box.z_el_hi
+    combined.set_cell(cell)
+    combined.set_pbc([True,True,True])
+    write((build_dir/"combined.xyz").as_posix(), combined)
+    write((export_dir/"combined.xyz").as_posix(), combined)
+    timings["ase_read_and_combine"] = time.perf_counter() - t0
+    print(f"[TIMING] ase_read_and_combine: {timings['ase_read_and_combine']:.3f} s")
+
+    # type registry
+    t0 = time.perf_counter()
+    slab_elements = slab_sc.get_chemical_symbols()
+    species_ids_in_order = [sid for sid,_ in species_order]
+    type_id_by_label, label_by_type_id = make_type_registry(species_ids_in_order, species_db, slab_elements)
+
+    # assign MM types/charges by order
+    mm_types, mm_charges, mm_slices = assign_mm_types_charges_by_order(mm, species_order, species_db, type_id_by_label)
+
+    # connectivity
+    bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(mm_slices, species_db)
+
+    # slab types/charges
+    slab_types = [type_id_by_label[el] for el in slab_sc.get_chemical_symbols()]
+    slab_charges = apply_slab_charging(slab_sc, q_electrode)
+
+    atom_types = mm_types + slab_types
+    charges = mm_charges + slab_charges
+
+    # masses by type
+    masses_by_type = masses_by_type_from_labels(label_by_type_id, type_id_by_label, species_db)
+    timings["types_and_connectivity"] = time.perf_counter() - t0
+    print(f"[TIMING] types_and_connectivity: {timings['types_and_connectivity']:.3f} s")
+
+    # write data.file in reference style
+    t0 = time.perf_counter()
+    out_data = export_dir / "data.file"
+    write_data_file_reference_style(
+        out_data, combined,
+        atom_types=atom_types,
+        charges=charges,
+        masses_by_type=masses_by_type,
+        bond_coeffs=bond_coeffs if bond_coeffs else None,
+        angle_coeffs=angle_coeffs if angle_coeffs else None,
+        bonds=bonds,
+        angles=angles,
+        fmt=DataFileFormat(title="data")
+    )
+    timings["write_data_file"] = time.perf_counter() - t0
+    print(f"[TIMING] write_data_file: {timings['write_data_file']:.3f} s")
+
+    # QM/MM lists (QM=slab)
+    t0 = time.perf_counter()
+    qm_ids = list(range(n_mm+1, len(combined)+1))
+    mm_ids = list(range(1, n_mm+1))
+    (export_dir/"qm_atoms.txt").write_text("\n".join(map(str,qm_ids))+"\n", encoding="utf-8")
+    (export_dir/"mm_atoms.txt").write_text("\n".join(map(str,mm_ids))+"\n", encoding="utf-8")
+    timings["qm_mm_lists"] = time.perf_counter() - t0
+    print(f"[TIMING] qm_mm_lists: {timings['qm_mm_lists']:.3f} s")
+
+    summary = {
+        "box": box.__dict__,
+        "counts": counts,
+        "species_order": species_order,
+        "q_electrode": q_electrode,
+        "q_total_final": q_total,
+        "n_total": len(combined),
+        "n_mm": n_mm,
+        "n_qm": len(combined)-n_mm,
+        "n_bonds": len(bonds),
+        "n_angles": len(angles),
+        "n_atom_types": max(atom_types) if atom_types else 0
+    }
+    (export_dir/"build_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    
+# ---- Optional MD pre-relax bundle ----
+    md_cfg = cfg.get("md_relax", None)
+    if md_cfg and bool(md_cfg.get("enabled", False)):
+        t0 = time.perf_counter()
+        md_out = generate_md_bundle(export_dir, md_cfg)
+        timings["md_bundle"] = time.perf_counter() - t0
+        print(f"[TIMING] md_bundle: {timings['md_bundle']:.3f} s")
+        summary["md_relax_bundle"] = md_out.__dict__
+
+    total_elapsed = time.perf_counter() - start_time
+    timings["total"] = total_elapsed
+    print(f"[TIMING] total: {timings['total']:.3f} s")
+    (export_dir/"timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
+    summary["timings_sec"] = timings
+    return summary

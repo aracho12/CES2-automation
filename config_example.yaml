@@ -1,0 +1,104 @@
+project:
+  workdir: "./"
+  seed: 1234
+
+species_db: "species_db"
+
+input:
+  vasp_file: "input/CONTCAR"
+
+cell:
+  require_orthogonal: true 
+  supercell: [3, 6, 1]
+
+electrolyte_box:
+  z_gap: 2.0
+  thickness: 60.0
+  z_margin_top: 2.0
+
+packmol:
+  binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
+  tolerance: 2.0
+  maxit: 200
+
+charge_control:
+  q_target_total: 0.0
+  q_electrode_user_value: 0.0
+
+electrolyte_recipe:
+  # Water count defines approximate volume
+  water:
+    species_id: "water_tip3p"
+    count: 2000
+    density_g_per_ml: 1.0
+
+  # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
+  salts: []
+          #- name: "KCl"
+          #concentration_M: 0.2
+          #stoich: { "K_plus": 1, "Cl_minus": 1 }
+
+      #- name: "TMACl"   # organic cation salt
+      #concentration_M: 0.2
+      #stoich: { "TMA_plus": 1, "Cl_minus": 1 }
+
+  # Extra explicit species counts (e.g., add a bit of OH-)
+  extras:
+  - species_id: "OH_minus"
+    count: 5
+  - species_id: "K_plus"
+    count: 5
+
+  # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
+  # Put at least one 1-valent cation and one 1-valent anion here.
+  counterion_pool: ["K_plus", "OH_minus"]
+
+          # counterion_pair_search: 2000
+
+  # Initial z-exclusion distances from slab surface
+  z_exclusion:
+    water_A: 2.5
+    ions_A: 4.0
+    neutral_A: 2.0
+
+  # Optional explicit packmol structure order (default: water then sorted rest)
+  # packmol_order: ["water_tip3p", "K_plus", "Cl_minus", "TMA_plus", "OH_minus"]
+  packmol_order: ["water_tip3p", "K_plus", "OH_minus"]
+output:
+  build_dir: "build"
+  export_dir: "export"
+
+md_relax:
+  enabled: true
+  ff_dir: "ff"
+  data_file: "data.file"
+  timestep_fs: 1.0
+  min_etol: 1.0e-4
+  min_ftol: 1.0e-6
+  min_maxiter: 5000
+  min_maxeval: 10000
+  t_start: 10.0
+  t_stop: 300.0
+  tdamp_fs: 100.0
+  nvt_steps: 20000
+  dump_every: 2000
+  write_equilibrated: "equilibrated.data"
+
+  slurm:
+    job_name: "ces2_md_relax"
+    partition: "compute"
+    nodes: 1
+    ntasks: 32
+    time: "08:00:00"
+    lmp_cmd: "lmp_mpi"
+    module_lines: "module load lammps\n"
+    stdout: "md.out"
+    stderr: "md.err"
+
+  pbs:
+    job_name: "ces2_md_relax"
+    nodes: 1
+    ppn: 32
+    walltime: "08:00:00"
+    lmp_cmd: "lmp_mpi"
+    module_lines: "module load lammps\n"

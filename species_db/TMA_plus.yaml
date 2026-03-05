@@ -1,0 +1,41 @@
+id: TMA_plus
+name: Tetramethylammonium
+net_charge: 1.0
+charge_scheme: uniform_from_net_charge
+atoms:
+  - {element: N, type_label: N_tma, charge: null, xyz: [0.000000, 0.000000, 0.000000]}
+  - {element: C, type_label: C_tma, charge: null, xyz: [0.848705, 0.848705, 0.848705]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [1.478017, 1.478017, 1.478017]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [0.639144, 1.365958, -0.087670]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-0.087081, 0.639235, 1.365278]}
+  - {element: C, type_label: C_tma, charge: null, xyz: [0.848705, -0.848705, -0.848705]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [1.478017, -1.478017, -1.478017]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [0.639144, -1.365958, 0.087670]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-0.087081, -0.639235, -1.365278]}
+  - {element: C, type_label: C_tma, charge: null, xyz: [-0.848705, 0.848705, -0.848705]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-1.478017, 1.478017, -1.478017]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-0.639144, -0.087670, -1.365958]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-1.365369, 0.639053, 0.086990]}
+  - {element: C, type_label: C_tma, charge: null, xyz: [-0.848705, -0.848705, 0.848705]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-1.478017, -1.478017, 1.478017]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-0.639144, 0.087670, 1.365958]}
+  - {element: H, type_label: H_tma, charge: null, xyz: [-1.365369, -0.639053, -0.086990]}
+connectivity:
+  bonds:
+    - [40, 1, 2]
+    - [41, 2, 3]
+    - [41, 2, 4]
+    - [41, 2, 5]
+    - [40, 1, 6]
+    - [41, 6, 7]
+    - [41, 6, 8]
+    - [41, 6, 9]
+    - [40, 1, 10]
+    - [41, 10, 11]
+    - [41, 10, 12]
+    - [41, 10, 13]
+    - [40, 1, 14]
+    - [41, 14, 15]
+    - [41, 14, 16]
+    - [41, 14, 17]
+coeffs: {}

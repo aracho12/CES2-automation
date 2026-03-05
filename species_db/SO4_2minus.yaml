@@ -1,0 +1,17 @@
+id: SO4_2minus
+name: Sulfate
+net_charge: -2.0
+charge_scheme: uniform_from_net_charge
+atoms:
+  - {element: S, type_label: S_so4, charge: null, xyz: [0.000000, 0.000000, 0.000000]}
+  - {element: O, type_label: O_so4, charge: null, xyz: [1.470000, 0.000000, 0.000000]}
+  - {element: O, type_label: O_so4, charge: null, xyz: [-0.490000, 1.390000, 0.000000]}
+  - {element: O, type_label: O_so4, charge: null, xyz: [-0.490000, -0.695000, 1.205000]}
+  - {element: O, type_label: O_so4, charge: null, xyz: [-0.490000, -0.695000, -1.205000]}
+connectivity:
+  bonds:
+    - [20, 1, 2]
+    - [20, 1, 3]
+    - [20, 1, 4]
+    - [20, 1, 5]
+coeffs: {}

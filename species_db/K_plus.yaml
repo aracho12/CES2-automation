@@ -1,0 +1,8 @@
+id: K_plus
+name: K_plus
+net_charge: 1.0
+charge_scheme: uniform_from_net_charge
+atoms:
+  - {element: K, type_label: K, charge: null, xyz: [0.0, 0.0, 0.0]}
+connectivity: {}
+coeffs: {}

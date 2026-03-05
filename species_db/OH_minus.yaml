@@ -1,0 +1,13 @@
+id: OH_minus
+name: Hydroxide
+net_charge: -1.0
+charge_scheme: explicit_or_zero
+atoms:
+  - {element: O, type_label: O_oh, charge: -1.4266, xyz: [0.000000, 0.000000, 0.000000]}
+  - {element: H, type_label: H_oh, charge:  0.4266, xyz: [0.000000, 0.000000, 0.970000]}
+connectivity:
+  bonds:
+    - [2, 1, 2]
+coeffs:
+  bond_coeffs:
+    2: [450.0, 0.97]
