@@ -18,6 +18,7 @@ from .builder import (
 )
 from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
+from .lammps_input_writer import generate_lammps_input
 
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
@@ -266,6 +267,25 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     (export_dir/"mm_atoms.txt").write_text("\n".join(map(str,mm_ids))+"\n", encoding="utf-8")
     timings["qm_mm_lists"] = time.perf_counter() - t0
     print(f"[TIMING] qm_mm_lists: {timings['qm_mm_lists']:.3f} s")
+
+    # Generate base.in.lammps (CES2 QM/MM LAMMPS input)
+    t0 = time.perf_counter()
+    qm_params_dir = species_db_path / "qm_params"
+    generate_lammps_input(
+        export_dir=export_dir,
+        type_id_by_label=type_id_by_label,
+        label_by_type_id=label_by_type_id,
+        species_order=species_order,
+        species_db=species_db,
+        box=box,
+        bond_coeffs=bond_coeffs,
+        angle_coeffs=angle_coeffs,
+        qm_params_dir=qm_params_dir,
+        cfg=cfg,
+        n_mm=n_mm,
+    )
+    timings["lammps_input"] = time.perf_counter() - t0
+    print(f"[TIMING] lammps_input: {timings['lammps_input']:.3f} s")
 
     summary = {
         "box": box.__dict__,

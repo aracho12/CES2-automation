@@ -3,9 +3,32 @@ name: Water (TIP3P-like)
 net_charge: 0.0
 charge_scheme: explicit_or_zero
 atoms:
-  - {element: O, type_label: Ow, charge: -0.8476, xyz: [0.000000, 0.000000, 0.000000]}
-  - {element: H, type_label: Hw, charge:  0.4238, xyz: [0.957200, 0.000000, 0.000000]}
-  - {element: H, type_label: Hw, charge:  0.4238, xyz: [-0.239987, 0.927297, 0.000000]}
+  - element: O
+    type_label: Ow
+    charge: -0.8476
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 4.7595   # isotropic polarizability, a.u.  [Excel row 24: water O]
+      C6: 143.305         # dispersion coeff, kcal/mol*Ang^6
+      s: 1.40             # O is NOT the H-bond H → s=1.40
+
+  - element: H
+    type_label: Hw
+    charge: 0.4238
+    xyz: [0.957200, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693    # a.u.  [Excel row 23: water H]
+      C6: 42.716          # kcal/mol*Ang^6
+      s: 0.53             # H of H-bond → s=0.53
+
+  - element: H
+    type_label: Hw
+    charge: 0.4238
+    xyz: [-0.239987, 0.927297, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693
+      C6: 42.716
+      s: 0.53             # H of H-bond → s=0.53
 connectivity:
   bonds:
     - [1, 1, 2]

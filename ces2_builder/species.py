@@ -10,6 +10,7 @@ class AtomDef:
     type_label: str
     charge: Optional[float]
     xyz: Tuple[float, float, float]
+    bjdisp: Optional[Dict[str, float]] = None  # {alpha_iso, C6, s} or None
 
 @dataclass
 class Species:
@@ -48,7 +49,12 @@ def load_species_yaml(path: str | Path) -> Species:
         if charge is not None:
             charge = float(charge)
         x, yy, z = a["xyz"]
-        atoms.append(AtomDef(element=element, type_label=type_label, charge=charge, xyz=(float(x), float(yy), float(z))))
+        # bjdisp: load if present and not null
+        bjdisp_raw = a.get("bjdisp", None)
+        bjdisp: Optional[Dict[str, float]] = None
+        if isinstance(bjdisp_raw, dict):
+            bjdisp = {k: float(v) for k, v in bjdisp_raw.items()}
+        atoms.append(AtomDef(element=element, type_label=type_label, charge=charge, xyz=(float(x), float(yy), float(z)), bjdisp=bjdisp))
 
     # charge completion
     scheme = y.get("charge_scheme", "explicit_or_zero")

@@ -3,8 +3,23 @@ name: Hydroxide
 net_charge: -1.0
 charge_scheme: explicit_or_zero
 atoms:
-  - {element: O, type_label: O_oh, charge: -1.4266, xyz: [0.000000, 0.000000, 0.000000]}
-  - {element: H, type_label: H_oh, charge:  0.4266, xyz: [0.000000, 0.000000, 0.970000]}
+  - element: O
+    type_label: O_oh
+    charge: -1.4266
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 5.582    # a.u.  [Excel row 28: OH- O]
+      C6: 176.375         # kcal/mol*Ang^6
+      s: 1.40             # O is NOT the H-bond H → s=1.40
+
+  - element: H
+    type_label: H_oh
+    charge: 0.4266
+    xyz: [0.000000, 0.000000, 0.970000]
+    bjdisp:
+      alpha_iso: 6.424    # a.u.  [Excel row 27: OH- H]
+      C6: 42.716          # kcal/mol*Ang^6  (same C6 as water H)
+      s: 0.53             # H of H-bond → s=0.53
 connectivity:
   bonds:
     - [2, 1, 2]

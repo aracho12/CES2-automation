@@ -3,10 +3,29 @@ name: Carbonate
 net_charge: -2.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: C, type_label: C_co3, charge: null, xyz: [0.000000, 0.000000, 0.000000]}
-  - {element: O, type_label: O_co3, charge: null, xyz: [1.280000, 0.000000, 0.000000]}
-  - {element: O, type_label: O_co3, charge: null, xyz: [-0.640000, 1.109000, 0.000000]}
-  - {element: O, type_label: O_co3, charge: null, xyz: [-0.640000, -1.109000, 0.000000]}
+  - element: C
+    type_label: C_co3
+    charge: null
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp: null  # TODO: not in excel db — add to config.yaml [bjdisp] if needed
+
+  - element: O
+    type_label: O_co3
+    charge: null
+    xyz: [1.280000, 0.000000, 0.000000]
+    bjdisp: null  # TODO: not in excel db
+
+  - element: O
+    type_label: O_co3
+    charge: null
+    xyz: [-0.640000, 1.109000, 0.000000]
+    bjdisp: null
+
+  - element: O
+    type_label: O_co3
+    charge: null
+    xyz: [-0.640000, -1.109000, 0.000000]
+    bjdisp: null
 connectivity:
   bonds:
     - [30, 1, 2]

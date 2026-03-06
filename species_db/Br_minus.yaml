@@ -3,6 +3,13 @@ name: Br_minus
 net_charge: -1.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: Br, type_label: Br, charge: null, xyz: [0.0, 0.0, 0.0]}
+  - element: Br
+    type_label: Br
+    charge: null
+    xyz: [0.0, 0.0, 0.0]
+    bjdisp:
+      alpha_iso: 42.8     # a.u.  [Excel row 19: Br-]
+      C6: 6848.306        # kcal/mol*Ang^6
+      s: 1.40
 connectivity: {}
 coeffs: {}

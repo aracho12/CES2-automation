@@ -3,10 +3,29 @@ name: Nitrate
 net_charge: -1.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: N, type_label: N_no3, charge: null, xyz: [0.000000, 0.000000, 0.000000]}
-  - {element: O, type_label: O_no3, charge: null, xyz: [1.240000, 0.000000, 0.000000]}
-  - {element: O, type_label: O_no3, charge: null, xyz: [-0.620000, 1.073000, 0.000000]}
-  - {element: O, type_label: O_no3, charge: null, xyz: [-0.620000, -1.073000, 0.000000]}
+  - element: N
+    type_label: N_no3
+    charge: null
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp: null  # TODO: not in excel db
+
+  - element: O
+    type_label: O_no3
+    charge: null
+    xyz: [1.240000, 0.000000, 0.000000]
+    bjdisp: null
+
+  - element: O
+    type_label: O_no3
+    charge: null
+    xyz: [-0.620000, 1.073000, 0.000000]
+    bjdisp: null
+
+  - element: O
+    type_label: O_no3
+    charge: null
+    xyz: [-0.620000, -1.073000, 0.000000]
+    bjdisp: null
 connectivity:
   bonds:
     - [10, 1, 2]

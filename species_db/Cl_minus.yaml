@@ -3,6 +3,13 @@ name: Cl_minus
 net_charge: -1.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: Cl, type_label: Cl, charge: null, xyz: [0.0, 0.0, 0.0]}
+  - element: Cl
+    type_label: Cl
+    charge: null
+    xyz: [0.0, 0.0, 0.0]
+    bjdisp:
+      alpha_iso: 30.3     # a.u.  [Excel row 18: Cl-]
+      C6: 3803.083        # kcal/mol*Ang^6
+      s: 1.40
 connectivity: {}
 coeffs: {}

@@ -1,0 +1,30 @@
+# QM surface bjdisp parameters for IrO2 system
+# Source: DFT-CES2 constant 251112.xlsx (Excel rows 77-78)
+# Calculated from: DFT-D3 (C6) + VASP SCS/FI method (alpha_iso)
+#
+# Usage: referenced when type_label of QM slab atoms matches keys below.
+# The builder uses element symbols as type_labels for slab atoms (e.g., "Ir", "O").
+# If your system has multiple Ir/O environments with different alpha_iso values,
+# add them as Ir_top / Ir_inner etc. and match to type_labels in your CONTCAR.
+
+system: IrO2
+
+# Format per type:
+#   alpha_iso : isotropic polarizability [a.u.]
+#   C6        : dispersion coefficient  [kcal/mol * Ang^6]
+#   s         : BJ scaling parameter (1.40 for metals/non-H-bond; 0.53 for H-bond O)
+#   note      : source / environment description
+
+types:
+
+  Ir:
+    alpha_iso: 31.4        # a.u.  [Excel row 77]
+    C6: 4209.986           # kcal/mol*Ang^6  (= 305.53 au * 13.77928721)
+    s: 1.40
+    note: "Ir atom in IrO2 bulk/surface, SCS/FI+DFT-D3"
+
+  O:
+    alpha_iso: 3.9         # a.u.  [Excel row 78]
+    C6: 142.891            # kcal/mol*Ang^6  (= 10.37 au * 13.77928721)
+    s: 1.40
+    note: "O atom in IrO2 surface (not water O — different environment)"

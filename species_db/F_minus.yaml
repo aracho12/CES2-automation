@@ -3,6 +3,13 @@ name: F_minus
 net_charge: -1.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: F, type_label: F, charge: null, xyz: [0.0, 0.0, 0.0]}
+  - element: F
+    type_label: F
+    charge: null
+    xyz: [0.0, 0.0, 0.0]
+    bjdisp:
+      alpha_iso: 15.0     # a.u.  [Excel row 17: F-]
+      C6: 1012.778        # kcal/mol*Ang^6
+      s: 1.40
 connectivity: {}
 coeffs: {}

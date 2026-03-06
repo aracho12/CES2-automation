@@ -3,6 +3,13 @@ name: Na_plus
 net_charge: 1.0
 charge_scheme: uniform_from_net_charge
 atoms:
-  - {element: Na, type_label: Na, charge: null, xyz: [0.0, 0.0, 0.0]}
+  - element: Na
+    type_label: Na
+    charge: null
+    xyz: [0.0, 0.0, 0.0]
+    bjdisp:
+      alpha_iso: 0.93     # a.u.  [Excel row 4: Na+]
+      C6: 21.220          # kcal/mol*Ang^6
+      s: 1.40
 connectivity: {}
 coeffs: {}
