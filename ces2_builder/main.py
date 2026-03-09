@@ -19,6 +19,8 @@ from .builder import (
 from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
 from .lammps_input_writer import generate_lammps_input
+from .qe_writer import generate_qe_input
+from .ces2_script_writer import generate_ces2_scripts
 
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
@@ -286,6 +288,31 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     )
     timings["lammps_input"] = time.perf_counter() - t0
     print(f"[TIMING] lammps_input: {timings['lammps_input']:.3f} s")
+
+    # Generate base.pw.in + base.pp.in (QE input)
+    t0 = time.perf_counter()
+    qm_elements_ordered = sorted(set(slab_sc.get_chemical_symbols()))
+    generate_qe_input(
+        export_dir=export_dir,
+        slab_cell=slab_sc.cell.array,
+        n_qm_total=len(slab_sc),
+        qm_elements=qm_elements_ordered,
+        cfg=cfg,
+    )
+    timings["qe_input"] = time.perf_counter() - t0
+    print(f"[TIMING] qe_input: {timings['qe_input']:.3f} s")
+
+    # Generate qmmm wrapper + SLURM submit scripts
+    t0 = time.perf_counter()
+    n_qm = len(slab_sc)
+    generate_ces2_scripts(
+        export_dir=export_dir,
+        cfg=cfg,
+        n_mm=n_mm,
+        n_qm=n_qm,
+    )
+    timings["ces2_scripts"] = time.perf_counter() - t0
+    print(f"[TIMING] ces2_scripts: {timings['ces2_scripts']:.3f} s")
 
     summary = {
         "box": box.__dict__,

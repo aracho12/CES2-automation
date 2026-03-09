@@ -1,0 +1,401 @@
+"""
+ces2_script_writer.py — Generate CES2 QM/MM run scripts.
+
+Files generated
+---------------
+  qmmm_dftces2_charging_pts.sh   — main QM/MM wrapper script
+      Orchestrates the CES2 loop:
+        1. Run LAMMPS (single step) → read forces/charges from SOLUTE
+        2. Write base.pw.in with current QM positions + dispersion forces
+        3. Run pw.x (QE SCF)
+        4. Run pp.x (potential cube)
+        5. Read cube files, update gridforce input, repeat
+
+  submit_ces2.sh                  — SLURM/PBS batch submission script
+
+Config keys consumed  (config.yaml)
+-------------------------------------
+  ces2_script:
+    qe_binary:    "pw.x"          # QE pw.x executable
+    pp_binary:    "pp.x"          # QE pp.x executable
+    lmp_binary:   "lmp_mpi"       # LAMMPS executable
+    n_qmmm_steps: 100             # total QM/MM outer loop steps
+    qe_nproc:     32              # MPI tasks for QE
+    lmp_nproc:    32              # MPI tasks for LAMMPS
+    module_lines: |               # module load commands (multiline)
+      module load qe/7.2
+      module load lammps/2023
+
+  slurm:
+    job_name:  "ces2_qmmm"
+    partition: "compute"
+    nodes:     1
+    ntasks:    32
+    time:      "48:00:00"
+    stdout:    "ces2.out"
+    stderr:    "ces2.err"
+
+  pbs:
+    job_name:  "ces2_qmmm"
+    nodes:     1
+    ppn:       32
+    walltime:  "48:00:00"
+
+Note
+----
+The generated qmmm_dftces2_charging_pts.sh is a template/scaffold showing the
+expected call structure.  The actual production script used in your group may
+differ in detail — review and customise before use.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _slurm_header(slurm_cfg: Dict[str, Any]) -> List[str]:
+    h: List[str] = ["#!/bin/bash"]
+    h.append(f"#SBATCH --job-name={slurm_cfg.get('job_name', 'ces2_qmmm')}")
+    if "partition" in slurm_cfg:
+        h.append(f"#SBATCH --partition={slurm_cfg['partition']}")
+    nodes   = int(slurm_cfg.get("nodes", 1))
+    ntasks  = int(slurm_cfg.get("ntasks", 32))
+    h.append(f"#SBATCH --nodes={nodes}")
+    h.append(f"#SBATCH --ntasks={ntasks}")
+    if "time" in slurm_cfg:
+        h.append(f"#SBATCH --time={slurm_cfg['time']}")
+    if "stdout" in slurm_cfg:
+        h.append(f"#SBATCH --output={slurm_cfg['stdout']}")
+    if "stderr" in slurm_cfg:
+        h.append(f"#SBATCH --error={slurm_cfg['stderr']}")
+    for extra in slurm_cfg.get("extra_lines", []):
+        h.append(extra)
+    return h
+
+
+def _pbs_header(pbs_cfg: Dict[str, Any]) -> List[str]:
+    h: List[str] = ["#!/bin/bash"]
+    h.append(f"#PBS -N {pbs_cfg.get('job_name', 'ces2_qmmm')}")
+    nodes = int(pbs_cfg.get("nodes", 1))
+    ppn   = int(pbs_cfg.get("ppn",   32))
+    h.append(f"#PBS -l nodes={nodes}:ppn={ppn}")
+    if "walltime" in pbs_cfg:
+        h.append(f"#PBS -l walltime={pbs_cfg['walltime']}")
+    if "queue" in pbs_cfg:
+        h.append(f"#PBS -q {pbs_cfg['queue']}")
+    return h
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def generate_ces2_scripts(
+    *,
+    export_dir: Path,
+    cfg: Dict[str, Any],
+    n_mm: int,
+    n_qm: int,
+) -> Dict[str, Path]:
+    """
+    Generate qmmm_dftces2_charging_pts.sh and submit_ces2.sh.
+
+    Parameters
+    ----------
+    export_dir : output directory (same as for data.file, base.in.lammps etc.)
+    cfg        : full config dict
+    n_mm       : number of MM atoms
+    n_qm       : number of QM atoms (slab)
+
+    Returns
+    -------
+    dict with keys: 'qmmm_sh', 'slurm_sh'
+    """
+    sc_cfg    = cfg.get("ces2_script", {})
+    ces2_cfg  = cfg.get("ces2", {})
+    cell_cfg  = cfg.get("cell", {})
+
+    qe_bin    = str(sc_cfg.get("qe_binary",    "pw.x"))
+    pp_bin    = str(sc_cfg.get("pp_binary",    "pp.x"))
+    lmp_bin   = str(sc_cfg.get("lmp_binary",   "lmp_mpi"))
+    n_steps   = int(sc_cfg.get("n_qmmm_steps", 100))
+    qe_nproc  = int(sc_cfg.get("qe_nproc",    32))
+    lmp_nproc = int(sc_cfg.get("lmp_nproc",   32))
+    module_lines = str(sc_cfg.get("module_lines", ""))
+
+    prefix    = str(ces2_cfg.get("prefix", "ces2"))
+    rep       = list(cell_cfg.get("supercell", [1, 1, 1]))
+    sc_factor = int(rep[0]) * int(rep[1]) * int(rep[2])
+
+    # ======================================================================
+    # qmmm_dftces2_charging_pts.sh
+    # ======================================================================
+    lines: List[str] = []
+
+    def L(s: str = "") -> None:
+        lines.append(s)
+
+    L("#!/bin/bash")
+    L("# qmmm_dftces2_charging_pts.sh")
+    L("# CES2 QM/MM wrapper script — DFT-CES2 constant charging-point loop")
+    L("# Auto-generated by cesbuild  (ces2_script_writer.py)")
+    L("#")
+    L(f"# QM atoms  : {n_qm}  (slab, total supercell)")
+    L(f"# MM atoms  : {n_mm}")
+    L(f"# Supercell : {rep[0]}x{rep[1]}x{rep[2]} (sc_factor={sc_factor})")
+    L("#")
+    L("# USAGE: bash qmmm_dftces2_charging_pts.sh [restart_step]")
+    L("#   restart_step : optional integer, resumes from that step")
+    L()
+
+    # --- Module loads -------------------------------------------------------
+    if module_lines.strip():
+        L("# ── Module loads ──────────────────────────────────────────────────")
+        for ml in module_lines.strip().splitlines():
+            L(ml.strip())
+        L()
+
+    # --- Config / user-editable section ------------------------------------
+    L("# ── Configuration (edit as needed) ───────────────────────────────────")
+    L(f"QE_BIN=\"{qe_bin}\"")
+    L(f"PP_BIN=\"{pp_bin}\"")
+    L(f"LMP_BIN=\"{lmp_bin}\"")
+    L(f"QE_NPROC={qe_nproc}")
+    L(f"LMP_NPROC={lmp_nproc}")
+    L(f"N_STEPS={n_steps}          # total QM/MM outer-loop steps")
+    L(f"N_QM={n_qm}                # QM atoms in supercell")
+    L(f"N_MM={n_mm}                # MM atoms")
+    L(f"SC_FACTOR={sc_factor}      # supercell repetition factor")
+    L(f"PREFIX=\"{prefix}\"")
+    L()
+    L("START_STEP=${1:-0}          # resume from this step (default 0)")
+    L()
+
+    # --- Directories & files -----------------------------------------------
+    L("# ── Paths ────────────────────────────────────────────────────────────")
+    L("RUNDIR=\"$(pwd)\"")
+    L("EXPORT_DIR=\"${RUNDIR}\"    # directory containing data.file, base.in.lammps etc.")
+    L("WORKDIR=\"${RUNDIR}/qmmm_work\"   # per-step scratch directory")
+    L("mkdir -p \"${WORKDIR}\"")
+    L()
+    L("# Cube files produced by QE pp.x (one set per step)")
+    L("# Index convention:")
+    L("#   idx 0 → H (water H / proton group)")
+    L("#   idx 1 → O (water O / oxygen group)")
+    L("#   idx 2,3,... → other elements (K, Na, Cl, ...)")
+    L("NCUBES=$(ls ${EXPORT_DIR}/*.cube 2>/dev/null | wc -l)  # detect at runtime")
+    L()
+
+    # --- Main loop ---------------------------------------------------------
+    L("# ── Main QM/MM loop ──────────────────────────────────────────────────")
+    L("for STEP in $(seq ${START_STEP} $((N_STEPS - 1))); do")
+    L()
+    L("    echo \"=== CES2 QM/MM step ${STEP} ===\"")
+    L("    STEPDIR=\"${WORKDIR}/step_$(printf '%06d' ${STEP})\"")
+    L("    mkdir -p \"${STEPDIR}\"")
+    L()
+
+    # -- LAMMPS single step -------------------------------------------------
+    L("    # ── 1. LAMMPS: single-step with current grid forces ──────────────")
+    L("    # On the first step we use a zero potential (or a recycled cube).")
+    L("    # The #CUBEPOSITION line is replaced below with actual cube paths.")
+    L()
+    L("    LAMMPS_IN=\"${STEPDIR}/lammps.in\"")
+    L("    cp \"${EXPORT_DIR}/base.in.lammps\" \"${LAMMPS_IN}\"")
+    L()
+    L("    # Build the 'grid <cubes>' line from previous-step cube files")
+    L("    if [ ${STEP} -eq 0 ]; then")
+    L("        # First step: no previous cube → use zero-field placeholder")
+    L("        GRID_LINE=\"\"   # gridforce/net handles zero potential gracefully")
+    L("    else")
+    L("        PREV=\"${WORKDIR}/step_$(printf '%06d' $((STEP - 1)))\"")
+    L("        GRID_LINE=\"grid $(ls ${PREV}/*.cube | tr '\\n' ' ')\"")
+    L("    fi")
+    L()
+    L("    # Replace marker in LAMMPS input")
+    L("    sed -i \"s|#CUBEPOSITION|${GRID_LINE}|g\" \"${LAMMPS_IN}\"")
+    L()
+    L("    # Run LAMMPS")
+    L("    mpirun -n ${LMP_NPROC} ${LMP_BIN} -in \"${LAMMPS_IN}\" \\")
+    L("           -log  \"${STEPDIR}/lammps.log\" \\")
+    L("           -screen none")
+    L("    if [ $? -ne 0 ]; then")
+    L("        echo \"ERROR: LAMMPS failed at step ${STEP}\"; exit 1")
+    L("    fi")
+    L()
+
+    # -- QM positions from LAMMPS dump -------------------------------------
+    L("    # ── 2. Extract QM positions + dispersion forces ──────────────────")
+    L("    # The dispersion dump (dispf.ave) contains SOLUTE forces from")
+    L("    # compute fdisp / fix showf. Parse last frame.")
+    L("    python3 - <<'PYEOF'")
+    L("import sys, numpy as np")
+    L("from pathlib import Path")
+    L()
+    L("step     = int('${STEP}')")
+    L("stepdir  = Path('${STEPDIR}')")
+    L("export   = Path('${EXPORT_DIR}')")
+    L("n_qm     = int('${N_QM}')")
+    L()
+    L("# --- Read LAMMPS combined.xyz to get SOLUTE positions ---------------")
+    L("# LAMMPS dump file: PREFIX.emd.lammpstrj")
+    L("dump_file = export / '${PREFIX}.emd.lammpstrj'")
+    L("if not dump_file.exists():")
+    L("    # Fallback: use the static combined.xyz (first step)")
+    L("    from ase.io import read")
+    L("    atoms = read(str(export / 'combined.xyz'))")
+    L("    qm_pos = atoms.positions[atoms.get_number_of_atoms() - n_qm:]")
+    L("    qm_syms = atoms.get_chemical_symbols()[atoms.get_number_of_atoms() - n_qm:]")
+    L("else:")
+    L("    # Parse last frame of LAMMPS dump (custom format: id type xu yu zu fx fy fz)")
+    L("    from ase.io import read")
+    L("    traj = read(str(dump_file), index='-1', format='lammps-dump-text')")
+    L("    n_total = len(traj)")
+    L("    qm_pos  = traj.positions[n_total - n_qm:]")
+    L("    qm_syms = traj.get_chemical_symbols()[n_total - n_qm:]")
+    L()
+    L("# --- Write ###qmxyz block -------------------------------------------")
+    L("xyz_lines = []")
+    L("for sym, pos in zip(qm_syms, qm_pos):")
+    L("    xyz_lines.append(f'{sym}  {pos[0]:.8f}  {pos[1]:.8f}  {pos[2]:.8f}')")
+    L()
+    L("# --- Read dispersion forces (from dispf.ave dump) -------------------")
+    L("dispf_file = export / 'dispf.ave'")
+    L("dispf_lines = []")
+    L("if dispf_file.exists():")
+    L("    # lammps-dump-text format: id type xu yu zu f_showf[1] f_showf[2] f_showf[3]")
+    L("    try:")
+    L("        disp = read(str(dispf_file), index='-1', format='lammps-dump-text')")
+    L("        n_total = len(disp)")
+    L("        disp_qm = disp[n_total - n_qm:]")
+    L("        forces   = disp_qm.get_forces()")
+    L("        syms_qm  = disp_qm.get_chemical_symbols()")
+    L("        for sym, f in zip(syms_qm, forces):")
+    L("            dispf_lines.append(f'{sym}  {f[0]:.8f}  {f[1]:.8f}  {f[2]:.8f}')")
+    L("    except Exception as e:")
+    L("        print(f'WARNING: could not parse dispf.ave: {e}', file=sys.stderr)")
+    L("if not dispf_lines:")
+    L("    # Zero dispersion forces (first step or file missing)")
+    L("    for sym in qm_syms:")
+    L("        dispf_lines.append(f'{sym}  0.0  0.0  0.0')")
+    L()
+    L("# --- Patch base.pw.in -----------------------------------------------")
+    L("pw_in_src  = export / 'base.pw.in'")
+    L("pw_in_dst  = stepdir / 'pw.in'")
+    L("txt = pw_in_src.read_text(encoding='utf-8')")
+    L("txt = txt.replace('###qmxyz', '\\n'.join(xyz_lines))")
+    L("txt = txt.replace('###dispf', '\\n'.join(dispf_lines))")
+    L("pw_in_dst.write_text(txt, encoding='utf-8')")
+    L("print(f'[step {step}] Wrote {pw_in_dst}')")
+    L("PYEOF")
+    L()
+    L("    if [ $? -ne 0 ]; then")
+    L("        echo \"ERROR: Python position/force extraction failed at step ${STEP}\"; exit 1")
+    L("    fi")
+    L()
+
+    # -- QE SCF ------------------------------------------------------------
+    L("    # ── 3. Run QE pw.x (SCF) ─────────────────────────────────────────")
+    L("    cd \"${STEPDIR}\"")
+    L("    mpirun -n ${QE_NPROC} ${QE_BIN} -in pw.in > pw.out 2>&1")
+    L("    if [ $? -ne 0 ]; then")
+    L("        echo \"ERROR: pw.x failed at step ${STEP}\"; cd \"${RUNDIR}\"; exit 1")
+    L("    fi")
+    L("    cd \"${RUNDIR}\"")
+    L()
+
+    # -- QE pp.x -----------------------------------------------------------
+    L("    # ── 4. Run QE pp.x (electrostatic potential cube) ────────────────")
+    L("    cp \"${EXPORT_DIR}/base.pp.in\" \"${STEPDIR}/pp.in\"")
+    L("    cd \"${STEPDIR}\"")
+    L("    mpirun -n ${QE_NPROC} ${PP_BIN} -in pp.in > pp.out 2>&1")
+    L("    if [ $? -ne 0 ]; then")
+    L("        echo \"ERROR: pp.x failed at step ${STEP}\"; cd \"${RUNDIR}\"; exit 1")
+    L("    fi")
+    L("    cd \"${RUNDIR}\"")
+    L()
+
+    # -- Optionally run pp.x again for electron density --------------------
+    L("    # ── 4b. Run QE pp.x again for electron density (optional) ────────")
+    L("    sed 's/plot_num = 11/plot_num = 0/; s/solute.pot.cube/solute.rho.cube/' \\")
+    L("        \"${STEPDIR}/pp.in\" > \"${STEPDIR}/pp_rho.in\"")
+    L("    cd \"${STEPDIR}\"")
+    L("    mpirun -n ${QE_NPROC} ${PP_BIN} -in pp_rho.in > pp_rho.out 2>&1")
+    L("    cd \"${RUNDIR}\"")
+    L()
+
+    # -- Link cube files to expected names ---------------------------------
+    L("    # ── 5. Organise cube files for next LAMMPS step ──────────────────")
+    L("    # gridforce/net expects cube files in a specific order:")
+    L("    #   idx 0 → H potential,  idx 1 → O potential,  idx 2+ → ions")
+    L("    # The pot cube from QE pp.x is the total electrostatic potential.")
+    L("    # The wrapper derives MM-contribution cubes by subtraction (not shown here).")
+    L("    # Adjust this section to match your CES2 implementation's cube convention.")
+    L("    ln -sf \"${STEPDIR}/solute.pot.cube\" \"${STEPDIR}/ces2_pot_H.cube\"")
+    L("    ln -sf \"${STEPDIR}/solute.pot.cube\" \"${STEPDIR}/ces2_pot_O.cube\"")
+    L("    # ion cubes would be additional files here")
+    L()
+
+    L("    echo \"=== Step ${STEP} complete ===\"")
+    L("    echo")
+    L()
+
+    L("done  # end QM/MM loop")
+    L()
+    L("echo \"CES2 QM/MM loop finished after ${N_STEPS} steps.\"")
+
+    qmmm_path = export_dir / "qmmm_dftces2_charging_pts.sh"
+    qmmm_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    qmmm_path.chmod(0o755)
+    print(f"[ces2_script_writer] Written: {qmmm_path}")
+
+    # ======================================================================
+    # submit_ces2.sh  — SLURM batch script
+    # ======================================================================
+    slurm_cfg = sc_cfg.get("slurm", {})
+    pbs_cfg   = sc_cfg.get("pbs",   {})
+
+    sub_lines: List[str] = []
+
+    def SL(s: str = "") -> None:
+        sub_lines.append(s)
+
+    # Build SLURM header (default) or PBS if slurm not configured
+    use_pbs = (not slurm_cfg and pbs_cfg)
+    if use_pbs:
+        for h in _pbs_header(pbs_cfg):
+            SL(h)
+    else:
+        for h in _slurm_header(slurm_cfg if slurm_cfg else {}):
+            SL(h)
+
+    SL()
+    SL("# submit_ces2.sh — SLURM/PBS batch submission for CES2 QM/MM run")
+    SL("# Auto-generated by cesbuild  (ces2_script_writer.py)")
+    SL()
+
+    # Module loads
+    module_lines_sub = str(slurm_cfg.get("module_lines", module_lines))
+    if module_lines_sub.strip():
+        for ml in module_lines_sub.strip().splitlines():
+            SL(ml.strip())
+        SL()
+
+    if use_pbs:
+        SL("cd ${PBS_O_WORKDIR}")
+    SL()
+
+    SL("# Run the QM/MM wrapper script")
+    SL("bash qmmm_dftces2_charging_pts.sh")
+
+    sub_path = export_dir / "submit_ces2.sh"
+    sub_path.write_text("\n".join(sub_lines) + "\n", encoding="utf-8")
+    sub_path.chmod(0o755)
+    print(f"[ces2_script_writer] Written: {sub_path}")
+
+    return {"qmmm_sh": qmmm_path, "slurm_sh": sub_path}

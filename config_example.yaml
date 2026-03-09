@@ -70,10 +70,18 @@ output:
 
 # ---- CES2 QM/MM LAMMPS input generation ----
 ces2:
+  # Water model: TIP4P (default, TIP4P-EW recommended for CES2) or TIP3P
+  water_model: TIP4P
+
   # Pair-style cutoffs
-  lj_cutoff:        12.0   # Å — real-space LJ cutoff
-  coulomb_cutoff:   12.0   # Å — real-space Coulomb cutoff (should match lj_cutoff)
+  lj_cutoff:        12.0   # Angstrom - real-space LJ cutoff
+  coulomb_cutoff:   12.0   # Angstrom - real-space Coulomb cutoff (should match lj_cutoff)
   kspace_accuracy:  1.0e-5 # PPPM relative accuracy
+  kspace_slab:      3.0    # kspace_modify slab factor (2D slab correction)
+  tip4p_msite:      0.125  # TIP4P M-site distance (Angstrom) - 0.125 for TIP4P-EW
+
+  # Run prefix (used for dump and restart file names)
+  prefix: "ces2"
 
   # BJ-dispersion global damping parameters (bjdisp pair style)
   # These are the global shape parameters of the BJ damping function,
@@ -82,25 +90,86 @@ ces2:
   bjdisp_a2: 0.50
   bjdisp_s8: 2.10
 
-  # LJ parameters: type_label → {epsilon [kcal/mol], sigma [Å]}
-  # Built-in defaults are provided for TIP3P water and common JC ions.
+  # LJ parameters: type_label -> {epsilon [kcal/mol], sigma [Angstrom]}
+  # Built-in defaults are provided for TIP4P-EW water (Smith-Dang ions).
   # Add entries here only if you need to override defaults or add new types.
   # lj_params:
-  #   Ow:  { epsilon: 0.1521,  sigma: 3.1507 }  # TIP3P  (already default)
-  #   K:   { epsilon: 0.4184,  sigma: 3.333  }  # JC     (already default)
-  #   MyAtom: { epsilon: 0.200, sigma: 3.500 }  # custom
+  #   Ow:  { epsilon: 0.16275, sigma: 3.16435 }  # TIP4P-EW (already default)
+  #   K:   { epsilon: 0.20028, sigma: 3.025  }   # Smith-Dang (already default)
+  #   MyAtom: { epsilon: 0.200, sigma: 3.500 }    # custom
+
+  # Region z-bounds for slab surface layers (adjust to match your slab geometry)
+  # regions:
+  #   z_toplayer_lo:    -2.0   # Angstrom below slab top
+  #   z_toplayer_hi:     0.5   # Angstrom above slab top
+  #   z_centerlayer_lo:  0.0   # bottom of center slab layer
+  #   z_centerlayer_hi:  5.0   # top of center slab layer
 
   # MD run settings for the CES2 QM/MM loop
   md:
-    timestep_fs:  0.5     # fs
-    n_steps:      0       # 0 = single-point (QM/MM forces only); >0 for dynamics
-    thermo_every: 100     # print thermo every N steps
-    dump_every:   100     # dump trajectory every N steps
-    temperature:  300.0   # K
-    t_damp_fs:    100.0   # NVT Nosé-Hoover damping time, fs
-    restart_every: 1000   # write restart files every N steps
-    shake_tol:    1.0e-4  # SHAKE convergence tolerance
-    shake_iter:   100     # SHAKE max iterations
+    timestep_fs:   0.5     # fs
+    n_steps:       0       # 0 = single-point (QM/MM forces only); >0 for dynamics
+    thermo_every:  100     # print thermo every N steps
+    dump_every:    1000    # dump trajectory every N steps
+    temperature:   300.0   # K
+    t_damp_fs:     100.0   # NVT Nose-Hoover damping time, fs
+    restart_every: 500000  # write restart files every N steps
+    shake_tol:     1.0e-4  # SHAKE convergence tolerance
+    shake_iter:    20      # SHAKE max iterations
+    shake_maxiter: 500     # SHAKE absolute max iterations
+
+# ---- QE (Quantum ESPRESSO) settings for CES2 QM calculation ----
+qe:
+  prefix:      "solute"
+  outdir:      "./solute"
+  pseudo_dir:  "./pseudo"    # directory with UPF pseudopotential files
+  ecutwfc:     50.0          # Ry - kinetic energy cutoff
+  ecutrho:     400.0         # Ry - charge density cutoff
+  occupations: "smearing"    # "smearing" or "fixed"
+  smearing:    "mv"          # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
+  degauss:     0.02          # Ry - smearing width
+  k_points:    [1, 1, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
+  emaxpos:     0.8           # dipole correction position (fraction of cell z)
+  edir:        3             # dipole/electric field direction (3 = z)
+  conv_thr:    1.0e-8        # SCF convergence threshold (Ry)
+  mixing_beta: 0.4
+
+  # Pseudopotential files: element -> UPF filename (must be in pseudo_dir)
+  # These are examples - replace with your actual pseudopotential files.
+  pseudopotentials:
+    Ir: "Ir.pbe-n-rrkjus_psl.0.1.UPF"
+    O:  "O.pbe-n-kjpaw_psl.0.1.UPF"
+    # Add more elements as needed:
+    # H:  "H.pbe-kjpaw_psl.0.1.UPF"
+    # K:  "K.pbe-spn-kjpaw_psl.0.2.UPF"
+
+# ---- CES2 QM/MM run script generation ----
+ces2_script:
+  qe_binary:    "pw.x"          # QE pw.x executable (or full path)
+  pp_binary:    "pp.x"          # QE pp.x executable
+  lmp_binary:   "lmp_mpi"       # LAMMPS executable
+  n_qmmm_steps: 100             # total QM/MM outer-loop steps
+  qe_nproc:     32              # MPI tasks for QE run
+  lmp_nproc:    32              # MPI tasks for LAMMPS run
+  module_lines: |               # module load commands (written verbatim)
+    module load qe/7.2
+    module load lammps/2023
+
+  slurm:
+    job_name:  "ces2_qmmm"
+    partition: "compute"
+    nodes:     1
+    ntasks:    32
+    time:      "48:00:00"
+    stdout:    "ces2.out"
+    stderr:    "ces2.err"
+    # module_lines: "module load qe/7.2\nmodule load lammps/2023\n"
+
+  pbs:
+    job_name: "ces2_qmmm"
+    nodes:    1
+    ppn:      32
+    walltime: "48:00:00"
 
 md_relax:
   enabled: true

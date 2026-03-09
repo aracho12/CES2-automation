@@ -3,24 +3,32 @@ lammps_input_writer.py — Generate base.in.lammps for DFT-CES2 QM/MM runs.
 
 Generated file sections
 -----------------------
-  1. Initialization   — units, atom_style, boundary, pair_style, kspace, processors
-  2. read_data        — reads data.file (with Masses, Atoms, Bonds, Angles, coeffs)
-  3. Group defs       — SOLUTE (QM), OXYGEN, PROTON, WATER, per-ion groups, SOLVENT, regions
-  4. LJ pair_coeff    — lj/cut/long: MM-MM (real params); QM-involved (zero)
-  5. bjdisp pair_coeff— QM-MM (geometric-mean rule); QM-QM (zero); MM-MM (zero via omission)
-  6. Gridforce fixes  — #CUBEPOSITION marker + fix gridforce template lines
-  7. MD settings      — thermo, timestep, dump, fix shake, fix nvt, restart, run
+  1. Initialization   — units, atom_style, boundary, special_bonds, bond/angle_style,
+                        pair_style (TIP4P/TIP3P + bjdisp), kspace + slab correction
+  2. read_data        — reads data.file; reset_timestep 0; set water charges
+  3. Group defs       — SOLUTE (QM), OXYGEN/PROTON/WATER, per-species ion groups,
+                        SOLVENT, region blocks for toplayer/centerlayer
+  4. LJ pair_coeff    — lj/cut/tip4p/long/opt (MM-MM real params, QM-involved = 0)
+  5. bjdisp pair_coeff— QM-MM (geometric-mean from bjdisp_db); QM-QM = 0
+  6. Bond/angle coeff — bond_coeff, angle_coeff for water (for TIP4P M-site)
+  7. Gridforce fixes  — fix hGrid/oGrid (TIP4P) + fix per ion element (gridforce/net)
+                        energy tracking variables; #CUBEPOSITION marker
+  8. MD settings      — dispersion compute/dump, wall, shake, momentum, NVT,
+                        thermo_style with Egrid variables, dump, restart, run
 
-Lookup for LJ params (per type_label)
---------------------------------------
-  Priority:
-    1. config.yaml [ces2][lj_params][<type_label>] → {epsilon, sigma}
-    2. Built-in defaults for common species (TIP3P water, JC ions)
-    3. Fallback: epsilon=0.0, sigma=1.0  (with a warning comment in output)
+Water model note
+----------------
+The Research Notes (§2.4) use TIP4P-EW.  Set  ces2.water_model: TIP4P  (default)
+in config.yaml.  TIP3P mode (lj/cut/long + pppm) is also supported but not recommended
+for DFT-CES2.
 
-Cross-pair (i≠j) mixing rule: Lorentz-Berthelot
-  eps_ij  = sqrt(eps_i * eps_j)
-  sig_ij  = 0.5 * (sig_i + sig_j)
+Gridforce/net cube-index convention
+------------------------------------
+  The qmmm wrapper builds one LAMMPS cube file per MM "group":
+    idx 0 → hydrogen (water H / H-containing species)
+    idx 1 → oxygen   (water O / O-containing species)
+    idx 2, 3, … → remaining unique elements (K, Na, Cl, Br, F, I, …)
+  in the order they first appear in species_order (water excluded).
 """
 
 from __future__ import annotations
@@ -35,48 +43,68 @@ from .species import Species
 
 # ---------------------------------------------------------------------------
 # Built-in LJ defaults: type_label → (epsilon [kcal/mol], sigma [Å])
-# Sources:
-#   TIP3P  — Jorgensen et al. 1983
-#   Ions   — Joung & Cheatham 2008 (JC, TIP3P-parameterized)
-#   OH-    — O treated same as water O (common approximation; override in config)
+# TIP4P-EW water (used when water_model = TIP4P, default):
+#   Ow: Horn et al. 2004 — 0.16275, 3.16435
+#   Hw: 0.0, 0.0  (H has no LJ in TIP4P)
+# TIP3P water (used when water_model = TIP3P):
+#   Ow: Jorgensen 1983 — 0.1521, 3.1507
+# Ions — Smith-Dang (SD) for TIP4P-EW, Joung-Cheatham (JC) for TIP3P.
+# Override per type_label in config.yaml [ces2][lj_params].
 # ---------------------------------------------------------------------------
-_DEFAULT_LJ: Dict[str, Tuple[float, float]] = {
+_DEFAULT_LJ_TIP4P: Dict[str, Tuple[float, float]] = {
+    # TIP4P-EW water
+    "Ow":    (0.16275000,  3.16435),
+    "Hw":    (0.0000,      1.0000),   # eps=0; sigma set to 1 to avoid /0
+    # Hydroxide (approximate — override in config for accurate work)
+    "O_oh":  (0.16275000,  3.16435),
+    "H_oh":  (0.0000,      1.0000),
+    # Smith-Dang ions (TIP4P-EW compatible)
+    "Na":    (0.16843750,  2.18448),
+    "K":     (0.20027800,  3.02500),
+    "Li":    (0.03658570,  1.81870),
+    "Rb":    (0.21145300,  3.30400),
+    "Cs":    (0.24900000,  3.74500),
+    "Cl":    (0.62843200,  4.31940),
+    "Br":    (0.71240000,  4.64000),
+    "F":     (0.71400000,  3.11800),
+    "I":     (0.61300000,  5.40000),
+}
+
+_DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
     # TIP3P water
-    "Ow":    (0.1521,   3.1507),
-    "Hw":    (0.0000,   0.0000),
-    # Hydroxide (approx — same as water O/H; override if you have better params)
-    "O_oh":  (0.1521,   3.1507),
-    "H_oh":  (0.0000,   0.0000),
-    # Monovalent cations (JC / TIP3P)
-    "Na":    (0.3526418, 2.1600),
-    "K":     (0.4184,   3.3330),
-    "Li":    (0.0279,   1.8250),
-    "Rb":    (0.4748,   3.6560),
-    "Cs":    (0.5000,   4.1430),
-    # Monovalent anions (JC / TIP3P)
-    "Cl":    (0.7200,   4.4170),
-    "Br":    (0.7150,   4.8370),
-    "F":     (0.7530,   3.1180),
-    "I":     (0.6130,   5.4000),
-    # Common polyatomic atoms (approximate; override for accurate work)
-    "C":     (0.0860,   3.3997),
-    "N":     (0.1700,   3.2500),
-    "P":     (0.2000,   3.7400),
-    "S":     (0.2500,   3.5640),
+    "Ow":    (0.1521,      3.1507),
+    "Hw":    (0.0000,      1.0000),
+    "O_oh":  (0.1521,      3.1507),
+    "H_oh":  (0.0000,      1.0000),
+    # Joung-Cheatham ions (TIP3P-compatible)
+    "Na":    (0.3526418,   2.1600),
+    "K":     (0.4184,      3.3330),
+    "Li":    (0.0279,      1.8250),
+    "Rb":    (0.4748,      3.6560),
+    "Cs":    (0.5000,      4.1430),
+    "Cl":    (0.7200,      4.4170),
+    "Br":    (0.7150,      4.8370),
+    "F":     (0.7530,      3.1180),
+    "I":     (0.6130,      5.4000),
+}
+
+# Additional common non-water/ion types (same for both models)
+_DEFAULT_LJ_COMMON: Dict[str, Tuple[float, float]] = {
+    "C":  (0.0860, 3.3997),
+    "N":  (0.1700, 3.2500),
+    "P":  (0.2000, 3.7400),
+    "S":  (0.2500, 3.5640),
 }
 
 
 # ---------------------------------------------------------------------------
 # Lorentz-Berthelot mixing
 # ---------------------------------------------------------------------------
-
 def _lb_mix(eps_i: float, sig_i: float, eps_j: float, sig_j: float) -> Tuple[float, float]:
-    """Lorentz-Berthelot: geometric mean for epsilon, arithmetic mean for sigma."""
     return math.sqrt(eps_i * eps_j), 0.5 * (sig_i + sig_j)
 
 
 def _get_lj(label: str, lj_db: Dict[str, Tuple[float, float]]) -> Tuple[float, float]:
-    """Return (eps, sig) for type_label; falls back to (0.0, 1.0) if unknown."""
     return lj_db.get(label, (0.0, 1.0))
 
 
@@ -91,8 +119,8 @@ def generate_lammps_input(
     label_by_type_id: Dict[int, str],
     species_order: List[Tuple[str, int]],       # [(species_id, count), ...]
     species_db: Dict[str, Species],
-    box,                                        # BoxMeta (has .Lx .Ly .z_el_lo .z_el_hi)
-    bond_coeffs: Dict[int, Tuple[float, float]],   # already written in data.file
+    box,                                        # BoxMeta
+    bond_coeffs: Dict[int, Tuple[float, float]],
     angle_coeffs: Dict[int, Tuple[float, float]],
     qm_params_dir: Path,
     cfg: Dict[str, Any],
@@ -100,51 +128,50 @@ def generate_lammps_input(
 ) -> Path:
     """
     Write base.in.lammps to export_dir/base.in.lammps.
-
-    Parameters
-    ----------
-    export_dir        Path where the file will be written (alongside data.file).
-    type_id_by_label  {type_label: LAMMPS_type_id}  (from make_type_registry)
-    label_by_type_id  {LAMMPS_type_id: type_label}
-    species_order     [(species_id, molecule_count), ...] in PACKMOL order
-    species_db        loaded species DB dict
-    box               BoxMeta namedtuple/dataclass
-    bond_coeffs       {bond_type_id: (k, r0)} — written in data.file (not repeated here)
-    angle_coeffs      {angle_type_id: (k, theta0)}
-    qm_params_dir     Path to species_db/qm_params/ directory
-    cfg               raw config dict
-    n_mm              total number of MM atoms (QM atoms start at atom n_mm+1)
-
-    Returns
-    -------
-    Path of written file.
+    Returns the path of the written file.
     """
     ces2_cfg   = cfg.get("ces2", {})
     recipe_cfg = cfg.get("electrolyte_recipe", {})
+    cell_cfg   = cfg.get("cell", {})
 
     # ------------------------------------------------------------------ #
-    #  1. Pair-style parameters
+    #  Water model: TIP4P (default) or TIP3P
     # ------------------------------------------------------------------ #
-    lj_cut     = float(ces2_cfg.get("lj_cutoff",        12.0))
-    coul_cut   = float(ces2_cfg.get("coulomb_cutoff",   12.0))
-    kspace_acc = float(ces2_cfg.get("kspace_accuracy",  1.0e-5))
-    bjd_a1     = float(ces2_cfg.get("bjdisp_a1",        1.40))
-    bjd_a2     = float(ces2_cfg.get("bjdisp_a2",        0.50))
-    bjd_s8     = float(ces2_cfg.get("bjdisp_s8",        2.10))
+    water_model = str(ces2_cfg.get("water_model", "TIP4P")).upper()
+    use_tip4p   = (water_model == "TIP4P")
 
     # ------------------------------------------------------------------ #
-    #  2. LJ parameter DB  (built-in defaults + user overrides)
+    #  Pair-style parameters
     # ------------------------------------------------------------------ #
-    lj_db: Dict[str, Tuple[float, float]] = dict(_DEFAULT_LJ)
+    lj_cut      = float(ces2_cfg.get("lj_cutoff",        12.0))
+    kspace_acc  = float(ces2_cfg.get("kspace_accuracy",  1.0e-4))
+    bjd_a1      = float(ces2_cfg.get("bjdisp_a1",        1.40))
+    bjd_a2      = float(ces2_cfg.get("bjdisp_a2",        0.50))
+    bjd_s8      = float(ces2_cfg.get("bjdisp_s8",        2.10))
+    kspace_slab = float(ces2_cfg.get("kspace_slab",      3.0))
+    tip4p_msite = float(ces2_cfg.get("tip4p_msite",      0.125))  # M-site dist Å
+
+    # ------------------------------------------------------------------ #
+    #  Supercell factor for gridforce/net
+    # ------------------------------------------------------------------ #
+    rep = list(cell_cfg.get("supercell", [1, 1, 1]))
+    sc_factor = int(rep[0]) * int(rep[1]) * int(rep[2])
+
+    # ------------------------------------------------------------------ #
+    #  LJ parameter DB  (built-in defaults + user overrides)
+    # ------------------------------------------------------------------ #
+    lj_db: Dict[str, Tuple[float, float]] = dict(
+        _DEFAULT_LJ_TIP4P if use_tip4p else _DEFAULT_LJ_TIP3P
+    )
+    lj_db.update(_DEFAULT_LJ_COMMON)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
     # ------------------------------------------------------------------ #
-    #  3. Identify MM vs QM type labels
+    #  Identify MM vs QM type labels
     # ------------------------------------------------------------------ #
-    # MM labels = those coming from species in species_order
     mm_labels_set: set = set()
-    mm_labels_ordered: List[str] = []   # stable order (first seen)
+    mm_labels_ordered: List[str] = []
     for sid, _ in species_order:
         sp = species_db[sid]
         for a in sp.atoms:
@@ -152,7 +179,6 @@ def generate_lammps_input(
                 mm_labels_set.add(a.type_label)
                 mm_labels_ordered.append(a.type_label)
 
-    # QM labels = whatever is left in type_id_by_label (slab elements)
     qm_labels_ordered: List[str] = sorted(
         [lbl for lbl in type_id_by_label if lbl not in mm_labels_set],
         key=lambda l: type_id_by_label[l],
@@ -160,10 +186,40 @@ def generate_lammps_input(
 
     mm_type_ids: Dict[str, int] = {lbl: type_id_by_label[lbl] for lbl in mm_labels_ordered}
     qm_type_ids: Dict[str, int] = {lbl: type_id_by_label[lbl] for lbl in qm_labels_ordered}
-    n_types = max(type_id_by_label.values()) if type_id_by_label else 0
 
     # ------------------------------------------------------------------ #
-    #  4. bjdisp DB
+    #  Water type IDs
+    # ------------------------------------------------------------------ #
+    water_sid    = recipe_cfg.get("water", {}).get("species_id", "water_tip3p")
+    water_O_lbl: Optional[str] = None
+    water_H_lbl: Optional[str] = None
+    water_O_tid: Optional[int] = None
+    water_H_tid: Optional[int] = None
+    water_bond_type:  Optional[int] = None
+    water_angle_type: Optional[int] = None
+    water_OH_len:    float = 0.9572   # Å  default TIP4P-EW O-H bond
+    water_HOH_ang:   float = 104.52   # deg
+
+    if water_sid in species_db:
+        wsp = species_db[water_sid]
+        for a in wsp.atoms:
+            if a.element == "O" and water_O_lbl is None:
+                water_O_lbl = a.type_label
+                water_O_tid = type_id_by_label.get(a.type_label)
+            elif a.element == "H" and water_H_lbl is None:
+                water_H_lbl = a.type_label
+                water_H_tid = type_id_by_label.get(a.type_label)
+        if wsp.bond_coeffs:
+            bt = min(wsp.bond_coeffs.keys())
+            water_bond_type = bt
+            water_OH_len = float(wsp.bond_coeffs[bt][1])
+        if wsp.angle_coeffs:
+            at = min(wsp.angle_coeffs.keys())
+            water_angle_type = at
+            water_HOH_ang = float(wsp.angle_coeffs[at][1])
+
+    # ------------------------------------------------------------------ #
+    #  bjdisp DB
     # ------------------------------------------------------------------ #
     mm_bjdisp, qm_bjdisp, cfg_bjdisp = load_all(
         species_db=species_db,
@@ -172,43 +228,44 @@ def generate_lammps_input(
     )
 
     # ------------------------------------------------------------------ #
-    #  5. Identify water / ion type IDs for groups and SHAKE
+    #  MD settings from config
     # ------------------------------------------------------------------ #
-    water_sid   = recipe_cfg.get("water", {}).get("species_id", "water_tip3p")
-    water_O_tid: Optional[int] = None
-    water_H_tid: Optional[int] = None
-    water_bond_type:  Optional[int] = None
-    water_angle_type: Optional[int] = None
-
-    if water_sid in species_db:
-        wsp = species_db[water_sid]
-        for a in wsp.atoms:
-            if a.element == "O" and water_O_tid is None:
-                water_O_tid = type_id_by_label.get(a.type_label)
-            elif a.element == "H" and water_H_tid is None:
-                water_H_tid = type_id_by_label.get(a.type_label)
-        # Bond type for O-H bond (type id used in data.file) — first bond coeff
-        if wsp.bond_coeffs:
-            water_bond_type = min(wsp.bond_coeffs.keys())
-        if wsp.angle_coeffs:
-            water_angle_type = min(wsp.angle_coeffs.keys())
+    md_cfg        = ces2_cfg.get("md", {})
+    timestep      = float(md_cfg.get("timestep_fs",  0.5))
+    n_steps       = int(  md_cfg.get("n_steps",      0))
+    thermo_every  = int(  md_cfg.get("thermo_every", 100))
+    dump_every    = int(  md_cfg.get("dump_every",   1000))
+    nvt_temp      = float(md_cfg.get("temperature",  300.0))
+    nvt_tdamp     = float(md_cfg.get("t_damp_fs",    100.0))
+    restart_every = int(  md_cfg.get("restart_every", 500000))
+    shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
+    shake_iter    = int(  md_cfg.get("shake_iter",   20))
+    shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
+    z_wall_hi     = float(md_cfg.get("z_wall_hi",    box.z_el_hi - 2.0))
+    prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
-    #  6. MD settings from config
+    #  Cube index assignment for gridforce/net
+    #  H → 0, O → 1, then remaining unique MM elements in appearance order
     # ------------------------------------------------------------------ #
-    md_cfg       = ces2_cfg.get("md", {})
-    timestep     = float(md_cfg.get("timestep_fs",  0.5))
-    n_steps      = int(  md_cfg.get("n_steps",      0))
-    thermo_every = int(  md_cfg.get("thermo_every", 100))
-    dump_every   = int(  md_cfg.get("dump_every",   100))
-    nvt_temp     = float(md_cfg.get("temperature",  300.0))
-    nvt_tdamp    = float(md_cfg.get("t_damp_fs",    100.0))
-    restart_every = int( md_cfg.get("restart_every", 1000))
-    shake_tol    = float(md_cfg.get("shake_tol",    1.0e-4))
-    shake_iter   = int(  md_cfg.get("shake_iter",   100))
+    cube_idx: Dict[str, int] = {}    # element_symbol → cube index
+    if water_H_lbl:
+        cube_idx["H"] = 0
+    if water_O_lbl:
+        cube_idx["O"] = 1
+    next_cube = 2
+    for sid, _ in species_order:
+        if sid == water_sid:
+            continue
+        sp = species_db[sid]
+        for a in sp.atoms:
+            el = a.element
+            if el not in cube_idx:
+                cube_idx[el] = next_cube
+                next_cube += 1
 
     # ------------------------------------------------------------------ #
-    #  7. Assemble file lines
+    #  Build file
     # ------------------------------------------------------------------ #
     lines: List[str] = []
 
@@ -224,12 +281,14 @@ def generate_lammps_input(
     # ── Header ──────────────────────────────────────────────────────────
     L("# base.in.lammps — DFT-CES2 QM/MM LAMMPS input")
     L("# Auto-generated by cesbuild  (lammps_input_writer.py)")
-    L("# Do NOT edit pair_style/kspace lines by hand; regenerate instead.")
     L("#")
-    L("# Runtime markers replaced by qmmm wrapper script:")
-    L("#   ###dispf   → dispersion-force cube file path")
-    L("#   ###qmxyz   → QM atom XYZ coordinates")
-    L("#   #CUBEPOSITION → entire line replaced with gridforce fix commands")
+    L(f"# Water model : {water_model}")
+    L(f"# Supercell   : {rep[0]}x{rep[1]}x{rep[2]} → gridforce factor = {sc_factor}")
+    L("#")
+    L("# Runtime markers (replaced by qmmm_dftces2_charging_pts.sh):")
+    L("#   ###qmxyz      → QM atom XYZ coordinates (in base.pw.in)")
+    L("#   ###dispf      → dispersion forces       (in base.pw.in)")
+    L("#   #CUBEPOSITION → replaced with  grid <cubes> ...  command")
 
     # ── Section 1: Initialization ────────────────────────────────────────
     section("1. Initialization")
@@ -238,46 +297,79 @@ def generate_lammps_input(
     L("atom_style      full")
     L("boundary        p p f")
     L()
-    # pair_style: lj/cut/long for MM electrostatics + bjdisp for QM-MM dispersion
-    L(f"pair_style      hybrid/overlay"
-      f"  lj/cut/long {lj_cut:.1f}"
-      f"  bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
-    L(f"kspace_style    pppm {kspace_acc:.1e}")
+    L("dielectric      1")
+    L("special_bonds   lj/coul 0.0 0.0 1.0   # 1-2 excluded, 1-3 excluded, 1-4 full")
     L()
-    L("processors      * * 1")
+    L("bond_style      harmonic")
+    L("angle_style     harmonic")
+    L("dihedral_style  none")
+    L("improper_style  none")
+    L()
+
+    if use_tip4p:
+        if water_O_tid is None or water_H_tid is None:
+            L("# WARNING: water O or H type not found — TIP4P pair_style args may be wrong")
+        O_tid = water_O_tid or 2
+        H_tid = water_H_tid or 1
+        bt    = water_bond_type  or 1
+        at    = water_angle_type or 1
+        L(f"# TIP4P-EW: O_type={O_tid} H_type={H_tid} bond_type={bt} angle_type={at}"
+          f" M_dist={tip4p_msite} cutoff={lj_cut:.1f}")
+        L( "pair_style      hybrid/overlay \\")
+        L(f"                lj/cut/tip4p/long/opt {O_tid} {H_tid} {bt} {at}"
+          f" {tip4p_msite} {lj_cut:.1f} \\")
+        L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
+        L(f"kspace_style    pppm/tip4p {kspace_acc:.1e}")
+    else:
+        L("pair_style      hybrid/overlay \\")
+        L(f"                lj/cut/long {lj_cut:.1f} \\")
+        L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
+        L(f"kspace_style    pppm {kspace_acc:.1e}")
+
+    L(f"kspace_modify   slab {kspace_slab:.1f}   # 2D periodic slab correction")
+    L()
+    L("processors      * * 1   # no domain decomposition in z")
 
     # ── Section 2: Read data ─────────────────────────────────────────────
     section("2. Read data")
     L()
     L("read_data       data.file")
+    L("reset_timestep  0")
+    L()
+
+    # Set TIP4P water charges (they differ from data.file initial values)
+    if use_tip4p and water_O_tid is not None and water_H_tid is not None:
+        if water_sid in species_db:
+            wsp = species_db[water_sid]
+            o_charge = next((a.charge for a in wsp.atoms if a.element == "O"), -1.0484)
+            h_charge = next((a.charge for a in wsp.atoms if a.element == "H"), +0.5242)
+            L(f"# TIP4P water charges (overwrite if species_db has TIP3P values)")
+            L(f"set group PROTON charge {h_charge:.4f}")
+            L(f"set group OXYGEN charge {o_charge:.4f}")
 
     # ── Section 3: Group definitions ─────────────────────────────────────
     section("3. Group definitions")
 
-    # SOLUTE = QM (slab) atom types
     L()
+    L("# QM (slab) atoms = SOLUTE")
     if qm_labels_ordered:
         qm_tid_str = " ".join(str(qm_type_ids[lbl]) for lbl in qm_labels_ordered)
         qm_lbl_str = " ".join(qm_labels_ordered)
         L(f"group    SOLUTE   type {qm_tid_str}   # QM slab: {qm_lbl_str}")
     else:
-        L("group    SOLUTE   type 0   # WARNING: no QM type labels found")
+        L("# WARNING: no QM type labels found")
 
-    # Water groups
     L()
-    L("# Water sub-groups (for SHAKE and diagnostics)")
+    L("# Water sub-groups")
     if water_O_tid is not None:
-        o_lbl = label_by_type_id.get(water_O_tid, "?")
-        L(f"group    OXYGEN   type {water_O_tid}   # {o_lbl} (water O)")
+        L(f"group    OXYGEN   type {water_O_tid}   # {water_O_lbl} (water O)")
     if water_H_tid is not None:
-        h_lbl = label_by_type_id.get(water_H_tid, "?")
-        L(f"group    PROTON   type {water_H_tid}   # {h_lbl} (water H)")
-    if water_O_tid is not None and water_H_tid is not None:
+        L(f"group    PROTON   type {water_H_tid}   # {water_H_lbl} (water H)")
+    if water_O_tid and water_H_tid:
         L("group    WATER    union OXYGEN PROTON")
 
-    # Per-species ion groups (non-water species)
     L()
-    L("# Ion / solute groups")
+    L("# Ion / other solute groups")
     for sid, _ in species_order:
         if sid == water_sid:
             continue
@@ -285,59 +377,67 @@ def generate_lammps_input(
         tids = sorted(set(type_id_by_label[a.type_label] for a in sp.atoms))
         tid_str  = " ".join(str(t) for t in tids)
         lbl_str  = " ".join(sorted(set(a.type_label for a in sp.atoms)))
-        grp_name = sid.upper().replace("-", "_")[:12]   # LAMMPS group name limit
+        grp_name = sid.upper().replace("-", "_")[:12]
         L(f"group    {grp_name:<12s} type {tid_str}   # {sid}: {lbl_str}")
 
-    # SOLVENT = all MM atoms
     L()
-    L("group    SOLVENT  subtract all SOLUTE   # all MM (electrolyte) atoms")
+    L("group    SOLVENT  subtract all SOLUTE   # all MM atoms")
+
+    # Region blocks for top/bottom surface layers (electrochemistry)
+    region_cfg = ces2_cfg.get("regions", {})
+    z_top_lo = float(region_cfg.get("z_toplayer_lo", box.z_el_lo - 2.0))
+    z_top_hi = float(region_cfg.get("z_toplayer_hi", box.z_el_lo + 0.5))
+    z_cen_lo = float(region_cfg.get("z_centerlayer_lo", 0.0))
+    z_cen_hi = float(region_cfg.get("z_centerlayer_hi", box.z_el_lo - 3.0))
+
+    L()
+    L("# Charged surface layer regions (adjust z bounds to match your slab geometry)")
+    L(f"region   toplayer    block 0 {box.Lx:.4f} 0 {box.Ly:.4f}"
+      f" {z_top_lo:.2f} {z_top_hi:.2f} units box")
+    L("group    top         region toplayer")
+    L(f"region   centerlayer block 0 {box.Lx:.4f} 0 {box.Ly:.4f}"
+      f" {z_cen_lo:.2f} {z_cen_hi:.2f} units box")
+    L("group    center      region centerlayer")
 
     # ── Section 4: LJ pair_coeff ─────────────────────────────────────────
-    section("4. LJ pair coefficients  (lj/cut/long)")
+    section("4. LJ pair coefficients")
     L()
-    L(f"# Lorentz-Berthelot mixing rule: eps_ij = sqrt(eps_i*eps_j), sig_ij = (sig_i+sig_j)/2")
-    L(f"# QM-MM and QM-QM LJ = 0 (QM interactions handled by DFT)")
+    lj_substyle = "lj/cut/tip4p/long/opt" if use_tip4p else "lj/cut/long"
+    L(f"# Lorentz-Berthelot mixing; QM-involved pairs: epsilon=0")
     L()
 
-    # Sort all type ids
     all_tids = sorted(type_id_by_label.values())
-
-    missing_lj: List[str] = []   # labels with no LJ params (will warn in file)
+    missing_lj: List[str] = []
 
     for i in all_tids:
         lbl_i = label_by_type_id[i]
         is_qm_i = lbl_i in qm_type_ids
-
         for j in all_tids:
             if j < i:
-                continue   # only upper triangle i <= j
+                continue
             lbl_j = label_by_type_id[j]
             is_qm_j = lbl_j in qm_type_ids
 
             if is_qm_i or is_qm_j:
-                # QM atom involved → zero LJ
-                L(f"pair_coeff  {i:3d} {j:3d}  lj/cut/long  0.0000  1.0000"
+                L(f"pair_coeff  {i:3d} {j:3d}  {lj_substyle}  0.0000000  1.0000"
                   f"   # {lbl_i}-{lbl_j}  [QM: zero LJ]")
             else:
-                # MM-MM: use built-in defaults / user config
                 eps_i, sig_i = _get_lj(lbl_i, lj_db)
                 eps_j, sig_j = _get_lj(lbl_j, lj_db)
-                if lbl_i not in lj_db and lbl_i not in missing_lj:
-                    missing_lj.append(lbl_i)
-                if lbl_j not in lj_db and lbl_j not in missing_lj:
-                    missing_lj.append(lbl_j)
+                for lbl in (lbl_i, lbl_j):
+                    if lbl not in lj_db and lbl not in missing_lj:
+                        missing_lj.append(lbl)
                 eps_ij, sig_ij = _lb_mix(eps_i, sig_i, eps_j, sig_j)
-                flag = "  [!DEFAULT FALLBACK]" if (lbl_i not in _DEFAULT_LJ or
-                                                     lbl_j not in _DEFAULT_LJ) else ""
-                L(f"pair_coeff  {i:3d} {j:3d}  lj/cut/long"
-                  f"  {eps_ij:.7f}  {sig_ij:.4f}"
+                flag = "  [!NO DEFAULT]" if (lbl_i not in lj_db or lbl_j not in lj_db) else ""
+                L(f"pair_coeff  {i:3d} {j:3d}  {lj_substyle}"
+                  f"  {eps_ij:.7f}  {sig_ij:.5f}"
                   f"   # {lbl_i}-{lbl_j}{flag}")
 
     if missing_lj:
         L()
-        L(f"# WARNING: LJ params not found for these type_labels (fallback 0,1 used):")
+        L("# WARNING: no LJ defaults for these labels (fallback 0.0/1.0 used):")
         for lbl in missing_lj:
-            L(f"#   {lbl}  → add to config.yaml [ces2][lj_params]")
+            L(f"#   {lbl}  → set in config.yaml [ces2][lj_params]")
 
     # ── Section 5: bjdisp pair_coeff ──────────────────────────────────────
     section("5. bjdisp pair coefficients  (QM-MM dispersion)")
@@ -353,52 +453,163 @@ def generate_lammps_input(
         for bl in bjdisp_lines:
             L(bl)
     else:
-        L("# (no QM types registered — bjdisp pair_coeff skipped)")
+        L("# (no QM type labels — bjdisp skipped)")
 
-    # ── Section 6: Gridforce fixes + #CUBEPOSITION ────────────────────────
-    section("6. CES2 gridforce fixes")
+    # ── Section 6: Bond/angle coefficients ───────────────────────────────
+    section("6. Bond / angle coefficients  (needed for TIP4P M-site)")
     L()
-    L("# The qmmm wrapper script replaces the #CUBEPOSITION line below with")
-    L("# actual 'fix gridforce ...' commands pointing to the QM cube files.")
-    L("# Do not remove or rename the marker line.")
+    L("# These mirror what is in data.file. Required here for TIP4P M-site computation.")
+    for bt, (k, r0) in sorted(bond_coeffs.items()):
+        L(f"bond_coeff      {bt}  {k:.1f}  {r0:.4f}")
+    for at, (k, th) in sorted(angle_coeffs.items()):
+        L(f"angle_coeff     {at}  {k:.1f}  {th:.2f}")
+
+    # ── Section 7: Gridforce fixes + #CUBEPOSITION ────────────────────────
+    section("7. CES2 gridforce/net fixes")
+    L()
+    L("# Format: fix NAME GROUP gridforce/net WEIGHT SC_FACTOR CUBE_IDX ELEMENT")
+    L("#         [TIP4P O_type H_type bond_len angle M_dist O_cube_idx]")
+    L(f"# Supercell factor = {rep[0]}×{rep[1]}×{rep[2]} = {sc_factor}")
+    L()
+
+    # Energy variable names for thermo_style
+    egrid_vars: List[str] = []   # collect variable names
+
+    # Water H (TIP4P)
+    if water_H_tid is not None and water_O_tid is not None and use_tip4p:
+        O_tid = water_O_tid
+        H_tid = water_H_tid
+        h_cube = cube_idx.get("H", 0)
+        o_cube = cube_idx.get("O", 1)
+        bt  = water_bond_type  or 1
+        at  = water_angle_type or 1
+        L(f"fix hGrid PROTON gridforce/net  -1  {sc_factor}  {h_cube}  H"
+          f"  TIP4P {O_tid} {H_tid} {water_OH_len:.4f} {water_HOH_ang:.2f}"
+          f" {tip4p_msite} {o_cube}")
+        L(f"fix oGrid OXYGEN gridforce/net  -1  {sc_factor}  {o_cube}  O"
+          f"  TIP4P {O_tid} {H_tid} {water_OH_len:.4f} {water_HOH_ang:.2f}"
+          f" {tip4p_msite} {o_cube}")
+        L("fix_modify hGrid energy yes")
+        L("fix_modify oGrid energy yes")
+        L()
+        L("variable Egrid_H    equal f_hGrid[1]")
+        L("variable EgridInd_H equal f_hGrid[2]")
+        L("variable EgridRep_H equal f_hGrid[3]")
+        L("variable Egrid_O    equal f_oGrid[1]")
+        L("variable EgridInd_O equal f_oGrid[2]")
+        L("variable EgridRep_O equal f_oGrid[3]")
+        egrid_vars += ["v_Egrid_H", "v_EgridRep_H", "v_Egrid_O", "v_EgridRep_O",
+                       "v_EgridInd_H", "v_EgridInd_O"]
+    elif water_H_tid is not None and water_O_tid is not None:
+        # TIP3P: simple gridforce
+        h_cube = cube_idx.get("H", 0)
+        o_cube = cube_idx.get("O", 1)
+        L(f"fix hGrid PROTON gridforce/net  -1  {sc_factor}  {h_cube}  H")
+        L(f"fix oGrid OXYGEN gridforce/net  -1  {sc_factor}  {o_cube}  O")
+        L("fix_modify hGrid energy yes")
+        L("fix_modify oGrid energy yes")
+        L()
+        L("variable Egrid_H    equal f_hGrid[1]")
+        L("variable Egrid_O    equal f_oGrid[1]")
+        egrid_vars += ["v_Egrid_H", "v_Egrid_O"]
+
+    # Ion gridforce fixes (one per unique element, excluding water)
+    L()
+    L("# Ion gridforce fixes")
+    seen_el: set = set()
+    ion_fix_names: List[Tuple[str, str, str]] = []  # (fix_name, element, grp_name)
+    for sid, _ in species_order:
+        if sid == water_sid:
+            continue
+        sp = species_db[sid]
+        grp_name = sid.upper().replace("-", "_")[:12]
+        for a in sp.atoms:
+            el = a.element
+            if el in ("H", "O") or el in seen_el:
+                continue
+            seen_el.add(el)
+            c_idx = cube_idx.get(el, next_cube)
+            fix_name = f"{el.lower()}Grid"
+            L(f"fix {fix_name} {grp_name} gridforce/net  -1  {sc_factor}  {c_idx}  {el}")
+            L(f"fix_modify {fix_name} energy yes")
+            var_e   = f"Egrid_{el}"
+            var_ind = f"EgridInd_{el}"
+            var_rep = f"EgridRep_{el}"
+            L(f"variable {var_e:<18s} equal f_{fix_name}[1]")
+            L(f"variable {var_ind:<18s} equal f_{fix_name}[2]")
+            L(f"variable {var_rep:<18s} equal f_{fix_name}[3]")
+            egrid_vars += [f"v_{var_e}", f"v_{var_rep}", f"v_{var_ind}"]
+            ion_fix_names.append((fix_name, el, grp_name))
+
+    # #CUBEPOSITION marker
+    L()
+    L("# ------------------------------------------------------------------")
+    L("# The qmmm wrapper script replaces #CUBEPOSITION with:")
+    L("#   grid <input_cubes> <output_cubes> <cube_file_names>")
+    L("# Do NOT remove or rename this marker!")
+    L("# ------------------------------------------------------------------")
     L()
     L("#CUBEPOSITION")
 
-    # ── Section 7: MD settings ────────────────────────────────────────────
-    section("7. MD settings")
+    # ── Section 8: MD settings ────────────────────────────────────────────
+    section("8. MD settings")
     L()
     L(f"timestep        {timestep}")
     L()
-    L(f"thermo          {thermo_every}")
-    L("thermo_style    custom step temp epair emol etotal press vol")
+
+    # Dispersion force compute + dump
+    L("# Dispersion force tracking (QM←→MM via bjdisp)")
+    L("compute fdisp SOLUTE force/tally SOLVENT")
+    L("fix     showf all ave/atom 1 200 200 c_fdisp[*]")
+    L(f"dump    dispTraj SOLUTE custom 100 dispf.ave id type xu yu zu f_showf[*]")
+    L("dump_modify dispTraj sort id")
     L()
-    L(f"dump            traj all atom {dump_every} traj.lammpstrj")
-    L("dump_modify     traj sort id")
+    L("# bjdisp energy (for thermo)")
+    L("compute edisp all pair bjdisp")
+
+    # Thermo
+    L()
+    egrid_thermo = " ".join(egrid_vars[:6])   # cap to avoid very long line
+    L("thermo_style    custom step temp etotal ke pe evdwl ecoul elong press \\")
+    if egrid_thermo:
+        L(f"                {egrid_thermo} \\")
+    L("                c_edisp")
+    L("thermo_modify   line multi format float %10.5f")
+    L(f"thermo          {thermo_every}")
     L()
 
-    # SHAKE for water O-H bonds and H-O-H angle
+    # Wall, momentum, SHAKE, NVT
+    L("# Keep solvent from escaping through fixed-z boundary")
+    L(f"fix   wallhi SOLVENT wall/harmonic zhi {z_wall_hi:.2f} 1.0 1.0 5.0")
+    L()
+    L("# Remove spurious COM momentum drift")
+    L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
+    L()
+
     if water_O_tid is not None and water_H_tid is not None:
         b_str = f"b {water_bond_type}"  if water_bond_type  is not None else "b 1"
         a_str = f"a {water_angle_type}" if water_angle_type is not None else "a 1"
-        L(f"# SHAKE: rigid O-H bonds (bond type {water_bond_type})"
-          f" and H-O-H angles (angle type {water_angle_type}) for water")
-        L(f"fix   shake_water WATER shake {shake_tol} {shake_iter} 0 {b_str} {a_str}")
+        L(f"# SHAKE: rigid O-H bonds and H-O-H angles for water")
+        L(f"fix   shakeH SOLVENT shake {shake_tol} {shake_iter} {shake_maxiter}"
+          f" {a_str} {b_str}")
         L()
 
-    # NVT thermostat on SOLVENT only
-    seed_nvt = int(cfg.get("project", {}).get("seed", 4321)) + 1
-    L(f"fix   nvt_solvent SOLVENT nvt temp {nvt_temp} {nvt_temp} {nvt_tdamp}")
+    L(f"fix   nvt SOLVENT nvt temp {nvt_temp:.1f} {nvt_temp:.1f} {nvt_tdamp:.1f}")
+    L()
+
+    # Trajectory dump
+    L(f"dump    traj all custom {dump_every} {prefix}.emd.lammpstrj"
+      f" id type xu yu zu fx fy fz")
+    L("dump_modify traj sort id")
     L()
 
     # Restart
-    L(f"restart         {restart_every}  restart.lammps.a  restart.lammps.b")
+    L(f"restart         {restart_every}  {prefix}.a.restart  {prefix}.b.restart")
     L()
-
-    # Run
     L(f"run             {n_steps}")
     L()
 
-    # ── Write file ────────────────────────────────────────────────────────
+    # ── Write ─────────────────────────────────────────────────────────────
     out_path = export_dir / "base.in.lammps"
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[lammps_input_writer] Written: {out_path}")
@@ -406,14 +617,12 @@ def generate_lammps_input(
 
 
 # ---------------------------------------------------------------------------
-# Convenience: show LJ DB for debugging
+# Debug helper
 # ---------------------------------------------------------------------------
-
-def print_lj_db(lj_db: Optional[Dict[str, Tuple[float, float]]] = None) -> None:
-    """Print the LJ parameter table (defaults if lj_db not provided)."""
-    db = lj_db if lj_db is not None else _DEFAULT_LJ
-    print(f"{'Label':<10}  {'epsilon':>10}  {'sigma':>8}  source")
-    print("-" * 50)
+def print_lj_db(water_model: str = "TIP4P") -> None:
+    db = _DEFAULT_LJ_TIP4P if water_model.upper() == "TIP4P" else _DEFAULT_LJ_TIP3P
+    db = {**db, **_DEFAULT_LJ_COMMON}
+    print(f"{'Label':<10}  {'epsilon':>10}  {'sigma':>8}  (water_model={water_model})")
+    print("-" * 55)
     for lbl, (eps, sig) in sorted(db.items()):
-        src = "built-in" if lbl in _DEFAULT_LJ else "user config"
-        print(f"{lbl:<10}  {eps:10.7f}  {sig:8.4f}  {src}")
+        print(f"{lbl:<10}  {eps:10.7f}  {sig:8.5f}")
