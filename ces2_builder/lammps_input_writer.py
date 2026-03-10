@@ -46,47 +46,49 @@ from .species import Species
 # TIP4P-EW water (used when water_model = TIP4P, default):
 #   Ow: Horn et al. 2004 — 0.16275, 3.16435
 #   Hw: 0.0, 0.0  (H has no LJ in TIP4P)
+# Ions - JC for TIP4P-EW from J. Phys. Chem. B 112, 9020–9041 (2008).
 # TIP3P water (used when water_model = TIP3P):
 #   Ow: Jorgensen 1983 — 0.1521, 3.1507
-# Ions — Smith-Dang (SD) for TIP4P-EW, Joung-Cheatham (JC) for TIP3P.
 # Override per type_label in config.yaml [ces2][lj_params].
 # ---------------------------------------------------------------------------
 _DEFAULT_LJ_TIP4P: Dict[str, Tuple[float, float]] = {
     # TIP4P-EW water
+    # Source: Horn et al., J. Chem. Phys. 120, 9665 (2004)
     "Ow":    (0.16275000,  3.16435),
     "Hw":    (0.0000,      1.0000),   # eps=0; sigma set to 1 to avoid /0
     # Hydroxide (approximate — override in config for accurate work)
     "O_oh":  (0.16275000,  3.16435),
     "H_oh":  (0.0000,      1.0000),
-    # Smith-Dang ions (TIP4P-EW compatible)
+    # Joung & Cheatham (2008) J. Phys. Chem. B 112, 9020 — TIP4P-Ew column
+    # sigma = 2*(Rmin/2) / 2^(1/6)  (converted from Table 5)
+    "Li":    (0.10398840,  1.43969),
     "Na":    (0.16843750,  2.18448),
-    "K":     (0.20027800,  3.02500),
-    "Li":    (0.03658570,  1.81870),
-    "Rb":    (0.21145300,  3.30400),
-    "Cs":    (0.24900000,  3.74500),
-    "Cl":    (0.62843200,  4.31940),
-    "Br":    (0.71240000,  4.64000),
-    "F":     (0.71400000,  3.11800),
-    "I":     (0.61300000,  5.40000),
+    "K":     (0.27946510,  2.83306),
+    "Rb":    (0.43314940,  3.04509),
+    "Cs":    (0.39443180,  3.36403),
+    "F":     (0.00157520,  4.52220),
+    "Cl":    (0.01166150,  4.91776),
+    "Br":    (0.03037730,  4.93202),
+    "I":     (0.04170820,  5.25987),
 }
 
-_DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
-    # TIP3P water
-    "Ow":    (0.1521,      3.1507),
-    "Hw":    (0.0000,      1.0000),
-    "O_oh":  (0.1521,      3.1507),
-    "H_oh":  (0.0000,      1.0000),
-    # Joung-Cheatham ions (TIP3P-compatible)
-    "Na":    (0.3526418,   2.1600),
-    "K":     (0.4184,      3.3330),
-    "Li":    (0.0279,      1.8250),
-    "Rb":    (0.4748,      3.6560),
-    "Cs":    (0.5000,      4.1430),
-    "Cl":    (0.7200,      4.4170),
-    "Br":    (0.7150,      4.8370),
-    "F":     (0.7530,      3.1180),
-    "I":     (0.6130,      5.4000),
-}
+# _DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
+#     # TIP3P water
+#     "Ow":    (0.1521,      3.1507),
+#     "Hw":    (0.0000,      1.0000),
+#     "O_oh":  (0.1521,      3.1507),
+#     "H_oh":  (0.0000,      1.0000),
+#     # Joung-Cheatham ions (TIP3P-compatible)
+#     "Na":    (0.3526418,   2.1600),
+#     "K":     (0.4184,      3.3330),
+#     "Li":    (0.0279,      1.8250),
+#     "Rb":    (0.4748,      3.6560),
+#     "Cs":    (0.5000,      4.1430),
+#     "Cl":    (0.7200,      4.4170),
+#     "Br":    (0.7150,      4.8370),
+#     "F":     (0.7530,      3.1180),
+#     "I":     (0.6130,      5.4000),
+# }
 
 # Additional common non-water/ion types (same for both models)
 _DEFAULT_LJ_COMMON: Dict[str, Tuple[float, float]] = {

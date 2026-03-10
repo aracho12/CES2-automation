@@ -1,0 +1,72 @@
+# Water — TIP4P-EW model
+# Source: Horn et al., J. Chem. Phys. 120, 9665 (2004)
+#
+# Key differences from TIP3P:
+#   - Charges: q_H = +0.52422, q_O = -1.04844  (M-site implicit in LAMMPS)
+#   - LJ on O only: eps=0.16275 kcal/mol, sig=3.16435 Å  (in lammps_input_writer _DEFAULT_LJ_TIP4P)
+#   - No LJ on H  (eps=0, handled by pair_style TIP4P)
+#   - M-site distance from O: 0.125 Å  (set in config ces2.tip4p_msite)
+#   - In LAMMPS: pair_style lj/cut/tip4p/long/opt + kspace pppm/tip4p
+#
+# LAMMPS charge convention for TIP4P:
+#   The electrostatic interaction is computed at the M-site (virtual, between O and H midpoint).
+#   In the data.file, O carries the full negative charge (-1.04844) and M-site is implicit.
+#   lammps_input_writer.py re-sets charges via  set group OXYGEN/PROTON charge  after read_data.
+#
+# Geometry:
+#   O at origin, H1 along x-axis at r=0.9572 Å, H2 rotated by 104.52°
+#   (identical geometry to TIP3P — same r_OH and H-O-H angle)
+#
+# Usage in config.yaml:
+#   electrolyte_recipe:
+#     water:
+#       species_id: "water_tip4p"
+#   ces2:
+#     water_model: TIP4P          # selects TIP4P-EW pair_style in LAMMPS
+#     tip4p_msite: 0.125
+
+id: water_tip4p
+name: Water (TIP4P-EW)
+net_charge: 0.0
+charge_scheme: explicit_or_zero
+
+atoms:
+  - element: O
+    type_label: Ow
+    charge: -1.04844              # TIP4P-EW: full negative on O (M-site is implicit)
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 4.7595           # isotropic polarizability, a.u.  [Excel row 24: water O]
+      C6: 143.305                 # dispersion coeff, kcal/mol*Ang^6
+      s: 1.40                     # O is NOT H-bond donor → s=1.40
+
+  - element: H
+    type_label: Hw
+    charge: 0.52422               # TIP4P-EW q_H
+    xyz: [0.957200, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693            # a.u.  [Excel row 23: water H]
+      C6: 42.716                  # kcal/mol*Ang^6
+      s: 0.53                     # H of H-bond donor → s=0.53
+
+  - element: H
+    type_label: Hw
+    charge: 0.52422               # TIP4P-EW q_H
+    xyz: [-0.239987, 0.927297, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693
+      C6: 42.716
+      s: 0.53                     # H of H-bond donor → s=0.53
+
+connectivity:
+  bonds:
+    - [1, 1, 2]                   # O-H1
+    - [1, 1, 3]                   # O-H2
+  angles:
+    - [1, 2, 1, 3]                # H1-O-H2
+
+coeffs:
+  bond_coeffs:
+    1: [450.0, 0.9572]            # k [kcal/mol/Ang^2], r0 [Ang]  — SHAKE target
+  angle_coeffs:
+    1: [55.0, 104.52]             # k [kcal/mol/rad^2], theta0 [deg] — SHAKE target
