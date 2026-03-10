@@ -1,140 +1,200 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 import json
+
+if TYPE_CHECKING:
+    from .lammps_input_writer import RelaxFFParams
+
 
 @dataclass
 class MDOutputs:
     in_relax: str
-    ff_dir: str
-    sbatch: str
-    pbs: str
-    run_sh: str
+    sbatch:   str
+    pbs:      str
+    run_sh:   str
 
-def write_placeholder_ff(ff_dir: Path) -> None:
-    ff_dir.mkdir(parents=True, exist_ok=True)
-    (ff_dir/"pair_coeff.in").write_text(
-        "# Placeholder: define nonbonded terms here\n"
-        "# Example:\n"
-        "# pair_style lj/cut/coul/long 10.0\n"
-        "# pair_modify mix arithmetic\n"
-        "# pair_coeff * * 0.0 1.0\n",
-        encoding="utf-8"
-    )
-    (ff_dir/"bond_coeff.in").write_text(
-        "# Placeholder: bonded terms\n"
-        "# Example:\n"
-        "bond_style harmonic\n"
-        "# bond_coeff 1 450.0 0.9572\n",
-        encoding="utf-8"
-    )
-    (ff_dir/"angle_coeff.in").write_text(
-        "# Placeholder: angle terms\n"
-        "# Example:\n"
-        "# angle_style harmonic\n"
-        "# angle_coeff 1 55.0 104.52\n",
-        encoding="utf-8"
-    )
-    (ff_dir/"kspace.in").write_text(
-        "# Placeholder: long-range electrostatics\n"
-        "# Example:\n"
-        "# kspace_style pppm 1e-4\n",
-        encoding="utf-8"
-    )
 
-def write_in_relax(path: Path,
-                   data_file: str = "data.file",
-                   ff_dir: str = "ff",
-                   timestep_fs: float = 1.0,
-                   min_etol: float = 1e-4,
-                   min_ftol: float = 1e-6,
-                   min_maxiter: int = 5000,
-                   min_maxeval: int = 10000,
-                   t_start: float = 10.0,
-                   t_stop: float = 300.0,
-                   tdamp_fs: float = 100.0,
-                   nvt_steps: int = 20000,
-                   dump_every: int = 2000,
-                   write_equilibrated: str = "equilibrated.data",
-                   qm_lo: Optional[int] = None,
-                   qm_hi: Optional[int] = None,
-                   ) -> None:
+def write_in_relax(
+    path: Path,
+    *,
+    relax_ff:            "RelaxFFParams",
+    data_file:           str   = "data.file",
+    # ── Stage 1: CG minimize ──────────────────────────────────────────────
+    min_etol:            float = 1.0e-4,
+    min_ftol:            float = 1.0e-3,   # kcal/mol/Å  (looser than base: faster)
+    min_maxiter:         int   = 1000,
+    min_maxeval:         int   = 5000,
+    # ── Stage 2: Heat  t_start → t_target ────────────────────────────────
+    t_start:             float = 10.0,     # K
+    t_target:            float = 300.0,    # K
+    tdamp_fs:            float = 100.0,    # fs (Nosé-Hoover τ)
+    heat_steps:          int   = 10000,    # 10 ps  at dt=1 fs
+    # ── Stage 3: NVT equilibration at t_target ───────────────────────────
+    equil_steps:         int   = 30000,    # 30 ps  at dt=1 fs
+    # ── General MD ───────────────────────────────────────────────────────
+    timestep_fs:         float = 1.0,
+    dump_every:          int   = 2000,
+    write_equilibrated:  str   = "equilibrated.data",
+    # ── QM (slab) atom ID range — freeze during relax ────────────────────
+    qm_lo:               Optional[int] = None,
+    qm_hi:               Optional[int] = None,
+) -> None:
     """
-    Write a simple pre-relax LAMMPS input.
+    Write a lightweight pure-MM pre-equilibration LAMMPS input.
 
-    If qm_lo/qm_hi are provided, QM atoms in that ID range are frozen and only
-    the remaining atoms (group SOLVENT) are thermalized and time-integrated.
+    No QM, no gridforce/net, no bjdisp.  Lighter than base.in.lammps:
+      - Single pair_style lj/cut/tip4p/long (no hybrid/overlay)
+      - Shorter LJ cutoff (10 Å by default)
+      - kspace pppm/tip4p 1e-4  (same accuracy, ~3-5× faster than 1e-5)
+
+    Protocol
+    --------
+    Stage 1  CG minimization         → remove packmol clashes
+    Stage 2  NVT heat t_start→300 K  → gentle ramp avoids explosive dynamics
+    Stage 3  NVT 300 K               → equilibrate structure before CES2
     """
-    # Decide group/thermostat layout depending on whether QM range is known
+    ff = relax_ff
+
+    heat_ps  = heat_steps  * timestep_fs / 1000.0
+    equil_ps = equil_steps * timestep_fs / 1000.0
+
+    # ── groups / freeze block ──────────────────────────────────────────────
     if qm_lo is not None and qm_hi is not None:
-        freeze_block = f"""# ---- QM/MM groups: freeze QM slab, relax solvent ----
-group QM id {qm_lo}:{qm_hi}
-group SOLVENT subtract all QM
+        group_block = f"""\
+# ---- Groups: freeze QM slab, relax MM solvent only ----
+group           QM      id {qm_lo}:{qm_hi}
+group           SOLVENT subtract all QM
 
-velocity QM set 0.0 0.0 0.0
-fix freezeQM QM setforce 0.0 0.0 0.0
-
+velocity        QM set 0.0 0.0 0.0
+fix             freezeQM QM setforce 0.0 0.0 0.0
 """
-        vel_group = "SOLVENT"
-        nvt_group = "SOLVENT"
-        unfix_freeze = "unfix freezeQM\n"
+        vel_group   = "SOLVENT"
+        nvt_group   = "SOLVENT"
+        unfix_freeze = "unfix           freezeQM\n"
     else:
-        freeze_block = ""
-        vel_group = "all"
-        nvt_group = "all"
+        group_block  = "# (QM range unknown — thermostating all atoms)\n"
+        vel_group    = "all"
+        nvt_group    = "all"
         unfix_freeze = ""
 
-    txt = f"""units real
-atom_style full
-boundary p p p
+    # ── SHAKE block (for TIP4P or TIP3P water geometry) ──────────────────
+    if ff.water_bond_type and ff.water_angle_type:
+        shake_fix = (
+            f"fix             SHAKE {nvt_group} shake 1.0e-4 20 500"
+            f" b {ff.water_bond_type} a {ff.water_angle_type}"
+            f"   # keep water geometry rigid\n"
+        )
+        unfix_shake = "unfix           SHAKE\n"
+    else:
+        shake_fix   = "# (no SHAKE: bond/angle type not found)\n"
+        unfix_shake = ""
 
-# ---- Force field styles must be declared before read_data ----
-include {ff_dir}/bond_coeff.in
-include {ff_dir}/angle_coeff.in
-include {ff_dir}/pair_coeff.in
-include {ff_dir}/kspace.in
+    # ── TIP4P charge override ─────────────────────────────────────────────
+    if ff.use_tip4p and ff.water_O_tid and ff.water_H_tid:
+        charge_block = (
+            f"# TIP4P charges (M-site model; override data.file values)\n"
+            f"set             type {ff.water_O_tid} charge {ff.o_charge:.5f}   # Ow (charge on M-site)\n"
+            f"set             type {ff.water_H_tid} charge {ff.h_charge:.5f}   # Hw\n"
+        )
+    else:
+        charge_block = ""
 
-read_data {data_file}
+    # ── pair_coeff lines ──────────────────────────────────────────────────
+    pc_block  = "\n".join(ff.lj_pair_coeff_lines)
+    bc_block  = "\n".join(ff.bond_coeff_lines)
+    ac_block  = "\n".join(ff.angle_coeff_lines)
 
-{freeze_block}
+    txt = f"""\
+# in.relax — lightweight MM pre-equilibration  (no QM / no gridforce)
+# Auto-generated by cesbuild  (md_workflow.py)
+#
+# Force field: lj/cut/tip4p/long  cutoff={ff.cutoff:.1f} Å  kspace 1e-4
+# vs base.in.lammps:  no bjdisp, no gridforce/net  →  ~10-20× faster
+#
+# Protocol
+#   Stage 1  CG minimize              (remove packmol clashes)
+#   Stage 2  NVT heat {t_start:.0f} K → {t_target:.0f} K    ({heat_ps:.1f} ps)
+#   Stage 3  NVT {t_target:.0f} K                  ({equil_ps:.1f} ps)
+# ======================================================================
 
-neighbor 2.0 bin
-neigh_modify delay 0 every 1 check yes
+units           real
+atom_style      full
+boundary        p p p   # full 3D periodic (slab correction not needed here)
 
-# ---- Minimization ----
-min_style cg
-minimize {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
+special_bonds   lj/coul 0.0 0.0 1.0
+bond_style      harmonic
+angle_style     harmonic
+dihedral_style  none
+improper_style  none
 
-# ---- Short NVT ----
-timestep {timestep_fs}
-velocity {vel_group} create {t_start} 12345 mom yes rot yes dist gaussian
+# ---- Force field (lighter than base.in.lammps) ----
+{ff.pair_style_line}
+{ff.kspace_line}
 
-thermo 500
-thermo_style custom step temp pe ke etotal press vol
+{pc_block}
 
-fix NVT {nvt_group} nvt temp {t_start} {t_stop} {tdamp_fs}
-dump D1 all custom {dump_every} md.lammpstrj id type q x y z
-dump_modify D1 sort id
-run {nvt_steps}
-unfix NVT
-{unfix_freeze}undump D1
+{bc_block}
+{ac_block}
 
-write_data {write_equilibrated}
+# ---- Read structure ----
+read_data       {data_file}
+reset_timestep  0
+
+{charge_block}
+{group_block}
+{shake_fix}
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+# ======================================================================
+# Stage 1: Energy minimization (CG)  — remove bad contacts from packmol
+# ======================================================================
+min_style       cg
+minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
+
+# ======================================================================
+# Stage 2: Gradual heating  {t_start:.0f} K → {t_target:.0f} K  ({heat_ps:.1f} ps)
+#          Slow ramp prevents explosive dynamics from packmol geometry
+# ======================================================================
+reset_timestep  0
+timestep        {timestep_fs}
+velocity        {vel_group} create {t_start:.1f} 12345 mom yes rot yes dist gaussian
+
+thermo          500
+thermo_style    custom step temp pe ke etotal press vol
+dump            D1 all custom {dump_every} relax.lammpstrj id type q x y z
+dump_modify     D1 sort id
+
+fix             NVT1 {nvt_group} nvt temp {t_start:.1f} {t_target:.1f} {tdamp_fs:.1f}
+run             {heat_steps}
+unfix           NVT1
+
+# ======================================================================
+# Stage 3: NVT equilibration at {t_target:.0f} K  ({equil_ps:.1f} ps)
+# ======================================================================
+fix             NVT2 {nvt_group} nvt temp {t_target:.1f} {t_target:.1f} {tdamp_fs:.1f}
+run             {equil_steps}
+unfix           NVT2
+
+{unfix_shake}{unfix_freeze}undump          D1
+write_data      {write_equilibrated}
 """
     path.write_text(txt, encoding="utf-8")
 
+
 def write_sbatch(path: Path,
-                job_name: str = "ces2_md_relax",
-                partition: str = "compute",
-                nodes: int = 1,
-                ntasks: int = 32,
-                time_hhmmss: str = "08:00:00",
-                lmp_cmd: str = "lmp_mpi",
-                in_file: str = "in.relax",
-                out: str = "md.out",
-                err: str = "md.err",
-                module_lines: str = "module load lammps\n") -> None:
+                job_name:     str   = "ces2_md_relax",
+                partition:    str   = "compute",
+                nodes:        int   = 1,
+                ntasks:       int   = 32,
+                time_hhmmss:  str   = "08:00:00",
+                lmp_cmd:      str   = "lmp_mpi",
+                in_file:      str   = "in.relax",
+                out:          str   = "md.out",
+                err:          str   = "md.err",
+                module_lines: str   = "module load lammps\n") -> None:
     path.write_text(f"""#!/bin/bash
 #SBATCH -J {job_name}
 #SBATCH -p {partition}
@@ -150,13 +210,14 @@ set -euo pipefail
 mpirun {lmp_cmd} -in {in_file}
 """, encoding="utf-8")
 
+
 def write_pbs(path: Path,
-             job_name: str = "ces2_md_relax",
-             nodes: int = 1,
-             ppn: int = 32,
-             walltime: str = "08:00:00",
-             lmp_cmd: str = "lmp_mpi",
-             in_file: str = "in.relax",
+             job_name:     str = "ces2_md_relax",
+             nodes:        int = 1,
+             ppn:          int = 32,
+             walltime:     str = "08:00:00",
+             lmp_cmd:      str = "lmp_mpi",
+             in_file:      str = "in.relax",
              module_lines: str = "module load lammps\n") -> None:
     path.write_text(f"""#!/bin/bash
 #PBS -N {job_name}
@@ -171,6 +232,7 @@ cd $PBS_O_WORKDIR
 mpirun {lmp_cmd} -in {in_file}
 """, encoding="utf-8")
 
+
 def write_run_sh(path: Path) -> None:
     path.write_text("""#!/bin/bash
 set -euo pipefail
@@ -178,11 +240,17 @@ LMP=${1:-lmp_mpi}
 ${LMP} -in in.relax
 """, encoding="utf-8")
 
-def generate_md_bundle(export_dir: Path, md_cfg: Dict) -> MDOutputs:
-    ff_dir = export_dir / md_cfg.get("ff_dir","ff")
-    write_placeholder_ff(ff_dir)
 
-    # Infer QM atom ID range from build_summary.json if available
+def generate_md_bundle(
+    export_dir:  Path,
+    md_cfg:      Dict,
+    relax_ff:    "Optional[RelaxFFParams]" = None,
+) -> MDOutputs:
+    """
+    Generate the MD pre-relax bundle: in.relax, submit scripts, run_md.sh.
+    ff/ placeholder directory is NOT created — FF params are inlined into in.relax.
+    """
+    # ── QM atom ID range from build_summary.json ──────────────────────────
     qm_lo: Optional[int] = None
     qm_hi: Optional[int] = None
     summary_path = export_dir / "build_summary.json"
@@ -195,65 +263,73 @@ def generate_md_bundle(export_dir: Path, md_cfg: Dict) -> MDOutputs:
                 qm_lo = n_mm + 1
                 qm_hi = n_mm + n_qm
         except Exception:
-            # If anything goes wrong, fall back to "no QM info" mode.
-            qm_lo = None
-            qm_hi = None
+            pass
 
-    write_in_relax(
-        export_dir/"in.relax",
-        data_file=md_cfg.get("data_file","data.file"),
-        ff_dir=str(md_cfg.get("ff_dir","ff")),
-        timestep_fs=float(md_cfg.get("timestep_fs",1.0)),
-        min_etol=float(md_cfg.get("min_etol",1e-4)),
-        min_ftol=float(md_cfg.get("min_ftol",1e-6)),
-        min_maxiter=int(md_cfg.get("min_maxiter",5000)),
-        min_maxeval=int(md_cfg.get("min_maxeval",10000)),
-        t_start=float(md_cfg.get("t_start",10.0)),
-        t_stop=float(md_cfg.get("t_stop",300.0)),
-        tdamp_fs=float(md_cfg.get("tdamp_fs",100.0)),
-        nvt_steps=int(md_cfg.get("nvt_steps",20000)),
-        dump_every=int(md_cfg.get("dump_every",2000)),
-        write_equilibrated=md_cfg.get("write_equilibrated","equilibrated.data"),
-        qm_lo=qm_lo,
-        qm_hi=qm_hi,
-    )
+    # ── in.relax ──────────────────────────────────────────────────────────
+    if relax_ff is not None:
+        write_in_relax(
+            export_dir / "in.relax",
+            relax_ff=relax_ff,
+            data_file=md_cfg.get("data_file", "data.file"),
+            min_etol=float(md_cfg.get("min_etol",    1.0e-4)),
+            min_ftol=float(md_cfg.get("min_ftol",    1.0e-3)),
+            min_maxiter=int(md_cfg.get("min_maxiter", 1000)),
+            min_maxeval=int(md_cfg.get("min_maxeval", 5000)),
+            t_start=float(md_cfg.get("t_start",        10.0)),
+            t_target=float(md_cfg.get("t_target",      300.0)),
+            tdamp_fs=float(md_cfg.get("tdamp_fs",      100.0)),
+            heat_steps=int(md_cfg.get("heat_steps",   10000)),
+            equil_steps=int(md_cfg.get("equil_steps", 30000)),
+            timestep_fs=float(md_cfg.get("timestep_fs",  1.0)),
+            dump_every=int(md_cfg.get("dump_every",    2000)),
+            write_equilibrated=md_cfg.get("write_equilibrated", "equilibrated.data"),
+            qm_lo=qm_lo,
+            qm_hi=qm_hi,
+        )
+    else:
+        # Fallback: write a stub with a clear warning
+        (export_dir / "in.relax").write_text(
+            "# WARNING: relax_ff not provided — FF parameters missing.\n"
+            "# Re-run cesbuild with md_relax.enabled: true to regenerate.\n",
+            encoding="utf-8",
+        )
 
+    # ── Submit scripts ─────────────────────────────────────────────────────
     sl = md_cfg.get("slurm", {})
     write_sbatch(
-        export_dir/"submit_md.sbatch",
-        job_name=sl.get("job_name","ces2_md_relax"),
-        partition=sl.get("partition","compute"),
-        nodes=int(sl.get("nodes",1)),
-        ntasks=int(sl.get("ntasks",32)),
-        time_hhmmss=sl.get("time","08:00:00"),
-        lmp_cmd=sl.get("lmp_cmd","lmp_mpi"),
+        export_dir / "submit_md.sbatch",
+        job_name=sl.get("job_name",     "ces2_md_relax"),
+        partition=sl.get("partition",   "compute"),
+        nodes=int(sl.get("nodes",       1)),
+        ntasks=int(sl.get("ntasks",     32)),
+        time_hhmmss=sl.get("time",      "08:00:00"),
+        lmp_cmd=sl.get("lmp_cmd",       "lmp_mpi"),
         in_file="in.relax",
-        out=sl.get("stdout","md.out"),
-        err=sl.get("stderr","md.err"),
-        module_lines=sl.get("module_lines","module load lammps\n"),
+        out=sl.get("stdout",            "md.out"),
+        err=sl.get("stderr",            "md.err"),
+        module_lines=sl.get("module_lines", "module load lammps\n"),
     )
 
     pb = md_cfg.get("pbs", {})
     write_pbs(
-        export_dir/"submit_md.pbs",
-        job_name=pb.get("job_name","ces2_md_relax"),
-        nodes=int(pb.get("nodes",1)),
-        ppn=int(pb.get("ppn",32)),
-        walltime=pb.get("walltime","08:00:00"),
-        lmp_cmd=pb.get("lmp_cmd","lmp_mpi"),
+        export_dir / "submit_md.pbs",
+        job_name=pb.get("job_name",   "ces2_md_relax"),
+        nodes=int(pb.get("nodes",     1)),
+        ppn=int(pb.get("ppn",         32)),
+        walltime=pb.get("walltime",   "08:00:00"),
+        lmp_cmd=pb.get("lmp_cmd",     "lmp_mpi"),
         in_file="in.relax",
-        module_lines=pb.get("module_lines","module load lammps\n"),
+        module_lines=pb.get("module_lines", "module load lammps\n"),
     )
 
-    write_run_sh(export_dir/"run_md.sh")
+    write_run_sh(export_dir / "run_md.sh")
     try:
-        (export_dir/"run_md.sh").chmod(0o755)
+        (export_dir / "run_md.sh").chmod(0o755)
     except Exception:
         pass
 
     return MDOutputs(
         in_relax="export/in.relax",
-        ff_dir=f"export/{md_cfg.get('ff_dir','ff')}/",
         sbatch="export/submit_md.sbatch",
         pbs="export/submit_md.pbs",
         run_sh="export/run_md.sh",

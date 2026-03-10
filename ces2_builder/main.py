@@ -18,7 +18,7 @@ from .builder import (
 )
 from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
-from .lammps_input_writer import generate_lammps_input
+from .lammps_input_writer import generate_lammps_input, collect_relax_ff_params
 from .qe_writer import generate_qe_input
 from .ces2_script_writer import generate_ces2_scripts  # type_id_by_label, species info passed at call
 
@@ -338,7 +338,18 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     md_cfg = cfg.get("md_relax", None)
     if md_cfg and bool(md_cfg.get("enabled", False)):
         t0 = time.perf_counter()
-        md_out = generate_md_bundle(export_dir, md_cfg)
+        relax_cutoff = float(md_cfg.get("lj_cutoff", 10.0))
+        relax_ff = collect_relax_ff_params(
+            type_id_by_label=type_id_by_label,
+            label_by_type_id=label_by_type_id,
+            species_order=species_order,
+            species_db=species_db,
+            bond_coeffs=bond_coeffs,
+            angle_coeffs=angle_coeffs,
+            cfg=cfg,
+            relax_cutoff=relax_cutoff,
+        )
+        md_out = generate_md_bundle(export_dir, md_cfg, relax_ff=relax_ff)
         timings["md_bundle"] = time.perf_counter() - t0
         print(f"[TIMING] md_bundle: {timings['md_bundle']:.3f} s")
         summary["md_relax_bundle"] = md_out.__dict__

@@ -642,6 +642,161 @@ def generate_lammps_input(
 
 
 # ---------------------------------------------------------------------------
+# Lightweight FF params for in.relax (pure MM, no QM, no gridforce)
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass as _dataclass
+
+@_dataclass
+class RelaxFFParams:
+    """All force-field lines needed for a pure-MM in.relax script."""
+    use_tip4p:           bool
+    pair_style_line:     str          # full pair_style command (no bjdisp)
+    kspace_line:         str          # kspace_style command
+    lj_pair_coeff_lines: List[str]    # pair_coeff i j eps sig  (no substyle prefix)
+    bond_coeff_lines:    List[str]
+    angle_coeff_lines:   List[str]
+    water_O_tid:         Optional[int]
+    water_H_tid:         Optional[int]
+    water_bond_type:     Optional[int]
+    water_angle_type:    Optional[int]
+    o_charge:            float
+    h_charge:            float
+    tip4p_msite:         float
+    cutoff:              float
+
+
+def collect_relax_ff_params(
+    *,
+    type_id_by_label:  Dict[str, int],
+    label_by_type_id:  Dict[int, str],
+    species_order:     List[Tuple[str, int]],
+    species_db:        Dict[str, "Species"],
+    bond_coeffs:       Dict[int, Tuple[float, float]],
+    angle_coeffs:      Dict[int, Tuple[float, float]],
+    cfg:               Dict[str, Any],
+    relax_cutoff:      float = 10.0,
+    relax_kspace_acc:  float = 1.0e-4,
+) -> RelaxFFParams:
+    """
+    Collect a lightweight set of FF parameters for in.relax.
+    Differences from base.in.lammps:
+      - No bjdisp (QM-MM dispersion) — only lj/cut/tip4p/long
+      - No gridforce/net
+      - Shorter LJ cutoff (default 10 Å vs 12 Å)
+      - Single pair_style (not hybrid/overlay) → no substyle prefix in pair_coeff
+    """
+    ces2_cfg   = cfg.get("ces2", {})
+    recipe_cfg = cfg.get("electrolyte_recipe", {})
+
+    water_model = str(ces2_cfg.get("water_model", "TIP4P")).upper()
+    use_tip4p   = (water_model == "TIP4P")
+    tip4p_msite = float(ces2_cfg.get("tip4p_msite", 0.125))
+
+    # ---- LJ database ----
+    lj_db: Dict[str, Tuple[float, float]] = dict(
+        _DEFAULT_LJ_TIP4P if use_tip4p else _DEFAULT_LJ_TIP3P
+    )
+    lj_db.update(_DEFAULT_LJ_COMMON)
+    for lbl, vals in ces2_cfg.get("lj_params", {}).items():
+        lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
+
+    # ---- Identify MM vs QM (slab) type labels ----
+    mm_labels_set: set = set()
+    for sid, _ in species_order:
+        for a in species_db[sid].atoms:
+            mm_labels_set.add(a.type_label)
+    qm_type_ids = {lbl: tid for lbl, tid in type_id_by_label.items()
+                   if lbl not in mm_labels_set}
+
+    # ---- Water type IDs and charges ----
+    water_sid      = recipe_cfg.get("water", {}).get("species_id", "water_tip4p")
+    water_O_tid:   Optional[int] = None
+    water_H_tid:   Optional[int] = None
+    water_bond_type:  Optional[int] = None
+    water_angle_type: Optional[int] = None
+    o_charge = -1.04844
+    h_charge =  0.52422
+
+    if water_sid in species_db:
+        wsp = species_db[water_sid]
+        for a in wsp.atoms:
+            if a.element == "O" and water_O_tid is None:
+                water_O_tid = type_id_by_label.get(a.type_label)
+                o_charge    = a.charge
+            elif a.element == "H" and water_H_tid is None:
+                water_H_tid = type_id_by_label.get(a.type_label)
+                h_charge    = a.charge
+        if wsp.bond_coeffs:
+            water_bond_type  = min(wsp.bond_coeffs.keys())
+        if wsp.angle_coeffs:
+            water_angle_type = min(wsp.angle_coeffs.keys())
+
+    # ---- pair_style and kspace (single style, no hybrid/overlay) ----
+    if use_tip4p and water_O_tid and water_H_tid:
+        O_tid = water_O_tid
+        H_tid = water_H_tid
+        bt    = water_bond_type  or 1
+        at    = water_angle_type or 1
+        pair_style_line = (
+            f"pair_style      lj/cut/tip4p/long"
+            f" {O_tid} {H_tid} {bt} {at} {tip4p_msite} {relax_cutoff:.1f}"
+        )
+        kspace_line = f"kspace_style    pppm/tip4p {relax_kspace_acc:.1e}"
+    else:
+        pair_style_line = f"pair_style      lj/cut/long {relax_cutoff:.1f}"
+        kspace_line     = f"kspace_style    pppm {relax_kspace_acc:.1e}"
+
+    # ---- pair_coeff lines (no substyle prefix — single pair_style) ----
+    all_tids = sorted(type_id_by_label.values())
+    lj_pair_coeff_lines: List[str] = []
+    for i in all_tids:
+        lbl_i   = label_by_type_id[i]
+        is_qm_i = lbl_i in qm_type_ids
+        for j in all_tids:
+            if j < i:
+                continue
+            lbl_j   = label_by_type_id[j]
+            is_qm_j = lbl_j in qm_type_ids
+            if is_qm_i or is_qm_j:
+                lj_pair_coeff_lines.append(
+                    f"pair_coeff      {i:3d} {j:3d}  0.0000000  1.00000"
+                    f"   # {lbl_i}-{lbl_j}  [QM frozen: zero LJ]"
+                )
+            else:
+                eps_i, sig_i = _get_lj(lbl_i, lj_db)
+                eps_j, sig_j = _get_lj(lbl_j, lj_db)
+                eps_ij, sig_ij = _lb_mix(eps_i, sig_i, eps_j, sig_j)
+                flag = "  [!NO DEFAULT]" if (lbl_i not in lj_db or lbl_j not in lj_db) else ""
+                lj_pair_coeff_lines.append(
+                    f"pair_coeff      {i:3d} {j:3d}  {eps_ij:.7f}  {sig_ij:.5f}"
+                    f"   # {lbl_i}-{lbl_j}{flag}"
+                )
+
+    # ---- bond / angle coeff lines ----
+    bond_coeff_lines  = [f"bond_coeff      {bt}  {k:.1f}  {r0:.4f}"
+                         for bt, (k, r0) in sorted(bond_coeffs.items())]
+    angle_coeff_lines = [f"angle_coeff     {at}  {k:.1f}  {th:.2f}"
+                         for at, (k, th) in sorted(angle_coeffs.items())]
+
+    return RelaxFFParams(
+        use_tip4p=use_tip4p,
+        pair_style_line=pair_style_line,
+        kspace_line=kspace_line,
+        lj_pair_coeff_lines=lj_pair_coeff_lines,
+        bond_coeff_lines=bond_coeff_lines,
+        angle_coeff_lines=angle_coeff_lines,
+        water_O_tid=water_O_tid,
+        water_H_tid=water_H_tid,
+        water_bond_type=water_bond_type,
+        water_angle_type=water_angle_type,
+        o_charge=o_charge,
+        h_charge=h_charge,
+        tip4p_msite=tip4p_msite,
+        cutoff=relax_cutoff,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Debug helper
 # ---------------------------------------------------------------------------
 def print_lj_db(water_model: str = "TIP4P") -> None:

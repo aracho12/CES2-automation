@@ -17,7 +17,7 @@ electrolyte_box:
   z_margin_top: 2.0
 
 packmol:
-  binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
+  #binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
   tolerance: 2.0
   maxit: 200
 
@@ -173,18 +173,28 @@ ces2_script:
 
 md_relax:
   enabled: true
-  ff_dir: "ff"
+  # FF params are inlined automatically (no ff/ directory needed).
+  # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
+  lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)
   data_file: "data.file"
-  timestep_fs: 1.0
-  min_etol: 1.0e-4
-  min_ftol: 1.0e-6
-  min_maxiter: 5000
-  min_maxeval: 10000
-  t_start: 10.0
-  t_stop: 300.0
-  tdamp_fs: 100.0
-  nvt_steps: 20000
-  dump_every: 2000
+
+  # Stage 1: CG minimization — remove packmol bad contacts
+  min_etol:    1.0e-4          # energy tolerance  (kcal/mol)
+  min_ftol:    1.0e-3          # force tolerance   (kcal/mol/Å)
+  min_maxiter: 1000
+  min_maxeval: 5000
+
+  # Stage 2: Gradual heating  t_start → t_target
+  t_start:     10.0            # K  (start cold → avoid explosion from dense packing)
+  t_target:   300.0            # K
+  tdamp_fs:   100.0            # fs  (Nosé-Hoover τ)
+  heat_steps:  10000           # 10 ps  at timestep_fs=1.0
+
+  # Stage 3: NVT equilibration at t_target
+  equil_steps: 30000           # 30 ps  at timestep_fs=1.0
+
+  timestep_fs: 1.0             # fs
+  dump_every:  2000
   write_equilibrated: "equilibrated.data"
 
   slurm:
