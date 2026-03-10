@@ -34,6 +34,7 @@ Gridforce/net cube-index convention
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -371,16 +372,29 @@ def generate_lammps_input(
         L("group    WATER    union OXYGEN PROTON")
 
     L()
-    L("# Ion / other solute groups")
+    L("# Non-water species: one group per type_label (used by gridforce/net fixes)")
+    L("# Polyatomic species (e.g. OH-) also get a species-level union group.")
+    seen_lbl_grp: set = set()
     for sid, _ in species_order:
         if sid == water_sid:
             continue
         sp = species_db[sid]
-        tids = sorted(set(type_id_by_label[a.type_label] for a in sp.atoms))
-        tid_str  = " ".join(str(t) for t in tids)
-        lbl_str  = " ".join(sorted(set(a.type_label for a in sp.atoms)))
-        grp_name = sid.upper().replace("-", "_")[:12]
-        L(f"group    {grp_name:<12s} type {tid_str}   # {sid}: {lbl_str}")
+        type_lbls_in_sp = sorted(set(a.type_label for a in sp.atoms),
+                                  key=lambda l: type_id_by_label[l])
+        grp_names_in_sp: List[str] = []
+        for lbl in type_lbls_in_sp:
+            grp = lbl.upper().replace("-", "_").replace(".", "_")[:12]
+            grp_names_in_sp.append(grp)
+            if lbl in seen_lbl_grp:
+                continue            # already defined (type shared across species)
+            seen_lbl_grp.add(lbl)
+            tid = type_id_by_label[lbl]
+            el  = next(a.element for a in sp.atoms if a.type_label == lbl)
+            L(f"group    {grp:<12s} type {tid}   # {lbl} ({el})")
+        # Polyatomic: add species-level union group for convenience
+        if len(grp_names_in_sp) > 1:
+            sp_grp = sid.upper().replace("-", "_")[:12]
+            L(f"group    {sp_grp:<12s} union {' '.join(grp_names_in_sp)}   # all {sid}")
 
     L()
     L("group    SOLVENT  subtract all SOLUTE   # all MM atoms")
@@ -515,33 +529,40 @@ def generate_lammps_input(
         L("variable Egrid_O    equal f_oGrid[1]")
         egrid_vars += ["v_Egrid_H", "v_Egrid_O"]
 
-    # Ion gridforce fixes (one per unique element, excluding water)
+    # Non-water gridforce fixes — one fix per unique type_label.
+    # This correctly handles:
+    #   - monoatomic ions  (K, Na, Cl …)       → one fix per species
+    #   - polyatomic ions  (OH-, CO3-- …)      → one fix per type_label
+    #     e.g. OH-: H_oh → HohGrid (cube 0), O_oh → OohGrid (cube 1)
     L()
-    L("# Ion gridforce fixes")
-    seen_el: set = set()
-    ion_fix_names: List[Tuple[str, str, str]] = []  # (fix_name, element, grp_name)
+    L("# Non-water species gridforce/net fixes (one per type_label)")
+    seen_lbl_fix: set = set()
     for sid, _ in species_order:
         if sid == water_sid:
             continue
         sp = species_db[sid]
-        grp_name = sid.upper().replace("-", "_")[:12]
         for a in sp.atoms:
-            el = a.element
-            if el in ("H", "O") or el in seen_el:
+            lbl = a.type_label
+            if lbl in seen_lbl_fix:
                 continue
-            seen_el.add(el)
+            seen_lbl_fix.add(lbl)
+            el    = a.element
             c_idx = cube_idx.get(el, next_cube)
-            fix_name = f"{el.lower()}Grid"
-            L(f"fix {fix_name} {grp_name} gridforce/net  -1  {sc_factor}  {c_idx}  {el}")
+            grp   = lbl.upper().replace("-", "_").replace(".", "_")[:12]
+            # fix name: strip non-alphanum chars, append "Grid"
+            fix_tag  = re.sub(r"[^A-Za-z0-9]", "", lbl)[:8]
+            fix_name = f"{fix_tag}Grid"
+            # variable names: keep underscores, replace other non-alphanum
+            var_sfx = re.sub(r"[^A-Za-z0-9_]", "_", lbl)
+            var_e   = f"Egrid_{var_sfx}"
+            var_ind = f"EgridInd_{var_sfx}"
+            var_rep = f"EgridRep_{var_sfx}"
+            L(f"fix {fix_name} {grp} gridforce/net  -1  {sc_factor}  {c_idx}  {el}")
             L(f"fix_modify {fix_name} energy yes")
-            var_e   = f"Egrid_{el}"
-            var_ind = f"EgridInd_{el}"
-            var_rep = f"EgridRep_{el}"
-            L(f"variable {var_e:<18s} equal f_{fix_name}[1]")
-            L(f"variable {var_ind:<18s} equal f_{fix_name}[2]")
-            L(f"variable {var_rep:<18s} equal f_{fix_name}[3]")
+            L(f"variable {var_e:<24s} equal f_{fix_name}[1]")
+            L(f"variable {var_ind:<24s} equal f_{fix_name}[2]")
+            L(f"variable {var_rep:<24s} equal f_{fix_name}[3]")
             egrid_vars += [f"v_{var_e}", f"v_{var_rep}", f"v_{var_ind}"]
-            ion_fix_names.append((fix_name, el, grp_name))
 
     # #CUBEPOSITION marker
     L()
@@ -569,12 +590,14 @@ def generate_lammps_input(
     L("# bjdisp energy (for thermo)")
     L("compute edisp all pair bjdisp")
 
-    # Thermo
+    # Thermo — include ALL gridforce energy variables (water + all non-water types)
     L()
-    egrid_thermo = " ".join(egrid_vars[:6])   # cap to avoid very long line
     L("thermo_style    custom step temp etotal ke pe evdwl ecoul elong press \\")
-    if egrid_thermo:
-        L(f"                {egrid_thermo} \\")
+    # Write gridforce variables 4 per continuation line for readability
+    chunk_size = 4
+    for i in range(0, len(egrid_vars), chunk_size):
+        chunk = " ".join(egrid_vars[i : i + chunk_size])
+        L(f"                {chunk} \\")
     L("                c_edisp")
     L("thermo_modify   line multi format float %10.5f")
     L(f"thermo          {thermo_every}")

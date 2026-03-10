@@ -134,6 +134,15 @@ qe:
   conv_thr:    1.0e-8        # SCF convergence threshold (Ry)
   mixing_beta: 0.4
 
+  # --- Optional &ELECTRONS controls ---
+  diagonalization: "david"   # "david" (Davidson, default/recommended for metals)
+                             # "cg" (conjugate gradient, lower memory but slower)
+  startingwfc: "atomic"      # "atomic" (default, from atomic orbitals)
+                             # "file" = restart from previous step's wfc (faster in CES2 loop)
+                             # The qmmm wrapper switches to "file" after step 0.
+  scf_must_converge: true    # Stop pw.x if SCF does not converge (default: true)
+                             # Explicitly set here to catch bad runs early.
+
   # Pseudopotential files: element -> UPF filename (must be in pseudo_dir)
   # These are examples - replace with your actual pseudopotential files.
   pseudopotentials:
@@ -145,13 +154,45 @@ qe:
 
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
-  qe_binary:    "pw.x"          # QE pw.x executable (or full path)
-  pp_binary:    "pp.x"          # QE pp.x executable
-  lmp_binary:   "lmp_mpi"       # LAMMPS executable
-  n_qmmm_steps: 100             # total QM/MM outer-loop steps
-  qe_nproc:     32              # MPI tasks for QE run
-  lmp_nproc:    32              # MPI tasks for LAMMPS run
-  module_lines: |               # module load commands (written verbatim)
+  # ── Binary paths ──────────────────────────────────────────────────────
+  dft_ces2_path:   "/home/user/dft-ces2"       # root of DFT-CES2 installation
+  qe_binary:       "/path/to/pw.x"             # QE pw.x executable (full path)
+  pp_binary:       "/path/to/pp.x"             # QE pp.x executable (full path)
+  lmp_binary:      "/path/to/lmp_mpi"          # LAMMPS executable (full path)
+  chg2pot_binary:  "/path/to/chg2pot"          # chg2pot utility (full path)
+  # mdipc_binary and chgplate_binary default to paths under DFT_CES2_PATH
+  # mdipc_binary:  "${DFT_CES2_PATH}/tools/3-poisson/mdipc"
+  # chgplate_binary: "/path/to/make_rho_mino"
+
+  # ── Run control ───────────────────────────────────────────────────────
+  qe_nproc:        24            # MPI tasks for both QE and LAMMPS (NP)
+  qm_type:         "scf"         # "scf" (single-point) or "opt" (QM geometry relax)
+  qm_relax_high:   7             # [Ang] relax QM atoms below this z (only for opt)
+  qmmm_ini_step:   0             # first QM/MM step index (QMMMINISTEP)
+  n_qmmm_steps:    7             # total steps; QMMMFINSTEP = n_qmmm_steps - 1
+  qm_max_step:     5             # max SCF/relax trials per step (QMMAXSTEP)
+  md_equil_steps:  2000000       # LAMMPS equilibration MD steps per iteration
+  md_average_steps: 2000000      # LAMMPS averaging MD steps per iteration
+
+  # ── Charged slab parameters ───────────────────────────────────────────
+  tot_chg:    "-0.01652892561983471074"  # total extra charge on QM (0 for PZC)
+  mpc_layer:  "11.747010"               # [bohr] MPC layer position
+  tot_layer:  "4"                        # number of MPC layers
+  mpc_one:    "1"                        # mpcone flag for mdipc
+  adsorbate:  "0"                        # number of adsorbate atoms for mdipc
+  plate_pos:  "11.747010"               # [bohr] plate position (between electrode layers)
+
+  # ── Dipole correction ─────────────────────────────────────────────────
+  dipole_corr: "yes"                     # "yes"/"no" — slab dipole correction
+  # DIPOLEDIR and DIPOLEPOS are taken from qe.edir and qe.emaxpos above
+
+  # ── initial_qm flag ───────────────────────────────────────────────────
+  # 1 = step-0 QM already done (skip pw.x at step 0, re-use results)
+  # 0 = run pw.x from scratch at step 0
+  initial_qm: 1
+
+  # ── Module loads for submit script ────────────────────────────────────
+  module_lines: |
     module load qe/7.2
     module load lammps/2023
 
@@ -159,16 +200,15 @@ ces2_script:
     job_name:  "ces2_qmmm"
     partition: "compute"
     nodes:     1
-    ntasks:    32
+    ntasks:    24
     time:      "48:00:00"
     stdout:    "ces2.out"
     stderr:    "ces2.err"
-    # module_lines: "module load qe/7.2\nmodule load lammps/2023\n"
 
   pbs:
     job_name: "ces2_qmmm"
     nodes:    1
-    ppn:      32
+    ppn:      24
     walltime: "48:00:00"
 
 md_relax:

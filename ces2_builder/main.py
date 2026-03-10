@@ -20,7 +20,7 @@ from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
 from .lammps_input_writer import generate_lammps_input
 from .qe_writer import generate_qe_input
-from .ces2_script_writer import generate_ces2_scripts
+from .ces2_script_writer import generate_ces2_scripts  # type_id_by_label, species info passed at call
 
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
@@ -310,6 +310,11 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         cfg=cfg,
         n_mm=n_mm,
         n_qm=n_qm,
+        species_order=species_order,
+        species_db=species_db,
+        water_sid=water_sid,
+        type_id_by_label=type_id_by_label,
+        slab_elements=list(slab_sc.get_chemical_symbols()),
     )
     timings["ces2_scripts"] = time.perf_counter() - t0
     print(f"[TIMING] ces2_scripts: {timings['ces2_scripts']:.3f} s")

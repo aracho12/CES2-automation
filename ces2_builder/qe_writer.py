@@ -143,6 +143,9 @@ def generate_qe_input(
     edir        = int(  qe_cfg.get("edir",        3))
     conv_thr    = float(qe_cfg.get("conv_thr",    1.0e-8))
     mixing_beta = float(qe_cfg.get("mixing_beta", 0.4))
+    diagonalization   = str(  qe_cfg.get("diagonalization",   "david"))
+    startingwfc       = str(  qe_cfg.get("startingwfc",       "atomic"))
+    scf_must_converge = bool( qe_cfg.get("scf_must_converge", True))
     k_points    = list( qe_cfg.get("k_points",    [1, 1, 1, 0, 0, 0]))
     pseudos: Dict[str, str] = qe_cfg.get("pseudopotentials", {})
 
@@ -211,9 +214,13 @@ def generate_qe_input(
     PW()
 
     # &ELECTRONS
+    scf_conv_str = ".TRUE." if scf_must_converge else ".FALSE."
     PW("&ELECTRONS")
-    PW(f"  conv_thr     = {conv_thr:.2e},")
-    PW(f"  mixing_beta  = {mixing_beta},")
+    PW(f"  conv_thr          = {conv_thr:.2e},")
+    PW(f"  mixing_beta       = {mixing_beta},")
+    PW(f"  diagonalization   = '{diagonalization}',")
+    PW(f"  startingwfc       = '{startingwfc}',")
+    PW(f"  scf_must_converge = {scf_conv_str},")
     PW("/")
     PW()
 
