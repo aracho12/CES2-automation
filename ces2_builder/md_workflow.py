@@ -145,12 +145,12 @@ reset_timestep  0
 
 {charge_block}
 {group_block}
-{shake_fix}
 neighbor        2.0 bin
 neigh_modify    delay 0 every 1 check yes
 
 # ======================================================================
 # Stage 1: Energy minimization (CG)  — remove bad contacts from packmol
+# Note: fix shake cannot be active during minimization (LAMMPS restriction)
 # ======================================================================
 min_style       cg
 minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
@@ -161,6 +161,7 @@ minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
 # ======================================================================
 reset_timestep  0
 timestep        {timestep_fs}
+{shake_fix}
 velocity        {vel_group} create {t_start:.1f} 12345 mom yes rot yes dist gaussian
 
 thermo          500
