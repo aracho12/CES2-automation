@@ -129,18 +129,19 @@ angle_style     harmonic
 dihedral_style  none
 improper_style  none
 
-# ---- Force field (lighter than base.in.lammps) ----
+# ---- Force field styles (must be declared before read_data) ----
 {ff.pair_style_line}
 {ff.kspace_line}
-
-{pc_block}
-
-{bc_block}
-{ac_block}
 
 # ---- Read structure ----
 read_data       {data_file}
 reset_timestep  0
+
+# ---- Force field coefficients (must come after read_data) ----
+{pc_block}
+
+{bc_block}
+{ac_block}
 
 {charge_block}
 {group_block}
