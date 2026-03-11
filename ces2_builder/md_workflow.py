@@ -152,6 +152,8 @@ neigh_modify    delay 0 every 1 check yes
 # Stage 1: Energy minimization (CG)  — remove bad contacts from packmol
 # Note: fix shake cannot be active during minimization (LAMMPS restriction)
 # ======================================================================
+thermo          100
+thermo_style    custom step temp pe ke etotal press vol
 min_style       cg
 minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
 
