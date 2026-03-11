@@ -26,9 +26,13 @@ charge_control:
   q_electrode_user_value: 0.0
 
 electrolyte_recipe:
-  # Water count defines approximate volume
+  # Water count defines approximate volume.
+  # species_id is OPTIONAL — auto-derived from ces2.water_model when omitted:
+  #   TIP4P  →  water_tip4p   (recommended)
+  #   TIP3P  →  water_tip3p
+  # Only set species_id explicitly if you need a custom water species.
   water:
-    species_id: "water_tip4p"
+    # species_id: "water_tip4p"   # optional: auto-derived from ces2.water_model
     count: 2850
     density_g_per_ml: 1.0
 

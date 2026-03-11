@@ -192,8 +192,12 @@ def generate_lammps_input(
 
     # ------------------------------------------------------------------ #
     #  Water type IDs
+    #  species_id is optional in config — auto-derived from water_model
+    #  when not explicitly set.  Mapping: TIP4P→water_tip4p, TIP3P→water_tip3p
     # ------------------------------------------------------------------ #
-    water_sid    = recipe_cfg.get("water", {}).get("species_id", "water_tip3p")
+    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    _default_water_sid  = _WATER_MODEL_TO_SID.get(water_model, "water_tip4p")
+    water_sid    = recipe_cfg.get("water", {}).get("species_id") or _default_water_sid
     water_O_lbl: Optional[str] = None
     water_H_lbl: Optional[str] = None
     water_O_tid: Optional[int] = None
@@ -340,15 +344,25 @@ def generate_lammps_input(
     L("reset_timestep  0")
     L()
 
-    # Set TIP4P water charges (they differ from data.file initial values)
+    # Set TIP4P-Ew water charges — always override data.file values.
+    # Reference: Horn et al., J. Chem. Phys. 120, 9665 (2004)
+    # Safe TIP4P-Ew defaults; only accept species_db values that are
+    # TIP4P-compatible (|q_O| > 1.0, q_H > 0.5) to guard against
+    # accidentally reading TIP3P/SPC/SPC-E charges.
+    _TIP4PEW_O, _TIP4PEW_H = -1.04844, 0.52422
     if use_tip4p and water_O_tid is not None and water_H_tid is not None:
+        o_charge, h_charge = _TIP4PEW_O, _TIP4PEW_H
         if water_sid in species_db:
             wsp = species_db[water_sid]
-            o_charge = next((a.charge for a in wsp.atoms if a.element == "O"), -1.0484)
-            h_charge = next((a.charge for a in wsp.atoms if a.element == "H"), +0.5242)
-            L(f"# TIP4P water charges (overwrite if species_db has TIP3P values)")
-            L(f"set group PROTON charge {h_charge:.4f}")
-            L(f"set group OXYGEN charge {o_charge:.4f}")
+            db_o = next((a.charge for a in wsp.atoms if a.element == "O"), None)
+            db_h = next((a.charge for a in wsp.atoms if a.element == "H"), None)
+            if db_o is not None and abs(db_o) > 1.0:
+                o_charge = db_o
+            if db_h is not None and db_h > 0.5:
+                h_charge = db_h
+        L(f"# TIP4P-Ew water charges (overwrite data.file values)")
+        L(f"set group PROTON charge {h_charge:.4f}")
+        L(f"set group OXYGEN charge {o_charge:.4f}")
 
     # ── Section 3: Group definitions ─────────────────────────────────────
     section("3. Group definitions")
@@ -709,23 +723,31 @@ def collect_relax_ff_params(
                    if lbl not in mm_labels_set}
 
     # ---- Water type IDs and charges ----
-    water_sid      = recipe_cfg.get("water", {}).get("species_id", "water_tip4p")
+    # species_id is optional — auto-derived from water_model when not set.
+    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    _default_water_sid  = _WATER_MODEL_TO_SID.get(water_model, "water_tip4p")
+    water_sid      = recipe_cfg.get("water", {}).get("species_id") or _default_water_sid
     water_O_tid:   Optional[int] = None
     water_H_tid:   Optional[int] = None
     water_bond_type:  Optional[int] = None
     water_angle_type: Optional[int] = None
-    o_charge = -1.04844
-    h_charge =  0.52422
+    o_charge = -1.04844   # TIP4P-Ew default (Horn et al. 2004)
+    h_charge =  0.52422   # TIP4P-Ew default
 
     if water_sid in species_db:
         wsp = species_db[water_sid]
         for a in wsp.atoms:
             if a.element == "O" and water_O_tid is None:
                 water_O_tid = type_id_by_label.get(a.type_label)
-                o_charge    = a.charge
+                # For TIP4P: only accept charge if TIP4P-compatible (|q_O| > 1.0)
+                # to avoid accidentally using TIP3P/SPC/SPC-E values.
+                if not use_tip4p or abs(a.charge) > 1.0:
+                    o_charge = a.charge
             elif a.element == "H" and water_H_tid is None:
                 water_H_tid = type_id_by_label.get(a.type_label)
-                h_charge    = a.charge
+                # For TIP4P: only accept charge if TIP4P-compatible (q_H > 0.5)
+                if not use_tip4p or a.charge > 0.5:
+                    h_charge = a.charge
         if wsp.bond_coeffs:
             water_bond_type  = min(wsp.bond_coeffs.keys())
         if wsp.angle_coeffs:

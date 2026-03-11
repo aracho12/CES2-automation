@@ -89,7 +89,14 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # electrolyte recipe
     t0 = time.perf_counter()
     recipe = cfg["electrolyte_recipe"]
-    water_sid = recipe["water"]["species_id"]
+
+    # Auto-derive water species_id from ces2.water_model when not explicitly set.
+    # Mapping: TIP4P → water_tip4p,  TIP3P → water_tip3p
+    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    _water_model = str(cfg.get("ces2", {}).get("water_model", "TIP4P")).upper()
+    _default_sid = _WATER_MODEL_TO_SID.get(_water_model, "water_tip4p")
+    water_sid = recipe["water"].get("species_id", _default_sid)
+
     n_water = int(recipe["water"]["count"])
     rho = float(recipe["water"].get("density_g_per_ml", cfg.get("composition", {}).get("density_g_per_ml", 1.0)))
     if water_sid not in species_db:
