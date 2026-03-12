@@ -56,18 +56,37 @@ class PackmolResult:
 
 
 def _parse_packmol_output(stdout: str) -> PackmolResult:
-    """Extract convergence info from packmol stdout."""
-    converged  = "SOLUTION FOUND" in stdout
-    obj_final  = 0.0
-    n_iter     = 0
+    """Extract convergence info from packmol stdout.
+
+    Supports both output formats:
+      - Newer packmol: "Success!" / "Final objective function value:" / "Starting GENCAN loop:"
+      - Older packmol: "SOLUTION FOUND" / "Objective function value at solution:" / "Number of GENCAN iterations:"
+    Also handles the trivial case "Initial approximation is a solution. Nothing to do."
+    """
+    # Success indicators (newest → oldest)
+    converged = (
+        "Success!"                              in stdout or
+        "SOLUTION FOUND"                        in stdout or
+        "Initial approximation is a solution"   in stdout
+    )
+    obj_final = 0.0
+    n_iter    = 0
     for line in stdout.splitlines():
-        # "  Objective function value at solution: 0.00000E+00"
-        if "Objective function" in line and ":" in line:
+        # Newer: "  Final objective function value: .99271E-02"
+        # Older: "  Objective function value at solution: 0.00000E+00"
+        if ("Final objective function value" in line or
+                "Objective function value at solution" in line) and ":" in line:
             try:
                 obj_final = float(line.split(":")[-1].strip())
             except ValueError:
                 pass
-        # "  Number of GENCAN iterations:" or "  Function evaluations:"
+        # Newer: "  Starting GENCAN loop:  3"  (last value = total loops run)
+        # Older: "  Number of GENCAN iterations: 87"
+        if "Starting GENCAN loop" in line and ":" in line:
+            try:
+                n_iter = int(line.split(":")[-1].strip())
+            except ValueError:
+                pass
         if "Number of GENCAN iterations" in line and ":" in line:
             try:
                 n_iter = int(line.split(":")[-1].strip())
