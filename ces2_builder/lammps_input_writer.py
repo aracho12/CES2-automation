@@ -341,6 +341,16 @@ def generate_lammps_input(
     section("2. Read data")
     L()
     L("read_data       data.file")
+
+    # Optional: load pre-equilibrated positions+velocities from a dump file
+    # (e.g. equilibrated.dump produced by md_relax).  Set ces2.initial_dump
+    # in config to activate.  Timestep is taken from md_relax.equil_steps.
+    initial_dump = str(ces2_cfg.get("initial_dump", "")).strip()
+    if initial_dump:
+        relax_cfg  = cfg.get("md_relax", {})
+        dump_ts    = int(relax_cfg.get("equil_steps", 30000))
+        L(f"read_dump       {initial_dump} {dump_ts} x y z vx vy vz box yes replace yes")
+
     L("reset_timestep  0")
     L()
 

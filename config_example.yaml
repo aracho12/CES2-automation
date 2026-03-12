@@ -89,6 +89,12 @@ ces2:
   # Run prefix (used for dump and restart file names)
   prefix: "ces2"
 
+  # Optional: pre-equilibrated dump file to load after read_data in base.in.lammps.
+  # Use the equilibrated.dump produced by md_relax to start QM/MM from a
+  # relaxed structure.  Timestep is read from md_relax.equil_steps.
+  # Comment out (or remove) to start from the raw data.file coordinates.
+  # initial_dump: "equilibrated.dump"
+
   # BJ-dispersion global damping parameters (bjdisp pair style)
   # These are the global shape parameters of the BJ damping function,
   # NOT per-atom values (those are in species_db / qm_params).
