@@ -263,6 +263,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # write data.file in reference style
     t0 = time.perf_counter()
     out_data = export_dir / "data.file"
+    _md_cfg = cfg.get("md_relax", {})
     write_data_file_reference_style(
         out_data, combined,
         atom_types=atom_types,
@@ -272,7 +273,9 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         angle_coeffs=angle_coeffs if angle_coeffs else None,
         bonds=bonds,
         angles=angles,
-        fmt=DataFileFormat(title="data")
+        fmt=DataFileFormat(title="data"),
+        vacuum_z=float(_md_cfg.get("vacuum_z", 20.0)),
+        z_buffer_lo=float(_md_cfg.get("z_buffer_lo", 1.0)),
     )
     timings["write_data_file"] = time.perf_counter() - t0
     print(f"[TIMING] write_data_file: {timings['write_data_file']:.3f} s")

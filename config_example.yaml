@@ -181,6 +181,14 @@ md_relax:
   # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
   lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)
   data_file: "data.file"
+  vacuum_z:    20.0            # [Å] vacuum gap above water in z for boundary p p f
+  z_buffer_lo:  1.0            # [Å] buffer below slab (zlo = -z_buffer_lo)
+
+  # Stage 0: Soft pushoff — relieve extreme packmol overlaps
+  soft_cutoff:   2.0           # [Å] pair_style soft cutoff
+  soft_ramp_max: 50.0          # [kcal/mol] ramp A from 0 → this
+  soft_steps:    2000          # steps for nve/limit pushoff
+  nve_limit:     0.1           # [Å/step] max atom displacement
 
   # Stage 1: CG minimization — remove packmol bad contacts
   min_etol:    1.0e-4          # energy tolerance  (kcal/mol)

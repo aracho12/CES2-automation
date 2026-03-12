@@ -18,7 +18,8 @@ def write_data_file_reference_style(path: Path,
                                    bonds: List[Tuple[int,int,int]],
                                    angles: List[Tuple[int,int,int,int]],
                                    fmt: DataFileFormat = DataFileFormat(),
-                                   fmt: DataFileFormat = DataFileFormat()) -> None:
+                                   vacuum_z: float = 20.0,
+                                   z_buffer_lo: float = 1.0) -> None:
     cell = atoms.cell.array
     Lx, Ly, Lz = float(cell[0,0]), float(cell[1,1]), float(cell[2,2])
 
@@ -40,19 +41,17 @@ def write_data_file_reference_style(path: Path,
         f.write(f"{n_angles} angles\n")
         f.write(f"{n_angle_types} angle types\n\n")
 
-        # Box dimensions: match combined.xyz cell (no vacuum).
-        # Vacuum for boundary p p f is added by the LAMMPS input script
-        # via change_box after read_data.
-        #
-        # zhi: use cell Lz, but if any atom exceeds Lz (rare packmol edge
-        # case), extend slightly to contain all atoms.
+        # boundary p p f: all atoms must be within [zlo, zhi] at read_data.
+        # zlo = -z_buffer_lo: small buffer for slab atoms near z=0.
+        # zhi = max(Lz, max_atom_z + 1.0) + vacuum_z: contains all atoms
+        #       + vacuum gap so water cannot see slab bottom through PBC.
         import numpy as np
         z_coords = pos[:, 2] if len(pos) > 0 else np.array([0.0])
-        z_max = float(z_coords.max())
-        z_hi = max(Lz, z_max + 0.5)
+        z_hi = max(Lz, float(z_coords.max()) + 1.0) + vacuum_z
+        z_lo = -z_buffer_lo
         f.write(f"0.0      {Lx:.4f}  xlo xhi\n")
         f.write(f"0.0      {Ly:.4f}  ylo yhi\n")
-        f.write(f"0.0      {z_hi:.4f}  zlo zhi\n\n")
+        f.write(f"{z_lo:.1f}     {z_hi:.4f}  zlo zhi\n\n")
 
         f.write("Masses\n\n")
         for t in range(1, n_atom_types+1):
