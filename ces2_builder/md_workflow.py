@@ -121,7 +121,7 @@ fix             freezeQM QM setforce 0.0 0.0 0.0
 
 units           real
 atom_style      full
-boundary        p p p   # full 3D periodic (slab correction not needed here)
+boundary        p p f   # non-periodic in z: prevents slab-water overlap through PBC images
 
 special_bonds   lj/coul 0.0 0.0 1.0
 bond_style      harmonic
@@ -132,6 +132,7 @@ improper_style  none
 # ---- Force field styles (must be declared before read_data) ----
 {ff.pair_style_line}
 {ff.kspace_line}
+kspace_modify   slab 3.0   # required for p p f slab geometry
 
 # ---- Read structure ----
 read_data       {data_file}
