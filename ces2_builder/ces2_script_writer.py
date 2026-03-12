@@ -21,7 +21,7 @@ Config keys consumed (ces2_script:)
   chg2pot_binary   : full path to chg2pot utility
   mdipc_binary     : full path to mdipc utility  (default: DFT_CES2_PATH/tools/3-poisson/mdipc)
   chgplate_binary  : full path to make_rho_mino   (default: needs explicit path)
-  qe_nproc         : MPI tasks for QE + LAMMPS
+  np               : MPI tasks for QE + LAMMPS (single value)
   qm_type          : "scf" or "opt"  (default "scf")
   qm_relax_high    : relax QM atoms below this z value [Ang] (for opt, default 7)
   qmmm_ini_step    : first QM/MM step index (default 0)
@@ -254,7 +254,7 @@ def generate_ces2_scripts(
     chgplate_bin   = str(sc_cfg.get("chgplate_binary", "/path/to/make_rho"))
 
     # ── run control ───────────────────────────────────────────────────────
-    np_procs       = int(sc_cfg.get("qe_nproc",        24))
+    np_procs       = int(sc_cfg.get("np",               24))
     qm_type        = str(sc_cfg.get("qm_type",         "scf"))
     qm_relax_high  = int(sc_cfg.get("qm_relax_high",   7))
     qmmm_ini_step  = int(sc_cfg.get("qmmm_ini_step",   0))

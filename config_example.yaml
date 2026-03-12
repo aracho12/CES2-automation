@@ -151,12 +151,15 @@ qe:
 
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
-  qe_binary:    "pw.x"          # QE pw.x executable (or full path)
-  pp_binary:    "pp.x"          # QE pp.x executable
-  lmp_binary:   "lmp_mpi"       # LAMMPS executable
-  n_qmmm_steps: 100             # total QM/MM outer-loop steps
-  qe_nproc:     32              # MPI tasks for QE run
-  lmp_nproc:    32              # MPI tasks for LAMMPS run
+  dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
+  qe_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
+  pp_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
+  lmp_binary:    "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
+  chg2pot_binary:  "/home/mino/03.scripts/chg2pot"
+  mdipc_binary:    "/home/jthlol/program/poisson/mdipc"
+  chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
+  np:            24              # MPI tasks (single value for both QE and LAMMPS)
+  n_qmmm_steps:  100            # total QM/MM outer-loop steps
   module_lines: |               # module load commands (written verbatim)
     module load qe/7.2
     module load lammps/2023
