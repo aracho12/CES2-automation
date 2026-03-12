@@ -198,6 +198,11 @@ def read_dump(
     if not isinstance(frames, list):
         frames = [frames]
 
+    if len(frames) == 0:
+        print(f"Error: no frames read from '{dump_file}'.", file=sys.stderr)
+        print("  If this is a data.file, pass it directly (auto-detected by filename).", file=sys.stderr)
+        sys.exit(1)
+
     if verbose:
         print(f"  {len(frames)} frame(s), {len(frames[0])} atoms/frame")
 
