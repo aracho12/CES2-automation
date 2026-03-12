@@ -81,9 +81,10 @@ def write_in_relax_min(
         freeze_for_min    = ""
         unfix_soft_freeze = ""
 
-    # ── Reflecting wall — prevent solvent from drifting into vacuum ─────
+    # ── Harmonic wall — prevent solvent from drifting into vacuum ────────
+    # wall/harmonic: epsilon=1.0 sigma=1.0 cutoff=5.0  (soft repulsion)
     if z_wall is not None:
-        wall_fix = f"fix             WALL {wall_group} wall/reflect zhi {z_wall:.4f} units box\n"
+        wall_fix = f"fix             WALL {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
         unfix_wall = "unfix           WALL\n"
     else:
         wall_fix   = ""
@@ -242,9 +243,10 @@ def write_in_relax_nvt(
         wall_group   = "all"
         unfix_freeze = ""
 
-    # ── Reflecting wall — prevent solvent from drifting into vacuum ─────
+    # ── Harmonic wall — prevent solvent from drifting into vacuum ────────
+    # wall/harmonic: epsilon=1.0 sigma=1.0 cutoff=5.0  (soft repulsion)
     if z_wall is not None:
-        wall_fix = f"fix             WALL {wall_group} wall/reflect zhi {z_wall:.4f} units box\n"
+        wall_fix = f"fix             WALL {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
         unfix_wall = "unfix           WALL\n"
     else:
         wall_fix   = ""
@@ -442,7 +444,7 @@ def generate_md_bundle(
     qm_lo: Optional[int]   = None
     qm_hi: Optional[int]   = None
     z_wall: Optional[float] = None
-    wall_buffer: float = float(md_cfg.get("wall_buffer", 2.0))  # Å above z_el_hi
+    wall_buffer: float = float(md_cfg.get("wall_buffer", 10.0))  # Å above z_el_hi
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
         try:
