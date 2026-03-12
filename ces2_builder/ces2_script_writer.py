@@ -21,6 +21,7 @@ Config keys consumed (ces2_script:)
   chg2pot_binary   : full path to chg2pot utility
   mdipc_binary     : full path to mdipc utility  (default: DFT_CES2_PATH/tools/3-poisson/mdipc)
   chgplate_binary  : full path to make_rho_mino   (default: needs explicit path)
+  jobname          : job name used for SBATCH -J and prefix= variable in submit script
   np               : MPI tasks for QE + LAMMPS (single value)
   qm_type          : "scf" or "opt"  (default "scf")
   qm_relax_high    : relax QM atoms below this z value [Ang] (for opt, default 7)
@@ -170,21 +171,26 @@ def _build_mm_arrays(
 # SLURM / PBS header helpers (unchanged)
 # ---------------------------------------------------------------------------
 
-def _slurm_header(slurm_cfg: Dict[str, Any]) -> List[str]:
+def _slurm_header(slurm_cfg: Dict[str, Any], jobname: str = "ces2_qmmm") -> List[str]:
     h: List[str] = ["#!/bin/bash"]
-    h.append(f"#SBATCH --job-name={slurm_cfg.get('job_name', 'ces2_qmmm')}")
+    h.append(f"#SBATCH -J {jobname}")
+    if "account" in slurm_cfg:
+        h.append(f"#SBATCH -A {slurm_cfg['account']}")
     if "partition" in slurm_cfg:
-        h.append(f"#SBATCH --partition={slurm_cfg['partition']}")
-    nodes  = int(slurm_cfg.get("nodes",  1))
-    ntasks = int(slurm_cfg.get("ntasks", 32))
-    h.append(f"#SBATCH --nodes={nodes}")
-    h.append(f"#SBATCH --ntasks={ntasks}")
+        h.append(f"#SBATCH -p {slurm_cfg['partition']}")
+    nodes = int(slurm_cfg.get("nodes", 1))
+    h.append(f"#SBATCH -N {nodes}")
+    if slurm_cfg.get("no_requeue", False):
+        h.append("#SBATCH --no-requeue")
     if "time" in slurm_cfg:
-        h.append(f"#SBATCH --time={slurm_cfg['time']}")
-    if "stdout" in slurm_cfg:
-        h.append(f"#SBATCH --output={slurm_cfg['stdout']}")
-    if "stderr" in slurm_cfg:
-        h.append(f"#SBATCH --error={slurm_cfg['stderr']}")
+        h.append(f"#SBATCH -t {slurm_cfg['time']}")
+    # default stderr/stdout to %x.e%j / %x.o%j if not explicitly set
+    stderr = slurm_cfg.get("stderr", "%x.e%j")
+    stdout = slurm_cfg.get("stdout", "%x.o%j")
+    h.append(f"#SBATCH -e {stderr}")
+    h.append(f"#SBATCH -o {stdout}")
+    if "comment" in slurm_cfg:
+        h.append(f"#SBATCH --comment {slurm_cfg['comment']}")
     for extra in slurm_cfg.get("extra_lines", []):
         h.append(extra)
     return h
@@ -937,6 +943,7 @@ def generate_ces2_scripts(
     # ======================================================================
     slurm_cfg = sc_cfg.get("slurm", {})
     pbs_cfg   = sc_cfg.get("pbs",   {})
+    jobname   = str(sc_cfg.get("jobname", "ces2_qmmm"))
 
     sub_lines: List[str] = []
 
@@ -948,7 +955,7 @@ def generate_ces2_scripts(
         for h in _pbs_header(pbs_cfg):
             SL(h)
     else:
-        for h in _slurm_header(slurm_cfg if slurm_cfg else {}):
+        for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname):
             SL(h)
 
     SL()
@@ -963,11 +970,14 @@ def generate_ces2_scripts(
             SL(ml.strip())
         SL()
 
+    SL(f'prefix="{jobname}"')
     if use_pbs:
-        SL("cd ${PBS_O_WORKDIR}")
+        SL("curr_dir=${PBS_O_WORKDIR}")
+    else:
+        SL("curr_dir=${SLURM_SUBMIT_DIR}")
+    SL("cd $curr_dir")
     SL()
-    SL("# Run the QM/MM wrapper script")
-    SL("bash qmmm_dftces2_charging_pts.sh")
+    SL("./qmmm_dftces2_charging_pts.sh > $curr_dir/qmmm.out")
 
     sub_path = export_dir / "submit_ces2.sh"
     sub_path.write_text("\n".join(sub_lines) + "\n", encoding="utf-8")

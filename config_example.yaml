@@ -151,6 +151,7 @@ qe:
 
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
+  jobname:       "Ag100_Na2"    # used for SBATCH -J and prefix= in submit script
   dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
   qe_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
   pp_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
@@ -165,14 +166,13 @@ ces2_script:
     module load lammps/2023
 
   slurm:
-    job_name:  "ces2_qmmm"
-    partition: "compute"
-    nodes:     1
-    ntasks:    32
-    time:      "48:00:00"
-    stdout:    "ces2.out"
-    stderr:    "ces2.err"
-    # module_lines: "module load qe/7.2\nmodule load lammps/2023\n"
+    account:    "members"
+    partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
+    nodes:      1
+    no_requeue: true
+    time:       "00:00:00"
+    comment:    "qmmm"
+    # stderr/stdout default to %x.e%j / %x.o%j if omitted
 
   pbs:
     job_name: "ces2_qmmm"
