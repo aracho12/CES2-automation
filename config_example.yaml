@@ -151,7 +151,7 @@ qe:
 
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
-  jobname:       "Ag100_Na2"    # used for SBATCH -J and prefix= in submit script
+  jobname:       "ces2_qmmm"    # used for SBATCH -J and prefix= in submit script
   dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
   qe_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
   pp_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
@@ -160,10 +160,7 @@ ces2_script:
   mdipc_binary:    "/home/jthlol/program/poisson/mdipc"
   chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
   np:            24              # MPI tasks (single value for both QE and LAMMPS)
-  n_qmmm_steps:  100            # total QM/MM outer-loop steps
-  module_lines: |               # module load commands (written verbatim)
-    module load qe/7.2
-    module load lammps/2023
+  n_qmmm_steps:  6              # total QM/MM outer-loop steps
 
   slurm:
     account:    "members"
@@ -173,12 +170,6 @@ ces2_script:
     time:       "00:00:00"
     comment:    "qmmm"
     # stderr/stdout default to %x.e%j / %x.o%j if omitted
-
-  pbs:
-    job_name: "ces2_qmmm"
-    nodes:    1
-    ppn:      32
-    walltime: "48:00:00"
 
 md_relax:
   enabled: true
