@@ -205,9 +205,18 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     )
     inp = build_dir/"packmol.inp"
     write_packmol_input(inp, job)
-    run_packmol(job.binary, inp, build_dir)
+    pmol = run_packmol(job.binary, inp, build_dir)
     timings["packmol"] = time.perf_counter() - t0
     print(f"[TIMING] packmol: {timings['packmol']:.3f} s")
+    # ── Packmol convergence report ──────────────────────────────────────────
+    _status = "SOLUTION FOUND" if pmol.converged else "NOT CONVERGED (overlaps may remain!)"
+    print(f"[PACKMOL] status      : {_status}")
+    print(f"[PACKMOL] obj_final   : {pmol.obj_final:.6g}  (0 = perfect, >0 = overlaps remain)")
+    print(f"[PACKMOL] iterations  : {pmol.n_iter}  (maxit={job.maxit})")
+    print(f"[PACKMOL] full log    : {build_dir/'packmol.log'}")
+    if not pmol.converged:
+        print(f"[PACKMOL] WARNING: increase packmol.maxit in config.yaml "
+              f"(current={job.maxit}) or check packmol.log")
 
     mm_xyz = build_dir/"mm_packmol.xyz"
     if not mm_xyz.exists():
@@ -337,7 +346,14 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         "n_qm": len(combined)-n_mm,
         "n_bonds": len(bonds),
         "n_angles": len(angles),
-        "n_atom_types": max(atom_types) if atom_types else 0
+        "n_atom_types": max(atom_types) if atom_types else 0,
+        "packmol": {
+            "converged":  pmol.converged,
+            "obj_final":  pmol.obj_final,
+            "iterations": pmol.n_iter,
+            "maxit":      job.maxit,
+            "tolerance":  job.tolerance,
+        },
     }
     (export_dir/"build_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     
