@@ -38,3 +38,6 @@ input/
 # Distribution / packaging
 dist/
 *.egg-info/
+
+# Test directory (local testing only)
+test/
