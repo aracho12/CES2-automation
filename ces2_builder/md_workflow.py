@@ -121,7 +121,8 @@ fix             freezeQM QM setforce 0.0 0.0 0.0
 
 units           real
 atom_style      full
-boundary        p p f   # non-periodic in z: prevents slab-water overlap through PBC images
+boundary        p p f   # slab geometry: non-periodic z
+# NOTE: data.file box already includes zlo=-1.0 buffer + vacuum above water
 
 special_bonds   lj/coul 0.0 0.0 1.0
 bond_style      harmonic
@@ -132,7 +133,7 @@ improper_style  none
 # ---- Force field styles (must be declared before read_data) ----
 {ff.pair_style_line}
 {ff.kspace_line}
-kspace_modify   slab 3.0   # required for p p f slab geometry
+kspace_modify   slab 3.0   # required for p p f slab electrostatics
 
 # ---- Read structure ----
 read_data       {data_file}
@@ -150,12 +151,22 @@ neighbor        2.0 bin
 neigh_modify    delay 0 every 1 check yes
 
 # ======================================================================
-# Stage 1: Energy minimization (CG)  — remove bad contacts from packmol
+# Stage 1: Energy minimization — remove bad contacts from packmol
 # Note: fix shake cannot be active during minimization (LAMMPS restriction)
 # ======================================================================
 thermo          100
 thermo_style    custom step temp pe ke etotal press vol
+
+# Stage 1a: Steepest descent with small step to relieve severe overlaps
+# packmol tolerance (2 Å) < LJ σ_OO (~3.2 Å) → extreme close contacts.
+# SD with dmax=0.1 Å reliably pushes atoms apart; CG alone fails at step 0.
+min_style       sd
+min_modify      dmax 0.1
+minimize        1.0e-2 1.0 500 5000
+
+# Stage 1b: CG refinement once overlaps are relieved
 min_style       cg
+min_modify      dmax 0.2
 minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
 
 # ======================================================================
@@ -255,9 +266,9 @@ def generate_md_bundle(
     Generate the MD pre-relax bundle: in.relax, submit scripts, run_md.sh.
     ff/ placeholder directory is NOT created — FF params are inlined into in.relax.
     """
-    # ── QM atom ID range from build_summary.json ──────────────────────────
-    qm_lo: Optional[int] = None
-    qm_hi: Optional[int] = None
+    # ── QM atom ID range and box z from build_summary.json ───────────────
+    qm_lo:    Optional[int]   = None
+    qm_hi:    Optional[int]   = None
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
         try:

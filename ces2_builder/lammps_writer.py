@@ -17,7 +17,8 @@ def write_data_file_reference_style(path: Path,
                                    angle_coeffs: Optional[Dict[int, Tuple[float, float]]],
                                    bonds: List[Tuple[int,int,int]],
                                    angles: List[Tuple[int,int,int,int]],
-                                   fmt: DataFileFormat = DataFileFormat()) -> None:
+                                   fmt: DataFileFormat = DataFileFormat(),
+                                   vacuum_z: float = 15.0) -> None:
     cell = atoms.cell.array
     Lx, Ly, Lz = float(cell[0,0]), float(cell[1,1]), float(cell[2,2])
 
@@ -39,9 +40,17 @@ def write_data_file_reference_style(path: Path,
         f.write(f"{n_angles} angles\n")
         f.write(f"{n_angle_types} angle types\n\n")
 
+        # boundary p p f in LAMMPS 2025+ strictly rejects atoms outside
+        # [zlo, zhi] at read_data time.
+        # zlo = -1.0 Å: buffer for slab atoms near z=0 with tiny negative coords.
+        # zhi = max(cell_z, max_atom_z) + vacuum_z: ensures all atoms fit AND
+        #        adds vacuum gap so water cannot see slab bottom through PBC.
+        import numpy as np
+        z_coords = pos[:, 2] if len(pos) > 0 else np.array([0.0])
+        z_hi = max(Lz, float(z_coords.max()) + 1.0) + vacuum_z
         f.write(f"0.0      {Lx:.4f}  xlo xhi\n")
         f.write(f"0.0      {Ly:.4f}  ylo yhi\n")
-        f.write(f"0.0      {Lz:.10f}  zlo zhi\n\n")
+        f.write(f"-1.0     {z_hi:.4f}  zlo zhi\n\n")
 
         f.write("Masses\n\n")
         for t in range(1, n_atom_types+1):
