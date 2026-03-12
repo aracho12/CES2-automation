@@ -38,6 +38,8 @@ def write_in_relax_min(
     min_maxeval:         int   = 5000,
     min_dmax:            float = 0.2,
     min_dump_every:      int   = 10,       # trajectory frames during minimize
+    # ── Reflecting wall — confine solvent below vacuum ───────────────────
+    z_wall:              Optional[float] = None,  # Å — wall position (z_el_hi + buffer)
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -69,13 +71,23 @@ def write_in_relax_min(
             f"fix             freezeQM QM setforce 0.0 0.0 0.0\n"
         )
         nve_group        = "SOLVENT"
+        wall_group       = "SOLVENT"
         freeze_for_min   = f"fix             freezeQM QM setforce 0.0 0.0 0.0\n"
         unfix_soft_freeze = "unfix           freezeQM\n"
     else:
         group_block_soft  = "# (QM range unknown — moving all atoms)\n"
         nve_group         = "all"
+        wall_group        = "all"
         freeze_for_min    = ""
         unfix_soft_freeze = ""
+
+    # ── Reflecting wall — prevent solvent from drifting into vacuum ─────
+    if z_wall is not None:
+        wall_fix = f"fix             WALL {wall_group} wall/reflect zhi {z_wall:.4f} units box\n"
+        unfix_wall = "unfix           WALL\n"
+    else:
+        wall_fix   = ""
+        unfix_wall = ""
 
     # ── pair_coeff / bond_coeff / angle_coeff lines ──────────────────────
     pc_block = "\n".join(ff.lj_pair_coeff_lines)
@@ -123,7 +135,7 @@ variable        prefactor equal ramp(0,{soft_ramp_max:.0f})
 fix             SOFT all adapt 1 pair soft a * * v_prefactor
 
 {group_block_soft}
-fix             PUSH {nve_group} nve/limit {nve_limit}
+{wall_fix}fix             PUSH {nve_group} nve/limit {nve_limit}
 
 thermo          200
 thermo_style    custom step temp pe ke etotal press vol
@@ -158,7 +170,7 @@ min_modify      dmax {min_dmax}
 minimize        {min_etol} {min_ftol} {min_maxiter} {min_maxeval}
 
 undump          MIN
-
+{unfix_wall}
 # Single final frame
 # write_dump does NOT call init() → no PPPM reinit → no FFTW crash
 reset_timestep  0
@@ -188,6 +200,8 @@ def write_in_relax_nvt(
     timestep_fs:         float = 1.0,
     dump_every:          int   = 2000,
     write_equilibrated:  str   = "equilibrated.data",
+    # ── Reflecting wall — confine solvent below vacuum ───────────────────
+    z_wall:              Optional[float] = None,  # Å — wall position (z_el_hi + buffer)
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -219,12 +233,22 @@ def write_in_relax_nvt(
         )
         vel_group    = "SOLVENT"
         nvt_group    = "SOLVENT"
+        wall_group   = "SOLVENT"
         unfix_freeze = "unfix           freezeQM\n"
     else:
         group_block  = "# (QM range unknown — thermostating all atoms)\n"
         vel_group    = "all"
         nvt_group    = "all"
+        wall_group   = "all"
         unfix_freeze = ""
+
+    # ── Reflecting wall — prevent solvent from drifting into vacuum ─────
+    if z_wall is not None:
+        wall_fix = f"fix             WALL {wall_group} wall/reflect zhi {z_wall:.4f} units box\n"
+        unfix_wall = "unfix           WALL\n"
+    else:
+        wall_fix   = ""
+        unfix_wall = ""
 
     # ── SHAKE block ──────────────────────────────────────────────────────
     if ff.water_bond_type and ff.water_angle_type:
@@ -288,7 +312,7 @@ reset_timestep  0
 read_dump       {minimized_dump} 0 x y z box no
 
 {group_block}
-neighbor        2.0 bin
+{wall_fix}neighbor        2.0 bin
 neigh_modify    delay 0 every 1 check yes
 
 # ======================================================================
@@ -315,7 +339,7 @@ fix             NVT2 {nvt_group} nvt temp {t_target:.1f} {t_target:.1f} {tdamp_f
 run             {equil_steps}
 unfix           NVT2
 
-{unfix_shake}{unfix_freeze}undump          D1
+{unfix_shake}{unfix_wall}{unfix_freeze}undump          D1
 write_data      {write_equilibrated}
 """
     path.write_text(txt, encoding="utf-8")
@@ -414,9 +438,11 @@ def generate_md_bundle(
       Part 2 (in.relax_nvt): read_data + read_dump → NVT heat + equil
     Separate LAMMPS invocations avoid the macOS FFTW/PPPM segfault bug.
     """
-    # ── QM atom ID range from build_summary.json ─────────────────────────
-    qm_lo: Optional[int] = None
-    qm_hi: Optional[int] = None
+    # ── QM atom ID range and z_wall from build_summary.json ──────────────
+    qm_lo: Optional[int]   = None
+    qm_hi: Optional[int]   = None
+    z_wall: Optional[float] = None
+    wall_buffer: float = float(md_cfg.get("wall_buffer", 2.0))  # Å above z_el_hi
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
         try:
@@ -426,6 +452,11 @@ def generate_md_bundle(
             if n_mm > 0 and n_qm > 0:
                 qm_lo = n_mm + 1
                 qm_hi = n_mm + n_qm
+            # Reflecting wall at top of electrolyte + buffer
+            box_info = summary.get("box", {})
+            z_el_hi = box_info.get("z_el_hi")
+            if z_el_hi is not None:
+                z_wall = float(z_el_hi) + wall_buffer
         except Exception:
             pass
 
@@ -447,6 +478,7 @@ def generate_md_bundle(
             min_maxeval=int(md_cfg.get("min_maxeval",      5000)),
             min_dmax=float(md_cfg.get("min_dmax",          0.2)),
             min_dump_every=int(md_cfg.get("min_dump_every", 10)),
+            z_wall=z_wall,
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
@@ -464,6 +496,7 @@ def generate_md_bundle(
             timestep_fs=float(md_cfg.get("timestep_fs",  1.0)),
             dump_every=int(md_cfg.get("dump_every",    2000)),
             write_equilibrated=md_cfg.get("write_equilibrated", "equilibrated.data"),
+            z_wall=z_wall,
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
