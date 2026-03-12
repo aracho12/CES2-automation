@@ -38,6 +38,9 @@ def write_in_relax_min(
     min_maxeval:         int   = 5000,
     min_dmax:            float = 0.2,
     min_dump_every:      int   = 10,       # trajectory frames during minimize
+    # ── Slab vacuum (added via change_box, not in data.file) ─────────────
+    vacuum_z:            float = 15.0,     # Å vacuum gap above water
+    z_buffer_lo:         float = 1.0,      # Å buffer below slab (zlo)
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -49,6 +52,9 @@ def write_in_relax_min(
     segfault bug in LAMMPS 2025: any PPPM reinitialization (write_data,
     write_restart, or even the destructor) crashes with a segfault in
     fftw_plan_awake.
+
+    data.file has the same cell as combined.xyz (no vacuum).
+    Vacuum is added here via `change_box` after `read_data`.
 
     Protocol
     --------
@@ -110,6 +116,12 @@ dihedral_style  none
 improper_style  none
 
 read_data       {data_file}
+
+# Expand box for slab vacuum: data.file has same cell as combined.xyz (no vacuum).
+# change_box adds z buffer below ({z_buffer_lo:.1f} Å) and vacuum above ({vacuum_z:.1f} Å).
+variable        new_zhi equal "zhi + {vacuum_z:.1f}"
+change_box      all z final -{z_buffer_lo:.1f} ${{new_zhi}} units box
+
 reset_timestep  0
 
 {bc_block}
@@ -185,6 +197,9 @@ def write_in_relax_nvt(
     timestep_fs:         float = 1.0,
     dump_every:          int   = 2000,
     write_equilibrated:  str   = "equilibrated.data",
+    # ── Slab vacuum (added via change_box, not in data.file) ─────────────
+    vacuum_z:            float = 15.0,     # Å vacuum gap above water
+    z_buffer_lo:         float = 1.0,      # Å buffer below slab (zlo)
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -193,7 +208,8 @@ def write_in_relax_nvt(
     Part 2 of two-stage MM pre-equilibration.
 
     Starts a FRESH LAMMPS process (no PPPM state carried over from Part 1).
-    Reads topology from data.file, then overlays minimized coordinates from
+    Reads topology from data.file (same cell as combined.xyz, no vacuum),
+    expands z with change_box, then overlays minimized coordinates from
     the dump produced by Part 1.
 
     Protocol
@@ -272,6 +288,11 @@ improper_style  none
 kspace_modify   slab 3.0   # required for p p f slab electrostatics
 
 read_data       {data_file}
+
+# Expand box for slab vacuum: data.file has same cell as combined.xyz (no vacuum).
+variable        new_zhi equal "zhi + {vacuum_z:.1f}"
+change_box      all z final -{z_buffer_lo:.1f} ${{new_zhi}} units box
+
 reset_timestep  0
 
 {pc_block}
@@ -443,6 +464,8 @@ def generate_md_bundle(
             min_maxeval=int(md_cfg.get("min_maxeval",      5000)),
             min_dmax=float(md_cfg.get("min_dmax",          0.2)),
             min_dump_every=int(md_cfg.get("min_dump_every", 10)),
+            vacuum_z=float(md_cfg.get("vacuum_z",       15.0)),
+            z_buffer_lo=float(md_cfg.get("z_buffer_lo",  1.0)),
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
@@ -460,6 +483,8 @@ def generate_md_bundle(
             timestep_fs=float(md_cfg.get("timestep_fs",  1.0)),
             dump_every=int(md_cfg.get("dump_every",    2000)),
             write_equilibrated=md_cfg.get("write_equilibrated", "equilibrated.data"),
+            vacuum_z=float(md_cfg.get("vacuum_z",       15.0)),
+            z_buffer_lo=float(md_cfg.get("z_buffer_lo",  1.0)),
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
