@@ -78,10 +78,13 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # box meta
     t0 = time.perf_counter()
+    _ebox_cfg = cfg["electrolyte_box"]
     box = compute_box_meta(slab_sc,
-                           z_gap=float(cfg["electrolyte_box"]["z_gap"]),
-                           thickness=float(cfg["electrolyte_box"]["thickness"]),
-                           z_margin_top=float(cfg["electrolyte_box"]["z_margin_top"]))
+                           z_gap=float(_ebox_cfg["z_gap"]),
+                           thickness=float(_ebox_cfg["thickness"]),
+                           z_margin_top=float(_ebox_cfg["z_margin_top"]),
+                           vacuum_z=float(_ebox_cfg.get("vacuum_z", 20.0)),
+                           z_buffer_lo=float(_ebox_cfg.get("z_buffer_lo", 1.0)))
     (build_dir/"box_meta.json").write_text(json.dumps(box.__dict__, indent=2), encoding="utf-8")
     timings["box_meta"] = time.perf_counter() - t0
     print(f"[TIMING] box_meta: {timings['box_meta']:.3f} s")
@@ -263,7 +266,6 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # write data.file in reference style
     t0 = time.perf_counter()
     out_data = export_dir / "data.file"
-    _md_cfg = cfg.get("md_relax", {})
     write_data_file_reference_style(
         out_data, combined,
         atom_types=atom_types,
@@ -274,8 +276,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         bonds=bonds,
         angles=angles,
         fmt=DataFileFormat(title="data"),
-        vacuum_z=float(_md_cfg.get("vacuum_z", 20.0)),
-        z_buffer_lo=float(_md_cfg.get("z_buffer_lo", 1.0)),
+        vacuum_z=box.vacuum_z,
+        z_buffer_lo=box.z_buffer_lo,
     )
     timings["write_data_file"] = time.perf_counter() - t0
     print(f"[TIMING] write_data_file: {timings['write_data_file']:.3f} s")
