@@ -171,7 +171,8 @@ def _build_mm_arrays(
 # SLURM / PBS header helpers (unchanged)
 # ---------------------------------------------------------------------------
 
-def _slurm_header(slurm_cfg: Dict[str, Any], jobname: str = "ces2_qmmm") -> List[str]:
+def _slurm_header(slurm_cfg: Dict[str, Any], jobname: str = "ces2_qmmm",
+                  np: int = 1) -> List[str]:
     h: List[str] = ["#!/bin/bash"]
     h.append(f"#SBATCH -J {jobname}")
     if "account" in slurm_cfg:
@@ -180,6 +181,7 @@ def _slurm_header(slurm_cfg: Dict[str, Any], jobname: str = "ces2_qmmm") -> List
         h.append(f"#SBATCH -p {slurm_cfg['partition']}")
     nodes = int(slurm_cfg.get("nodes", 1))
     h.append(f"#SBATCH -N {nodes}")
+    h.append(f"#SBATCH -n {np}")   # always match NP in qmmm script
     if slurm_cfg.get("no_requeue", False):
         h.append("#SBATCH --no-requeue")
     if "time" in slurm_cfg:
@@ -954,7 +956,7 @@ def generate_ces2_scripts(
         for h in _pbs_header(pbs_cfg):
             SL(h)
     else:
-        for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname):
+        for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname, np=np):
             SL(h)
 
     SL()
