@@ -171,7 +171,7 @@ ces2_script:
   slurm:
     #account:    "members"
     #partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
-    account:    "undergrads"
+    account:    "nehalem"
     partition:  "nehalem_8c"
     nodes:      1
     no_requeue: true
