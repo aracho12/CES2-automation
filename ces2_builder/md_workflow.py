@@ -13,8 +13,6 @@ class MDOutputs:
     in_relax_min:   str
     in_relax_heat:  str
     in_relax_equil: str
-    sbatch:         str
-    pbs:            str
     run_sh:         str
 
 
@@ -470,53 +468,6 @@ write_data      {write_equilibrated}
 # Submit / wrapper scripts
 # ══════════════════════════════════════════════════════════════════════════
 
-def write_sbatch(path: Path,
-                job_name:     str   = "ces2_md_relax",
-                partition:    str   = "compute",
-                nodes:        int   = 1,
-                ntasks:       int   = 32,
-                time_hhmmss:  str   = "08:00:00",
-                lmp_cmd:      str   = "lmp_mpi",
-                out:          str   = "md.out",
-                err:          str   = "md.err",
-                module_lines: str   = "module load lammps\n") -> None:
-    path.write_text(f"""#!/bin/bash
-#SBATCH -J {job_name}
-#SBATCH -p {partition}
-#SBATCH -N {nodes}
-#SBATCH -n {ntasks}
-#SBATCH -t {time_hhmmss}
-#SBATCH -o {out}
-#SBATCH -e {err}
-
-set -euo pipefail
-
-{module_lines}
-bash run_relax.sh {lmp_cmd}
-""", encoding="utf-8")
-
-
-def write_pbs(path: Path,
-             job_name:     str = "ces2_md_relax",
-             nodes:        int = 1,
-             ppn:          int = 32,
-             walltime:     str = "08:00:00",
-             lmp_cmd:      str = "lmp_mpi",
-             module_lines: str = "module load lammps\n") -> None:
-    path.write_text(f"""#!/bin/bash
-#PBS -N {job_name}
-#PBS -l nodes={nodes}:ppn={ppn}
-#PBS -l walltime={walltime}
-#PBS -j oe
-
-set -euo pipefail
-cd $PBS_O_WORKDIR
-
-{module_lines}
-bash run_relax.sh {lmp_cmd}
-""", encoding="utf-8")
-
-
 def write_run_sh(path: Path, lmp_cmd: str = "lmp_mpi") -> None:
     """Wrapper script that runs all three LAMMPS invocations sequentially."""
     path.write_text(f"""#!/bin/bash
@@ -673,34 +624,6 @@ def generate_md_bundle(
                 encoding="utf-8",
             )
 
-    # ── Submit scripts (now call run_relax.sh instead of in.relax) ───────
-    sl = md_cfg.get("slurm", {})
-    lmp_cmd_sl = sl.get("lmp_cmd", "lmp_mpi")
-    write_sbatch(
-        export_dir / "submit_md.sbatch",
-        job_name=sl.get("job_name",     "ces2_md_relax"),
-        partition=sl.get("partition",   "compute"),
-        nodes=int(sl.get("nodes",       1)),
-        ntasks=int(sl.get("ntasks",     32)),
-        time_hhmmss=sl.get("time",      "08:00:00"),
-        lmp_cmd=lmp_cmd_sl,
-        out=sl.get("stdout",            "md.out"),
-        err=sl.get("stderr",            "md.err"),
-        module_lines=sl.get("module_lines", "module load lammps\n"),
-    )
-
-    pb = md_cfg.get("pbs", {})
-    lmp_cmd_pb = pb.get("lmp_cmd", "lmp_mpi")
-    write_pbs(
-        export_dir / "submit_md.pbs",
-        job_name=pb.get("job_name",   "ces2_md_relax"),
-        nodes=int(pb.get("nodes",     1)),
-        ppn=int(pb.get("ppn",         32)),
-        walltime=pb.get("walltime",   "08:00:00"),
-        lmp_cmd=lmp_cmd_pb,
-        module_lines=pb.get("module_lines", "module load lammps\n"),
-    )
-
     # ── run_relax.sh ─────────────────────────────────────────────────────
     write_run_sh(export_dir / "run_relax.sh")
     try:
@@ -715,8 +638,6 @@ def generate_md_bundle(
         in_relax_min="export/in.relax_min",
         in_relax_heat="export/in.relax_heat",
         in_relax_equil="export/in.relax_equil",
-        sbatch="export/submit_md.sbatch",
-        pbs="export/submit_md.pbs",
         run_sh="export/run_relax.sh",
     )
 
