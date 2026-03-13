@@ -313,11 +313,21 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # Generate base.pw.in + base.pp.in (QE input)
     t0 = time.perf_counter()
     qm_elements_ordered = sorted(set(slab_sc.get_chemical_symbols()))
+    # Compute full simulation-box z span (must match data.file exactly).
+    # Uses the same formula as write_data_file_reference_style:
+    #   z_hi = max(z_el_hi, max_atom_z + 1.0) + vacuum_z
+    #   z_lo = -z_buffer_lo
+    import numpy as _np
+    _max_atom_z = float(_np.max(combined.positions[:, 2]))
+    _z_hi = max(box.z_el_hi, _max_atom_z + 1.0) + box.vacuum_z
+    _z_lo = -box.z_buffer_lo
+    box_z_total = _z_hi - _z_lo
     generate_qe_input(
         export_dir=export_dir,
         slab_cell=slab_sc.cell.array,
         n_qm_total=len(slab_sc),
         qm_elements=qm_elements_ordered,
+        box_z_total=box_z_total,
         cfg=cfg,
     )
     timings["qe_input"] = time.perf_counter() - t0
