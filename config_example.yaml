@@ -146,11 +146,15 @@ qe:
   conv_thr:    1e-06        # SCF convergence threshold (Ry)
   mixing_beta: 0.5
 
-  # Pseudopotential files: element -> UPF filename (must be in pseudo_dir)
-  # These are examples - replace with your actual pseudopotential files.
-  pseudopotentials:
-    Ir: "Ir.pbe-n-rrkjus_psl.0.1.UPF"
-    O:  "O.pbe-n-kjpaw_psl.0.1.UPF"
+  # Pseudopotential set: built-in database to use when no per-element override is given.
+  # Currently supported: "sssp"  (SSSP PBE library, covers most elements)
+  pseudo_set: "sssp"
+
+  # Per-element overrides (optional): takes priority over pseudo_set.
+  # Uncomment and add entries to override specific elements or use a custom set.
+  # pseudopotentials:
+  #   Ir: "Ir_custom.UPF"   # use a non-SSSP file for Ir
+  #   O:  "O_custom.UPF"
     # Add more elements as needed:
     # H:  "H.pbe-kjpaw_psl.0.1.UPF"
     # K:  "K.pbe-spn-kjpaw_psl.0.2.UPF"

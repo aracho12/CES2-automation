@@ -30,7 +30,9 @@ Pseudopotential config (config.yaml)
     ecutrho: 400.0                   # Ry  density cutoff
     prefix:  "solute"
     outdir:  "./solute"
-    pseudo_dir: "./pseudo"           # directory with UPF files (relative to run dir)
+    pseudo_dir:  "./pseudo"           # directory with UPF files (relative to run dir)
+    pseudo_set:  "sssp"              # built-in pseudopotential set to use as default
+                                     # currently supported: "sssp" (SSSP PBE library)
     occupations: "smearing"          # or "fixed"
     smearing:    "mv"                # Methfessel-Paxton
     degauss:     0.02                # Ry
@@ -39,15 +41,16 @@ Pseudopotential config (config.yaml)
     edir:        3                   # z-direction dipole correction
     conv_thr:    1.0e-8              # SCF convergence (Ry)
     mixing_beta: 0.4
-    pseudopotentials:                # element → UPF filename
-      Ir: "Ir.pbe-n-rrkjus_psl.0.1.UPF"
-      O:  "O.pbe-n-kjpaw_psl.0.1.UPF"
+    pseudopotentials:                # optional per-element overrides (takes priority over pseudo_set)
+      # Ir: "Ir_custom.UPF"         # uncomment to override an element
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, List, Any
+
+from .pseudo_db import resolve_pseudopotentials
 
 # ---------------------------------------------------------------------------
 # Atomic masses (standard atomic weight, a.u. / g/mol)
@@ -151,24 +154,23 @@ def generate_qe_input(
     startingwfc       = str(  qe_cfg.get("startingwfc",       "atomic"))
     scf_must_converge = bool( qe_cfg.get("scf_must_converge", True))
     k_points    = list( qe_cfg.get("k_points",    [1, 1, 1, 0, 0, 0]))
-    pseudos: Dict[str, str] = qe_cfg.get("pseudopotentials", {})
+    pseudo_set  = str(  qe_cfg.get("pseudo_set",  "sssp"))
+    overrides: Dict[str, str] = qe_cfg.get("pseudopotentials", {})
+
+    # ── Resolve pseudopotentials: built-in set + per-element overrides ────
+    # Priority: qe.pseudopotentials (config) > pseudo_set built-in DB (default: sssp)
+    pseudos = resolve_pseudopotentials(qm_elements, pseudo_set=pseudo_set, overrides=overrides)
+    if pseudo_set == "sssp":
+        print(f"[qe_writer] Using SSSP PBE pseudopotentials (override via qe.pseudopotentials)")
 
     # ── ATOMIC_SPECIES rows ───────────────────────────────────────────────
     atomic_species_lines: List[str] = []
-    missing_pseudo: List[str] = []
     for el in qm_elements:
         mass = _ATOMIC_MASS.get(el, 0.0)
         if mass == 0.0:
             print(f"[qe_writer] WARNING: unknown atomic mass for element '{el}'")
-        pseudo_file = pseudos.get(el, "")
-        if not pseudo_file:
-            missing_pseudo.append(el)
-            pseudo_file = f"{el}.UPF   # !!! specify in config qe.pseudopotentials"
+        pseudo_file = pseudos[el]
         atomic_species_lines.append(f"  {el:<4s}  {mass:9.5f}  {pseudo_file}")
-
-    if missing_pseudo:
-        print(f"[qe_writer] WARNING: no pseudopotential specified for: {missing_pseudo}")
-        print("  Add 'qe.pseudopotentials' entries to config.yaml.")
 
     # ======================================================================
     # base.pw.in
