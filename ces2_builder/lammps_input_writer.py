@@ -295,7 +295,7 @@ def generate_lammps_input(
     L("# Runtime markers (replaced by qmmm_dftces2_charging_pts.sh):")
     L("#   ###qmxyz      → QM atom XYZ coordinates (in base.pw.in)")
     L("#   ###dispf      → dispersion forces       (in base.pw.in)")
-    L("#   #CUBEPOSITION → replaced with  grid <cubes> ...  command")
+    L("#   CUBEPOSITION  → replaced with  grid <cubes> ...  command")
 
     # ── Section 1: Initialization ────────────────────────────────────────
     section("1. Initialization")
@@ -591,8 +591,7 @@ def generate_lammps_input(
     # #CUBEPOSITION marker
     L()
     L("# ------------------------------------------------------------------")
-    L("# The qmmm wrapper script replaces #CUBEPOSITION with:")
-    L("#   grid <input_cubes> <output_cubes> <cube_file_names>")
+    L("# The qmmm wrapper replaces the marker below with grid command.")
     L("# Do NOT remove or rename this marker!")
     L("# ------------------------------------------------------------------")
     L()
