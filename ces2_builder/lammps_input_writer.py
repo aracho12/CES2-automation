@@ -322,14 +322,14 @@ def generate_lammps_input(
         at    = water_angle_type or 1
         L(f"# TIP4P-EW: O_type={O_tid} H_type={H_tid} bond_type={bt} angle_type={at}"
           f" M_dist={tip4p_msite} cutoff={lj_cut:.1f}")
-        L( "pair_style      hybrid/overlay \\")
+        L( "pair_style      hybrid/overlay &")
         L(f"                lj/cut/tip4p/long/opt {O_tid} {H_tid} {bt} {at}"
-          f" {tip4p_msite} {lj_cut:.1f} \\")
+          f" {tip4p_msite} {lj_cut:.1f} &")
         L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
         L(f"kspace_style    pppm/tip4p {kspace_acc:.1e}")
     else:
-        L("pair_style      hybrid/overlay \\")
-        L(f"                lj/cut/long {lj_cut:.1f} \\")
+        L("pair_style      hybrid/overlay &")
+        L(f"                lj/cut/long {lj_cut:.1f} &")
         L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
         L(f"kspace_style    pppm {kspace_acc:.1e}")
 
@@ -615,12 +615,12 @@ def generate_lammps_input(
 
     # Thermo — include ALL gridforce energy variables (water + all non-water types)
     L()
-    L("thermo_style    custom step temp etotal ke pe evdwl ecoul elong press \\")
+    L("thermo_style    custom step temp etotal ke pe evdwl ecoul elong press &")
     # Write gridforce variables 4 per continuation line for readability
     chunk_size = 4
     for i in range(0, len(egrid_vars), chunk_size):
         chunk = " ".join(egrid_vars[i : i + chunk_size])
-        L(f"                {chunk} \\")
+        L(f"                {chunk} &")
     L("                c_edisp")
     L("thermo_modify   line multi format float %10.5f")
     L(f"thermo          {thermo_every}")
