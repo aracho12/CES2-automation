@@ -249,7 +249,8 @@ def generate_lammps_input(
     shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
     shake_iter    = int(  md_cfg.get("shake_iter",   20))
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
-    z_wall_hi     = float(md_cfg.get("z_wall_hi",    box.z_el_hi - 2.0))
+    _wall_buffer  = float(md_cfg.get("wall_buffer",   10.0))
+    z_wall_hi     = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
