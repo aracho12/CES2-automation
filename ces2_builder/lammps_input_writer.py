@@ -148,6 +148,7 @@ def generate_lammps_input(
     # ------------------------------------------------------------------ #
     lj_cut      = float(ces2_cfg.get("lj_cutoff",        12.0))
     kspace_acc  = float(ces2_cfg.get("kspace_accuracy",  1.0e-4))
+    bjd_cutoff  = float(ces2_cfg.get("bjdisp_cutoff",     15.0))
     bjd_a1      = float(ces2_cfg.get("bjdisp_a1",        1.40))
     bjd_a2      = float(ces2_cfg.get("bjdisp_a2",        0.50))
     bjd_s8      = float(ces2_cfg.get("bjdisp_s8",        2.10))
@@ -322,15 +323,11 @@ def generate_lammps_input(
         at    = water_angle_type or 1
         L(f"# TIP4P-EW: O_type={O_tid} H_type={H_tid} bond_type={bt} angle_type={at}"
           f" M_dist={tip4p_msite} cutoff={lj_cut:.1f}")
-        L( "pair_style      hybrid/overlay &")
-        L(f"                lj/cut/tip4p/long/opt {O_tid} {H_tid} {bt} {at}"
-          f" {tip4p_msite} {lj_cut:.1f} &")
-        L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
+        L(f"pair_style      hybrid/overlay lj/cut/tip4p/long/opt {O_tid} {H_tid} {bt} {at}"
+          f" {tip4p_msite} {lj_cut:.1f} bjdisp {bjd_cutoff:.0f}")
         L(f"kspace_style    pppm/tip4p {kspace_acc:.1e}")
     else:
-        L("pair_style      hybrid/overlay &")
-        L(f"                lj/cut/long {lj_cut:.1f} &")
-        L(f"                bjdisp {bjd_a1:.2f} {bjd_a2:.2f} {bjd_s8:.2f}")
+        L(f"pair_style      hybrid/overlay lj/cut/long {lj_cut:.1f} bjdisp {bjd_cutoff:.0f}")
         L(f"kspace_style    pppm {kspace_acc:.1e}")
 
     L(f"kspace_modify   slab {kspace_slab:.1f}   # 2D periodic slab correction")
