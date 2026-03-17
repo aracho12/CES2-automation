@@ -960,7 +960,7 @@ def generate_ces2_scripts(
         for h in _pbs_header(pbs_cfg):
             SL(h)
     else:
-        for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname, np=np):
+        for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname, np=np_procs):
             SL(h)
 
     SL()
