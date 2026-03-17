@@ -357,6 +357,8 @@ def generate_lammps_input(
     # TIP4P-compatible (|q_O| > 1.0, q_H > 0.5) to guard against
     # accidentally reading TIP3P/SPC/SPC-E charges.
     _TIP4PEW_O, _TIP4PEW_H = -1.04844, 0.52422
+    # Resolve TIP4P-Ew charges (used after group definitions below)
+    _tip4p_charges = None
     if use_tip4p and water_O_tid is not None and water_H_tid is not None:
         o_charge, h_charge = _TIP4PEW_O, _TIP4PEW_H
         if water_sid in species_db:
@@ -367,9 +369,7 @@ def generate_lammps_input(
                 o_charge = db_o
             if db_h is not None and db_h > 0.5:
                 h_charge = db_h
-        L(f"# TIP4P-Ew water charges (overwrite data.file values)")
-        L(f"set group PROTON charge {h_charge:.4f}")
-        L(f"set group OXYGEN charge {o_charge:.4f}")
+        _tip4p_charges = (h_charge, o_charge)
 
     # ── Section 3: Group definitions ─────────────────────────────────────
     section("3. Group definitions")
@@ -419,6 +419,14 @@ def generate_lammps_input(
 
     L()
     L("group    SOLVENT  subtract all SOLUTE   # all MM atoms")
+
+    # TIP4P-Ew water charges (must come AFTER group definitions)
+    if _tip4p_charges is not None:
+        h_charge, o_charge = _tip4p_charges
+        L()
+        L(f"# TIP4P-Ew water charges (overwrite data.file values)")
+        L(f"set group PROTON charge {h_charge:.4f}")
+        L(f"set group OXYGEN charge {o_charge:.4f}")
 
     # Region blocks for top/bottom surface layers (electrochemistry)
     region_cfg = ces2_cfg.get("regions", {})
