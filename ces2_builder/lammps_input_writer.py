@@ -658,7 +658,7 @@ def generate_lammps_input(
     L()
 
     # Restart
-    L(f"restart         {restart_every}  {prefix}.a.restart  {prefix}.b.restart")
+    L(f"restart         {restart_every}  {prefix}.*.restart")
     L()
     L(f"run             {n_steps}")
     L()
