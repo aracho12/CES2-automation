@@ -249,8 +249,14 @@ def generate_lammps_input(
     shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
     shake_iter    = int(  md_cfg.get("shake_iter",   20))
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
-    _wall_buffer  = float(md_cfg.get("wall_buffer",   10.0))
-    z_wall_hi     = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
+    _wall_buffer     = float(md_cfg.get("wall_buffer",      10.0))
+    _wall_buffer_lo  = float(md_cfg.get("wall_buffer_lo",    2.0))
+    z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
+    # Lower wall: keep solvent from entering the electrode slab.
+    # Default: 2 Å above the electrode top surface (z_el_hi), which is the
+    # electrolyte-facing face.  With LJ ε=0 for QM-MM pairs there is no
+    # classical short-range repulsion; this wall guards against over-adsorption.
+    z_wall_lo        = float(md_cfg.get("z_wall_lo",    box.z_el_hi + _wall_buffer_lo))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
@@ -637,8 +643,10 @@ def generate_lammps_input(
     L()
 
     # Wall, momentum, SHAKE, NVT
-    L("# Keep solvent from escaping through fixed-z boundary")
-    L(f"fix   wallhi SOLVENT wall/harmonic zhi {z_wall_hi:.2f} 1.0 1.0 5.0")
+    L("# Keep solvent from escaping through fixed-z boundaries")
+    L(f"fix   wallhi  SOLVENT wall/harmonic zhi {z_wall_hi:.2f} 1.0 1.0 5.0")
+    L(f"fix   walllow SOLVENT wall/harmonic zlo {z_wall_lo:.2f} 1.0 1.0 5.0"
+      f"  # {_wall_buffer_lo:.1f} Å above electrode top — prevents over-adsorption (no LJ ε)")
     L()
     L("# Remove spurious COM momentum drift")
     L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
