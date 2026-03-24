@@ -253,19 +253,21 @@ def generate_lammps_input(
     z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
     # Lower wall: keep solvent from entering the electrode slab.
     # z_el_lo = electrolyte lower boundary (= z_top_slab + z_gap).
-    # Placing the wall here prevents water from reaching the electrode surface.
-    # With LJ ε=0 for QM-MM pairs there is no classical short-range repulsion.
-    z_wall_lo        = float(md_cfg.get("z_wall_lo",    box.z_el_lo))
+    # Place the wall 1 Å below z_el_lo for margin: md_relax equilibrium
+    # positions may slightly penetrate the z_el_lo boundary.
+    z_wall_lo        = float(md_cfg.get("z_wall_lo",    box.z_el_lo - 1.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
     #  Cube index assignment for gridforce/net
     #  The grid command input order is:
     #    cube_coul_QM, cube_ind_QM, cube_QM_rho_hat[0], rho_hat[1], ...
-    #  So c_rho cubes start at offset = len(cube_coul_QM) + len(cube_ind_QM)
-    #  which equals 2 (one pot + one ind cube).
+    #  gridforce/net internally handles pot (cube 0) and ind (cube 1).
+    #  The cubeID parameter in the fix command is a *relative* index into
+    #  the rho_hat sub-array, NOT the absolute grid index.
+    #  So H→0, O→1, Na→2, etc.  No offset needed.
     # ------------------------------------------------------------------ #
-    _cube_offset = 2   # solute.pot.cube + solute.ind.cube occupy indices 0,1
+    _cube_offset = 0   # cubeID = relative index within rho_hat cubes
     cube_idx: Dict[str, int] = {}    # element_symbol → cube index
     if water_H_lbl:
         cube_idx["H"] = _cube_offset + 0
