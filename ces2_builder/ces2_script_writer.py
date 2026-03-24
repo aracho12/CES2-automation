@@ -132,10 +132,19 @@ def _build_mm_arrays(
 
         if o_atom is not None:
             tip4p_O_idx = len(mm_elements)
-            # TIP4P: Ow charge is 0; actual electrostatic charge is on M-site
+            # TIP4P: Ow charge is 0; actual electrostatic charge is on M-site.
+            # Detection priority:
+            #   1. M-site atom present AND Ow charge ≈ 0  (explicit virtual site)
+            #   2. Fallback: water_sid contains "tip4p" (case-insensitive)
             if m_atom is not None and abs(o_atom.charge) < 1e-6:
                 is_tip4p = True
                 o_charge_val = m_atom.charge
+            elif "tip4p" in water_sid.lower():
+                # TIP4P model named in species ID but M-site not explicitly labeled.
+                # Use M-site charge if available, otherwise fall back to O charge
+                # (charge assignment still correct for grid purposes).
+                is_tip4p = True
+                o_charge_val = m_atom.charge if m_atom is not None else o_atom.charge
             else:
                 o_charge_val = o_atom.charge
             mm_elements.append("O")
