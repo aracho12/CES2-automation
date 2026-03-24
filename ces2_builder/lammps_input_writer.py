@@ -255,14 +255,18 @@ def generate_lammps_input(
 
     # ------------------------------------------------------------------ #
     #  Cube index assignment for gridforce/net
-    #  H → 0, O → 1, then remaining unique MM elements in appearance order
+    #  The grid command input order is:
+    #    cube_coul_QM, cube_ind_QM, cube_QM_rho_hat[0], rho_hat[1], ...
+    #  So c_rho cubes start at offset = len(cube_coul_QM) + len(cube_ind_QM)
+    #  which equals 2 (one pot + one ind cube).
     # ------------------------------------------------------------------ #
+    _cube_offset = 2   # solute.pot.cube + solute.ind.cube occupy indices 0,1
     cube_idx: Dict[str, int] = {}    # element_symbol → cube index
     if water_H_lbl:
-        cube_idx["H"] = 0
+        cube_idx["H"] = _cube_offset + 0
     if water_O_lbl:
-        cube_idx["O"] = 1
-    next_cube = 2
+        cube_idx["O"] = _cube_offset + 1
+    next_cube = _cube_offset + 2
     for sid, _ in species_order:
         if sid == water_sid:
             continue
