@@ -44,18 +44,18 @@ types:
 
   # ── Adsorbed OH on IrO2 surface ──────────────────────────────────────────
   # Activate via slab.type_label_overrides in config.yaml (see header above).
-  # C6 from DFT-D3 at actual CN (DFTD3 output); alpha_iso: TODO from VASP SCS/FI.
+  # C6 from DFT-D3 at actual CN (DFTD3 output); alpha_iso from VASP SCS/FI.
 
   O_ads:
     element: O
-    alpha_iso: 0.0         # TODO: fill from VASP SCS/FI calculation
+    alpha_iso: 4.522        # a.u. from VASP SCS/FI calculation
     C6: 176.650            # kcal/mol*Ang^6  (= 12.82 au * 13.77928721, CN~1.0)
     s: 1.40                # O is not H-bond donor → s=1.40
     note: "O of OH adsorbed on IrO2 surface; alpha_iso TBD"
 
   H_ads:
     element: H
-    alpha_iso: 0.0         # TODO: fill from VASP SCS/FI calculation
+    alpha_iso: 2.184         # a.u. from VASP SCS/FI calculation
     C6: 41.751             # kcal/mol*Ang^6  (= 3.03 au * 13.77928721, CN~0.9)
     s: 0.53                # H of surface OH H-bonds to water → s=0.53
     note: "H of OH adsorbed on IrO2 surface; alpha_iso TBD"
