@@ -241,9 +241,46 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # type registry
     t0 = time.perf_counter()
-    slab_elements = slab_sc.get_chemical_symbols()
+
+    # ── slab.type_label_overrides ────────────────────────────────────────────
+    # config: slab.type_label_overrides: {<1-based primitive index>: <type_label>}
+    # Expands primitive-cell indices to the full supercell automatically.
+    # ASE repeat([na,nb,nc]) ordering: for primitive atom p (0-based),
+    #   supercell index = m0*nb*nc*N + m1*nc*N + m2*N + p
+    #   for m0∈[0,na), m1∈[0,nb), m2∈[0,nc)
+    _raw_overrides = cfg.get("slab", {}).get("type_label_overrides", {})
+    _slab_sc_overrides: Dict[int, str] = {}   # supercell 0-based index → type_label
+    if _raw_overrides:
+        _n_prim = len(slab)
+        _na, _nb, _nc = rep
+        for _pkey, _plabel in _raw_overrides.items():
+            _p = int(_pkey) - 1   # 1-based → 0-based
+            if _p < 0 or _p >= _n_prim:
+                raise ValueError(
+                    f"slab.type_label_overrides: primitive index {int(_pkey)} out of range "
+                    f"(primitive cell has {_n_prim} atoms, valid: 1–{_n_prim})"
+                )
+            for _m0 in range(_na):
+                for _m1 in range(_nb):
+                    for _m2 in range(_nc):
+                        _sc_idx = _m0*_nb*_nc*_n_prim + _m1*_nc*_n_prim + _m2*_n_prim + _p
+                        _slab_sc_overrides[_sc_idx] = str(_plabel)
+        _n_unique = len(set(_slab_sc_overrides.values()))
+        print(f"[slab overrides] {len(_raw_overrides)} primitive override(s) → "
+              f"{len(_slab_sc_overrides)} supercell atoms relabelled "
+              f"({_n_unique} custom type_label(s))")
+
+    # Per-atom type_label list for slab supercell (element symbol or custom override)
+    _slab_syms = list(slab_sc.get_chemical_symbols())
+    slab_type_labels = [_slab_sc_overrides.get(i, el) for i, el in enumerate(_slab_syms)]
+
+    # Map custom QM labels → base element (for mass lookup)
+    _extra_label_to_element: Dict[str, str] = {}
+    for _sc_idx, _lbl in _slab_sc_overrides.items():
+        _extra_label_to_element[_lbl] = _slab_syms[_sc_idx]
+
     species_ids_in_order = [sid for sid,_ in species_order]
-    type_id_by_label, label_by_type_id = make_type_registry(species_ids_in_order, species_db, slab_elements)
+    type_id_by_label, label_by_type_id = make_type_registry(species_ids_in_order, species_db, slab_type_labels)
 
     # assign MM types/charges by order
     mm_types, mm_charges, mm_slices = assign_mm_types_charges_by_order(mm, species_order, species_db, type_id_by_label)
@@ -252,14 +289,15 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(mm_slices, species_db)
 
     # slab types/charges
-    slab_types = [type_id_by_label[el] for el in slab_sc.get_chemical_symbols()]
+    slab_types = [type_id_by_label[lbl] for lbl in slab_type_labels]
     slab_charges = apply_slab_charging(slab_sc, q_electrode)
 
     atom_types = mm_types + slab_types
     charges = mm_charges + slab_charges
 
     # masses by type
-    masses_by_type = masses_by_type_from_labels(label_by_type_id, type_id_by_label, species_db)
+    masses_by_type = masses_by_type_from_labels(label_by_type_id, type_id_by_label, species_db,
+                                                extra_label_to_element=_extra_label_to_element)
     timings["types_and_connectivity"] = time.perf_counter() - t0
     print(f"[TIMING] types_and_connectivity: {timings['types_and_connectivity']:.3f} s")
 

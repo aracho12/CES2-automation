@@ -5,7 +5,7 @@ project:
 species_db: "species_db"
 
 input:
-  vasp_file: "input/CONTCAR"
+  vasp_file: "CONTCAR"
 
 cell:
   require_orthogonal: true 
@@ -40,9 +40,9 @@ electrolyte_recipe:
 
   # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
   salts: 
-    - name: "KOH"
+    - name: "LiOH"
       concentration_M: 0.1
-      stoich: { "K_plus": 1, "OH_minus": 1 }
+      stoich: { "Li_plus": 1, "OH_minus": 1 }
 
       #- name: "TMACl"   # organic cation salt
       #concentration_M: 0.2
@@ -57,7 +57,7 @@ electrolyte_recipe:
 
   # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
   # Put at least one 1-valent cation and one 1-valent anion here.
-  counterion_pool: ["K_plus", "OH_minus"]
+  counterion_pool: ["Li_plus", "OH_minus"]
 
           # counterion_pair_search: 2000
 
@@ -73,24 +73,6 @@ electrolyte_recipe:
 output:
   build_dir: "build"
   export_dir: "export"
-
-# ---- Slab atom type_label overrides (optional) ----
-# Use when certain QM slab atoms need different bjdisp parameters than their
-# element-symbol default (e.g., adsorbed OH on IrO2 has different C6 than lattice O).
-#
-# Keys   : 1-based atom index in the PRIMITIVE CELL / POSCAR (= DFTD3 output index)
-# Values : type_label to assign — must exist in species_db/qm_params/<system>.yaml
-#
-# The builder automatically replicates each override across all supercell copies,
-# so only the primitive-cell indices need to be listed here.
-#
-# Example for IrO2 + adsorbed OH (atoms 99-102 in POSCAR, DFTD3 CN~1.0):
-# slab:
-#   type_label_overrides:
-#     99:  "O_ads"
-#     100: "O_ads"
-#     101: "H_ads"
-#     102: "H_ads"
 
 # ---- CES2 QM/MM LAMMPS input generation ----
 ces2:
@@ -137,7 +119,7 @@ ces2:
 
   # MD run settings for the CES2 QM/MM loop
   md:
-    timestep_fs:   0.5     # fs
+    timestep_fs:   1.0     # fs
     n_steps:       0       # 0 = single-point (QM/MM forces only); >0 for dynamics
     thermo_every:  100     # print thermo every N steps
     dump_every:    1000    # dump trajectory every N steps

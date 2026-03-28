@@ -1,0 +1,15 @@
+id: Li_plus
+name: Li_plus
+net_charge: 1.0
+charge_scheme: uniform_from_net_charge
+atoms:
+  - element: Li
+    type_label: Li
+    charge: null
+    xyz: [0.0, 0.0, 0.0]
+    bjdisp:
+      alpha_iso: 0.0      # TODO: fill from reference (a.u.)
+      C6: 0.0             # TODO: fill (kcal/mol*Ang^6)
+      s: 1.40
+connectivity: {}
+coeffs: {}

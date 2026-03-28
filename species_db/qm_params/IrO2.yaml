@@ -4,27 +4,58 @@
 #
 # Usage: referenced when type_label of QM slab atoms matches keys below.
 # The builder uses element symbols as type_labels for slab atoms (e.g., "Ir", "O").
-# If your system has multiple Ir/O environments with different alpha_iso values,
-# add them as Ir_top / Ir_inner etc. and match to type_labels in your CONTCAR.
+#
+# For atoms that need different parameters (e.g., adsorbed OH vs. lattice O),
+# assign custom type_labels via config.yaml:
+#
+#   slab:
+#     type_label_overrides:
+#       99:  "O_ads"   # 1-based POSCAR index of adsorbed O
+#       100: "O_ads"
+#       101: "H_ads"   # 1-based POSCAR index of adsorbed H
+#       102: "H_ads"
+#
+# The builder auto-expands primitive-cell indices to the full supercell.
 
 system: IrO2
 
 # Format per type:
-#   alpha_iso : isotropic polarizability [a.u.]
-#   C6        : dispersion coefficient  [kcal/mol * Ang^6]
-#   s         : BJ scaling parameter (1.40 for metals/non-H-bond; 0.53 for H-bond O)
+#   element   : base element symbol (for mass lookup by builder)
+#   alpha_iso : isotropic polarizability [a.u.]   — from VASP SCS/FI
+#   C6        : dispersion coefficient  [kcal/mol * Ang^6]  — from DFT-D3
+#   s         : BJ scaling parameter (1.40 for metals/non-H-bond; 0.53 for H-bond H)
 #   note      : source / environment description
 
 types:
 
   Ir:
+    element: Ir
     alpha_iso: 31.4        # a.u.  [Excel row 77]
     C6: 4209.986           # kcal/mol*Ang^6  (= 305.53 au * 13.77928721)
     s: 1.40
     note: "Ir atom in IrO2 bulk/surface, SCS/FI+DFT-D3"
 
   O:
+    element: O
     alpha_iso: 3.9         # a.u.  [Excel row 78]
     C6: 142.891            # kcal/mol*Ang^6  (= 10.37 au * 13.77928721)
     s: 1.40
-    note: "O atom in IrO2 surface (not water O — different environment)"
+    note: "O atom in IrO2 lattice (not water O, not adsorbed OH)"
+
+  # ── Adsorbed OH on IrO2 surface ──────────────────────────────────────────
+  # Activate via slab.type_label_overrides in config.yaml (see header above).
+  # C6 from DFT-D3 at actual CN (DFTD3 output); alpha_iso: TODO from VASP SCS/FI.
+
+  O_ads:
+    element: O
+    alpha_iso: 0.0         # TODO: fill from VASP SCS/FI calculation
+    C6: 176.650            # kcal/mol*Ang^6  (= 12.82 au * 13.77928721, CN~1.0)
+    s: 1.40                # O is not H-bond donor → s=1.40
+    note: "O of OH adsorbed on IrO2 surface; alpha_iso TBD"
+
+  H_ads:
+    element: H
+    alpha_iso: 0.0         # TODO: fill from VASP SCS/FI calculation
+    C6: 41.751             # kcal/mol*Ang^6  (= 3.03 au * 13.77928721, CN~0.9)
+    s: 0.53                # H of surface OH H-bonds to water → s=0.53
+    note: "H of OH adsorbed on IrO2 surface; alpha_iso TBD"

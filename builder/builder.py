@@ -12,6 +12,7 @@ from .lammps_writer import write_data_file_reference_style, DataFileFormat
 
 ATOMIC_MASS = {
     "H": 1.008,
+    "Li": 6.941,
     "C": 12.011,
     "N": 14.007,
     "O": 15.999,
@@ -26,7 +27,9 @@ ATOMIC_MASS = {
     "K": 39.0983,
     "Ca": 40.078,
     "Br": 79.904,
+    "Rb": 85.468,
     "I": 126.90447,
+    "Cs": 132.905,
     "Ir": 192.217,
 }
 
@@ -151,22 +154,29 @@ def apply_slab_charging(slab: Atoms, q_electrode: float) -> List[float]:
 
 def masses_by_type_from_labels(label_by_type_id: Dict[int,str],
                                type_id_by_label: Dict[str,int],
-                               species_db: Dict[str,Species]) -> Dict[int,float]:
+                               species_db: Dict[str,Species],
+                               extra_label_to_element: Optional[Dict[str,str]] = None) -> Dict[int,float]:
     """
     Resolve mass by type_label:
       - if type_label is element symbol, use atomic mass
       - otherwise try to infer from first atom that uses that type_label in species_db
+      - extra_label_to_element: optional override map for custom QM type_labels
+        (e.g. {"O_ads": "O", "H_ads": "H"} from slab.type_label_overrides)
     """
     # build reverse map: type_label -> element
     label_to_element: Dict[str,str] = {}
     for sp in species_db.values():
         for a in sp.atoms:
             label_to_element.setdefault(a.type_label, a.element)
+    # apply caller-supplied overrides (custom QM type_labels not in species_db)
+    if extra_label_to_element:
+        label_to_element.update(extra_label_to_element)
 
     out: Dict[int,float] = {}
     for tid, lbl in label_by_type_id.items():
         el = lbl if lbl in ATOMIC_MASS else label_to_element.get(lbl, None)
         if el is None:
-            raise ValueError(f"Cannot infer atomic mass for type_label '{lbl}'. Add it to species_db with an element.")
+            raise ValueError(f"Cannot infer atomic mass for type_label '{lbl}'. "
+                             f"Add it to species_db or to slab.type_label_overrides in config.")
         out[tid] = float(ATOMIC_MASS.get(el, 0.0))
     return out
