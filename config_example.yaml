@@ -173,10 +173,10 @@ ces2_script:
   n_qmmm_steps:  6              # total QM/MM outer-loop steps
 
   slurm:
-    #account:    "members"
-    #partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
-    account:    "nehalem"
-    partition:  "nehalem_8c"
+    account:    "members"
+    partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
+    # account:    "nehalem"
+    # partition:  "nehalem_8c"
     nodes:      1
     no_requeue: true
     time:       "00:00:00"
