@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from ces2_builder import run
+from builder import run
 
 def _find_config_yaml() -> Path | None:
     """Auto-detect a config*.yaml file in cwd if exactly one exists."""
