@@ -8,8 +8,8 @@ atoms:
     charge: null
     xyz: [0.0, 0.0, 0.0]
     bjdisp:
-      alpha_iso: 0.0      # TODO: fill from reference (a.u.)
-      C6: 0.0             # TODO: fill (kcal/mol*Ang^6)
+      alpha_iso: 0.193      # excel row 3: Li+
+      C6: 1.08856369             # excel row 3: Li+ (kcal/mol*Ang^6)
       s: 1.40
 connectivity: {}
 coeffs: {}

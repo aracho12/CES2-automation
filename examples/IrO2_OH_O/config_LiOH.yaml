@@ -74,6 +74,24 @@ output:
   build_dir: "build"
   export_dir: "export"
 
+# ---- Slab atom type_label overrides (optional) ----
+# Use when certain QM slab atoms need different bjdisp parameters than their
+# element-symbol default (e.g., adsorbed OH on IrO2 has different C6 than lattice O).
+#
+# Keys   : 1-based atom index in the PRIMITIVE CELL / POSCAR (= DFTD3 output index)
+# Values : type_label to assign — must exist in species_db/qm_params/<system>.yaml
+#
+# The builder automatically replicates each override across all supercell copies,
+# so only the primitive-cell indices need to be listed here.
+#
+# Example for IrO2 + adsorbed OH (atoms 99-102 in POSCAR, DFTD3 CN~1.0):
+slab:
+  type_label_overrides:
+    99:  "O_ads"
+    100: "O_ads"
+    101: "H_ads"
+    102: "H_ads"
+
 # ---- CES2 QM/MM LAMMPS input generation ----
 ces2:
   # Water model: TIP4P (default, TIP4P-EW recommended for CES2) or TIP3P
@@ -140,7 +158,7 @@ qe:
   occupations: "smearing"    # "smearing" or "fixed"
   smearing:    "mv"          # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
   degauss:     0.0147          # Ry - smearing width
-  k_points:    [1, 1, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
+  k_points:    [2, 4, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
   emaxpos:     0.8           # dipole correction position (fraction of cell z)
   edir:        3             # dipole/electric field direction (3 = z)
   conv_thr:    1e-06        # SCF convergence threshold (Ry)
