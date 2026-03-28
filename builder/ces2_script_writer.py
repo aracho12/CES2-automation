@@ -1013,6 +1013,7 @@ def generate_ces2_scripts(
     if relax_enabled:
         SL()
         SL("# ---- MM pre-equilibration (md_relax) ----")
+        SL(f'export DFT_CES2_PATH="{dft_ces2_path}"')
         SL(f'LMP="{lmp_binary}"')
         SL(f'NP={np_procs}')
         SL()
