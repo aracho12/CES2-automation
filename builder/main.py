@@ -371,6 +371,23 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings["qe_input"] = time.perf_counter() - t0
     print(f"[TIMING] qe_input: {timings['qe_input']:.3f} s")
 
+    # Build type_id → element mapping for direct atoms=(...) generation in shell script.
+    # This avoids the fragile mass-matching approach (which breaks when an element
+    # like Cs is absent from the hardcoded ATOMMASS table).
+    _label_to_element: Dict[str, str] = {}
+    for sid in species_ids_in_order:
+        for a in species_db[sid].atoms:
+            _label_to_element[a.type_label] = a.element
+    for lbl in set(slab_type_labels):
+        if lbl in _extra_label_to_element:
+            _label_to_element[lbl] = _extra_label_to_element[lbl]
+        elif lbl not in _label_to_element:
+            _label_to_element[lbl] = lbl   # slab label IS the element symbol (e.g. "Ir", "O")
+    type_id_to_element: Dict[int, str] = {
+        tid: _label_to_element[lbl]
+        for tid, lbl in label_by_type_id.items()
+    }
+
     # Generate qmmm wrapper + SLURM submit scripts
     t0 = time.perf_counter()
     n_qm = len(slab_sc)
@@ -384,6 +401,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         water_sid=water_sid,
         type_id_by_label=type_id_by_label,
         slab_elements=slab_type_labels,
+        type_id_to_element=type_id_to_element,
     )
     timings["ces2_scripts"] = time.perf_counter() - t0
     print(f"[TIMING] ces2_scripts: {timings['ces2_scripts']:.3f} s")
