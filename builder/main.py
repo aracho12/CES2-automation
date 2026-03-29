@@ -383,7 +383,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         species_db=species_db,
         water_sid=water_sid,
         type_id_by_label=type_id_by_label,
-        slab_elements=list(slab_sc.get_chemical_symbols()),
+        slab_elements=slab_type_labels,
     )
     timings["ces2_scripts"] = time.perf_counter() - t0
     print(f"[TIMING] ces2_scripts: {timings['ces2_scripts']:.3f} s")
