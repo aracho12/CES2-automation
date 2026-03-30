@@ -549,7 +549,6 @@ def generate_md_bundle(
     qm_lo: Optional[int]   = None
     qm_hi: Optional[int]   = None
     z_wall: Optional[float] = None
-    z_wall_lo: Optional[float] = None
     wall_buffer: float = float(md_cfg.get("wall_buffer", 10.0))  # Å above z_el_hi
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
@@ -565,19 +564,12 @@ def generate_md_bundle(
             z_el_hi = box_info.get("z_el_hi")
             if z_el_hi is not None:
                 z_wall = float(z_el_hi) + wall_buffer
-            # Lower wall: electrolyte lower boundary − 1 Å margin
-            # (matches lammps_input_writer.py: prevents solvent from
-            #  entering the electrode slab during relaxation)
-            z_el_lo = box_info.get("z_el_lo")
-            if z_el_lo is not None:
-                z_wall_lo = float(z_el_lo) - 1.0
         except Exception:
             pass
 
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(
         z_wall=z_wall,
-        z_wall_lo=z_wall_lo,
         qm_lo=qm_lo,
         qm_hi=qm_hi,
     )
@@ -601,7 +593,6 @@ def generate_md_bundle(
             min_dmax=float(md_cfg.get("min_dmax",          0.2)),
             min_dump_every=int(md_cfg.get("min_dump_every", 10)),
             z_wall=z_wall,
-            z_wall_lo=z_wall_lo,
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )

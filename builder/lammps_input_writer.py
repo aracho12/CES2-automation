@@ -251,11 +251,6 @@ def generate_lammps_input(
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
     _wall_buffer     = float(md_cfg.get("wall_buffer",      10.0))
     z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
-    # Lower wall: keep solvent from entering the electrode slab.
-    # z_el_lo = electrolyte lower boundary (= z_top_slab + z_gap).
-    # Place the wall 1 Å below z_el_lo for margin: md_relax equilibrium
-    # positions may slightly penetrate the z_el_lo boundary.
-    z_wall_lo        = float(md_cfg.get("z_wall_lo",    box.z_el_lo - 1.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
@@ -646,8 +641,6 @@ def generate_lammps_input(
     # Wall, momentum, SHAKE, NVT
     L("# Keep solvent from escaping through fixed-z boundaries")
     L(f"fix   wallhi  SOLVENT wall/harmonic zhi {z_wall_hi:.2f} 1.0 1.0 5.0")
-    L(f"fix   walllow SOLVENT wall/harmonic zlo {z_wall_lo:.2f} 1.0 1.0 5.0"
-      f"  # electrolyte lower boundary — prevents over-adsorption (no LJ ε)")
     L()
     L("# Remove spurious COM momentum drift")
     L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
