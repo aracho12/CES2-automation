@@ -38,8 +38,9 @@ def write_in_relax_min(
     min_maxeval:         int   = 5000,
     min_dmax:            float = 0.2,
     min_dump_every:      int   = 10,       # trajectory frames during minimize
-    # ── Reflecting wall — confine solvent below vacuum ───────────────────
-    z_wall:              Optional[float] = None,  # Å — wall position (z_el_hi + buffer)
+    # ── Harmonic walls — confine solvent within electrolyte region ─────────
+    z_wall:              Optional[float] = None,  # Å — upper wall (z_el_hi + buffer)
+    z_wall_lo:           Optional[float] = None,  # Å — lower wall (z_el_lo - margin)
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -81,14 +82,16 @@ def write_in_relax_min(
         freeze_for_min    = ""
         unfix_soft_freeze = ""
 
-    # ── Harmonic wall — prevent solvent from drifting into vacuum ────────
+    # ── Harmonic walls — prevent solvent from drifting into vacuum / slab ──
     # wall/harmonic: epsilon=1.0 sigma=1.0 cutoff=5.0  (soft repulsion)
+    wall_fix   = ""
+    unfix_wall = ""
     if z_wall is not None:
-        wall_fix = f"fix             WALL {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
-        unfix_wall = "unfix           WALL\n"
-    else:
-        wall_fix   = ""
-        unfix_wall = ""
+        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
+        unfix_wall += "unfix           WALLHI\n"
+    if z_wall_lo is not None:
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} 1.0 1.0 5.0 units box\n"
+        unfix_wall += "unfix           WALLLO\n"
 
     # ── pair_coeff / bond_coeff / angle_coeff lines ──────────────────────
     pc_block = "\n".join(ff.lj_pair_coeff_lines)
@@ -191,6 +194,7 @@ def _nvt_common_header(
     qm_lo: Optional[int],
     qm_hi: Optional[int],
     z_wall: Optional[float],
+    z_wall_lo: Optional[float] = None,
 ) -> dict:
     """Build common text blocks for NVT scripts (heat & equil)."""
 
@@ -213,13 +217,15 @@ def _nvt_common_header(
         wall_group   = "all"
         unfix_freeze = ""
 
-    # ── Harmonic wall ────────────────────────────────────────────────────
+    # ── Harmonic walls — prevent solvent from drifting into vacuum / slab ──
+    wall_fix   = ""
+    unfix_wall = ""
     if z_wall is not None:
-        wall_fix = f"fix             WALL {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
-        unfix_wall = "unfix           WALL\n"
-    else:
-        wall_fix   = ""
-        unfix_wall = ""
+        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
+        unfix_wall += "unfix           WALLHI\n"
+    if z_wall_lo is not None:
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} 1.0 1.0 5.0 units box\n"
+        unfix_wall += "unfix           WALLLO\n"
 
     # ── SHAKE block ──────────────────────────────────────────────────────
     if ff.water_bond_type and ff.water_angle_type:
@@ -270,8 +276,9 @@ def write_in_relax_heat(
     # ── General MD ───────────────────────────────────────────────────────
     timestep_fs:         float = 1.0,
     dump_every:          int   = 2000,
-    # ── Reflecting wall — confine solvent below vacuum ───────────────────
+    # ── Harmonic walls — confine solvent within electrolyte region ─────────
     z_wall:              Optional[float] = None,
+    z_wall_lo:           Optional[float] = None,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -290,7 +297,7 @@ def write_in_relax_heat(
     """
     ff = relax_ff
     heat_ps = heat_steps * timestep_fs / 1000.0
-    c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall)
+    c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall, z_wall_lo)
 
     txt = f"""\
 # in.relax_heat — Part 2: NVT heating  {t_start:.0f} K → {t_target:.0f} K
@@ -376,8 +383,9 @@ def write_in_relax_equil(
     timestep_fs:         float = 1.0,
     dump_every:          int   = 2000,
     write_equilibrated:  str   = "equilibrated.data",
-    # ── Reflecting wall — confine solvent below vacuum ───────────────────
+    # ── Harmonic walls — confine solvent within electrolyte region ─────────
     z_wall:              Optional[float] = None,
+    z_wall_lo:           Optional[float] = None,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -398,7 +406,7 @@ def write_in_relax_equil(
     """
     ff = relax_ff
     equil_ps = equil_steps * timestep_fs / 1000.0
-    c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall)
+    c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall, z_wall_lo)
 
     txt = f"""\
 # in.relax_equil — Part 3: NVT equilibration at {t_target:.0f} K
@@ -541,6 +549,7 @@ def generate_md_bundle(
     qm_lo: Optional[int]   = None
     qm_hi: Optional[int]   = None
     z_wall: Optional[float] = None
+    z_wall_lo: Optional[float] = None
     wall_buffer: float = float(md_cfg.get("wall_buffer", 10.0))  # Å above z_el_hi
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
@@ -551,17 +560,24 @@ def generate_md_bundle(
             if n_mm > 0 and n_qm > 0:
                 qm_lo = n_mm + 1
                 qm_hi = n_mm + n_qm
-            # Reflecting wall at top of electrolyte + buffer
             box_info = summary.get("box", {})
+            # Upper wall: top of electrolyte + buffer
             z_el_hi = box_info.get("z_el_hi")
             if z_el_hi is not None:
                 z_wall = float(z_el_hi) + wall_buffer
+            # Lower wall: electrolyte lower boundary − 1 Å margin
+            # (matches lammps_input_writer.py: prevents solvent from
+            #  entering the electrode slab during relaxation)
+            z_el_lo = box_info.get("z_el_lo")
+            if z_el_lo is not None:
+                z_wall_lo = float(z_el_lo) - 1.0
         except Exception:
             pass
 
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(
         z_wall=z_wall,
+        z_wall_lo=z_wall_lo,
         qm_lo=qm_lo,
         qm_hi=qm_hi,
     )
@@ -585,6 +601,7 @@ def generate_md_bundle(
             min_dmax=float(md_cfg.get("min_dmax",          0.2)),
             min_dump_every=int(md_cfg.get("min_dump_every", 10)),
             z_wall=z_wall,
+            z_wall_lo=z_wall_lo,
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
