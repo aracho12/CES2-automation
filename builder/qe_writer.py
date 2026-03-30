@@ -154,7 +154,6 @@ def generate_qe_input(
     mixing_beta      = float(qe_cfg.get("mixing_beta",       0.3))
     electron_maxstep = int(  qe_cfg.get("electron_maxstep",  400))
     diagonalization  = str(  qe_cfg.get("diagonalization",   "cg"))
-    startingwfc      = str(  qe_cfg.get("startingwfc",       "atomic"))
     scf_must_converge = bool( qe_cfg.get("scf_must_converge", True))
     k_points    = list( qe_cfg.get("k_points",    [1, 1, 1, 0, 0, 0]))
     pseudo_set  = str(  qe_cfg.get("pseudo_set",  "sssp"))
@@ -229,8 +228,8 @@ def generate_qe_input(
     PW(f"  electron_maxstep  = {electron_maxstep},")
     PW(f"  mixing_beta       = {mixing_beta},")
     PW(f"  diagonalization   = '{diagonalization}',")
-    PW(f"  startingwfc       = '{startingwfc}',")
     PW(f"  scf_must_converge = {scf_conv_str},")
+    PW( "  ! startingwfc / startingpot injected by qmmm script (= 'file' for step > 0)")
     PW("/")
     PW()
 
