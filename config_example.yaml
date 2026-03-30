@@ -161,8 +161,10 @@ qe:
   k_points:    [1, 1, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
   emaxpos:     0.8           # dipole correction position (fraction of cell z)
   edir:        3             # dipole/electric field direction (3 = z)
-  conv_thr:    1e-06        # SCF convergence threshold (Ry)
-  mixing_beta: 0.5
+  conv_thr:         1e-06   # SCF convergence threshold (Ry)
+  electron_maxstep: 400    # max SCF iterations
+  mixing_beta:      0.3    # charge density mixing (lower = more stable, slower)
+  diagonalization:  "cg"   # "cg" (stable) or "david" (faster)
 
   # Pseudopotential set: built-in database to use when no per-element override is given.
   # Currently supported: "sssp"  (SSSP PBE library, covers most elements)

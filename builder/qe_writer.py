@@ -40,7 +40,9 @@ Pseudopotential config (config.yaml)
     emaxpos:     0.8                 # dipole correction (fraction of unit cell)
     edir:        3                   # z-direction dipole correction
     conv_thr:    1.0e-8              # SCF convergence (Ry)
-    mixing_beta: 0.4
+    mixing_beta: 0.3
+    electron_maxstep: 400
+    diagonalization: "cg"
     pseudopotentials:                # optional per-element overrides (takes priority over pseudo_set)
       # Ir: "Ir_custom.UPF"         # uncomment to override an element
 """
@@ -148,10 +150,11 @@ def generate_qe_input(
     degauss     = float(qe_cfg.get("degauss",     0.02))
     emaxpos     = float(qe_cfg.get("emaxpos",     0.8))
     edir        = int(  qe_cfg.get("edir",        3))
-    conv_thr    = float(qe_cfg.get("conv_thr",    1.0e-8))
-    mixing_beta = float(qe_cfg.get("mixing_beta", 0.4))
-    diagonalization   = str(  qe_cfg.get("diagonalization",   "david"))
-    startingwfc       = str(  qe_cfg.get("startingwfc",       "atomic"))
+    conv_thr         = float(qe_cfg.get("conv_thr",          1.0e-8))
+    mixing_beta      = float(qe_cfg.get("mixing_beta",       0.3))
+    electron_maxstep = int(  qe_cfg.get("electron_maxstep",  400))
+    diagonalization  = str(  qe_cfg.get("diagonalization",   "cg"))
+    startingwfc      = str(  qe_cfg.get("startingwfc",       "atomic"))
     scf_must_converge = bool( qe_cfg.get("scf_must_converge", True))
     k_points    = list( qe_cfg.get("k_points",    [1, 1, 1, 0, 0, 0]))
     pseudo_set  = str(  qe_cfg.get("pseudo_set",  "sssp"))
@@ -223,6 +226,7 @@ def generate_qe_input(
     scf_conv_str = ".TRUE." if scf_must_converge else ".FALSE."
     PW("&ELECTRONS")
     PW(f"  conv_thr          = {conv_thr:.2e},")
+    PW(f"  electron_maxstep  = {electron_maxstep},")
     PW(f"  mixing_beta       = {mixing_beta},")
     PW(f"  diagonalization   = '{diagonalization}',")
     PW(f"  startingwfc       = '{startingwfc}',")
