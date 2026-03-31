@@ -5,7 +5,7 @@ project:
 species_db: "species_db"
 
 input:
-  vasp_file: "input/CONTCAR"
+  vasp_file: "CONTCAR"
 
 cell:
   require_orthogonal: true 
@@ -40,9 +40,9 @@ electrolyte_recipe:
 
   # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
   salts: 
-    - name: "KOH"
+    - name: "LiOH"
       concentration_M: 0.1
-      stoich: { "K_plus": 1, "OH_minus": 1 }
+      stoich: { "Li_plus": 1, "OH_minus": 1 }
 
       #- name: "TMACl"   # organic cation salt
       #concentration_M: 0.2
@@ -57,7 +57,7 @@ electrolyte_recipe:
 
   # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
   # Put at least one 1-valent cation and one 1-valent anion here.
-  counterion_pool: ["K_plus", "OH_minus"]
+  counterion_pool: ["Li_plus", "OH_minus"]
 
           # counterion_pair_search: 2000
 
@@ -85,12 +85,12 @@ output:
 # so only the primitive-cell indices need to be listed here.
 #
 # Example for IrO2 + adsorbed OH (atoms 99-102 in POSCAR, DFTD3 CN~1.0):
-# slab:
-#   type_label_overrides:
-#     99:  "O_ads"
-#     100: "O_ads"
-#     101: "H_ads"
-#     102: "H_ads"
+slab:
+  type_label_overrides:
+    99:  "O_ads"
+    100: "O_ads"
+    101: "H_ads"
+    102: "H_ads"
 
 # ---- CES2 QM/MM LAMMPS input generation ----
 ces2:
@@ -137,7 +137,7 @@ ces2:
 
   # MD run settings for the CES2 QM/MM loop
   md:
-    timestep_fs:   0.5     # fs
+    timestep_fs:   1.0     # fs
     n_steps:       0       # 0 = single-point (QM/MM forces only); >0 for dynamics
     thermo_every:  100     # print thermo every N steps
     dump_every:    1000    # dump trajectory every N steps
@@ -152,13 +152,13 @@ ces2:
 qe:
   prefix:      "solute"
   outdir:      "./solute"
-  pseudo_dir:  "/home/aracho/bin/qe/pseudo"    # directory with UPF pseudopotential files
+  pseudo_dir:  "/home01/x3246a09/pseudo"    # directory with UPF pseudopotential files
   ecutwfc:     50.0          # Ry - kinetic energy cutoff
   ecutrho:     400.0         # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
   smearing:    "mv"          # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
   degauss:     0.0147          # Ry - smearing width
-  k_points:    [1, 1, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
+  k_points:    [2, 4, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
   emaxpos:     0.8           # dipole correction position (fraction of cell z)
   edir:        3             # dipole/electric field direction (3 = z)
   conv_thr:         1e-06   # SCF convergence threshold (Ry)
@@ -182,35 +182,47 @@ qe:
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
   jobname:       "ces2_qmmm"    # used for SBATCH -J and prefix= in submit script
-  dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
-  qe_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
-  pp_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
+  dft_ces2_path: "/home01/x3246a09/ces_share/dft-ces2-bash-test"
+  qe_binary:     "/home01/x3246a09/ces_share/qe_test/bin/pw.x"
+  pp_binary:     "/home01/x3246a09/ces_share/qe_test/bin/pp.x"
   lmp_binary:    "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
-  chg2pot_binary:  "/home/mino/03.scripts/chg2pot"
-  mdipc_binary:    "/home/jthlol/program/poisson/mdipc"
-  chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
-  np:            24              # MPI tasks (single value for both QE and LAMMPS)
+  chg2pot_binary:  "/home01/x3246a09/ces_sharechg2pot"
+  mdipc_binary:    "/home01/x3246a09/ces_share/mdipc"
+  chgplate_binary: "/home01/x3246a09/ces_share/make_rho_mino"
+  np:            128             # MPI tasks (= select × mpiprocs)
   n_qmmm_steps:  6              # total QM/MM outer-loop steps
 
   # ---- QE parallelization flags (pw.x command-line options) ----
-  # npool : k-point pools       — must divide n_kpoints (Gamma-only → omit or 1)
+  # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
   # ntg   : FFT task groups     — divisor of (np/npool); 2~4 recommended
   # ndiag : ScaLAPACK procs     — must be a perfect square (1,4,9,16,25,...)
   # Remove or comment out any flag to omit it from the mpirun command.
-  # npool: 1
-  # ntg:   2
-  # ndiag: 9
+  npool: 8
+  ntg:   2
+  ndiag: 9
 
-  slurm:
-    account:    "members"
-    partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
-    # account:    "nehalem"
-    # partition:  "nehalem_8c"
-    nodes:      1
-    no_requeue: true
-    time:       "00:00:00"
-    comment:    "qmmm"
-    # stderr/stdout default to %x.e%j / %x.o%j if omitted
+  # ---- Scheduler: use either 'slurm' or 'pbs' (not both) ----
+  # PBS Pro (Nurion / KISTI-style) — uncomment to use
+  pbs:
+    job_name:   "ces2_qmmm"
+    select:     2              # number of nodes
+    ncpus:      64             # CPUs per node
+    mpiprocs:   64             # MPI ranks per node (usually == ncpus)
+    ompthreads: 1
+    walltime:   "48:0:0"
+    queue:      "normal"
+    account:    "lammps"       # -A project code
+    email:      "your@email.com"   # -M notification address (optional)
+    export_env: true           # emit #PBS -V (export environment)
+
+  # SLURM (tars / local cluster) — uncomment to use instead of pbs:
+  # slurm:
+  #   account:    "members"
+  #   partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
+  #   nodes:      1
+  #   no_requeue: true
+  #   time:       "00:00:00"
+  #   comment:    "qmmm"
 
 md_relax:
   enabled: true
@@ -243,3 +255,4 @@ md_relax:
   timestep_fs: 1.0             # fs
   dump_every:  2000
   write_equilibrated: "equilibrated.data"
+

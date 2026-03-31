@@ -207,16 +207,49 @@ def _slurm_header(slurm_cfg: Dict[str, Any], jobname: str = "ces2_qmmm",
     return h
 
 
-def _pbs_header(pbs_cfg: Dict[str, Any]) -> List[str]:
-    h: List[str] = ["#!/bin/bash"]
-    h.append(f"#PBS -N {pbs_cfg.get('job_name', 'ces2_qmmm')}")
-    nodes = int(pbs_cfg.get("nodes", 1))
-    ppn   = int(pbs_cfg.get("ppn",   32))
-    h.append(f"#PBS -l nodes={nodes}:ppn={ppn}")
+def _pbs_header(pbs_cfg: Dict[str, Any], jobname: str = "ces2_qmmm",
+                np: int = 1) -> List[str]:
+    """Build PBS Pro (#PBS) header lines.
+
+    Supports the PBS Pro 'select' syntax used by systems like Nurion (KISTI):
+      #PBS -l select=<N>:ncpus=<C>:mpiprocs=<M>:ompthreads=<T>
+
+    Config keys (all optional, sensible defaults provided):
+      job_name   : job name          (default: jobname arg)
+      select     : number of chunks  (default: 1)
+      ncpus      : CPUs per chunk    (default: np)
+      mpiprocs   : MPI procs/chunk   (default: ncpus)
+      ompthreads : OMP threads/chunk (default: 1)
+      walltime   : hh:mm:ss          (default: omitted)
+      queue      : queue/partition   (default: omitted)
+      account    : project code -A   (default: omitted)
+      email      : address for -M    (default: omitted)
+      export_env : emit #PBS -V      (default: true)
+    """
+    h: List[str] = ["#!/bin/sh"]
+    h.append(f"#PBS -N {pbs_cfg.get('job_name', jobname)}")
+
+    # -V : export current environment to job
+    if pbs_cfg.get("export_env", True):
+        h.append("#PBS -V")
+
+    # Resource: select syntax (PBS Pro)
+    select     = int(pbs_cfg.get("select",     1))
+    ncpus      = int(pbs_cfg.get("ncpus",      np))
+    mpiprocs   = int(pbs_cfg.get("mpiprocs",   ncpus))
+    ompthreads = int(pbs_cfg.get("ompthreads", 1))
+    h.append(f"#PBS -l select={select}:ncpus={ncpus}:mpiprocs={mpiprocs}:ompthreads={ompthreads}")
+
     if "walltime" in pbs_cfg:
         h.append(f"#PBS -l walltime={pbs_cfg['walltime']}")
     if "queue" in pbs_cfg:
         h.append(f"#PBS -q {pbs_cfg['queue']}")
+    if "account" in pbs_cfg:
+        h.append(f"#PBS -A {pbs_cfg['account']}")
+    if "email" in pbs_cfg:
+        h.append(f"#PBS -M {pbs_cfg['email']}")
+    for extra in pbs_cfg.get("extra_lines", []):
+        h.append(extra)
     return h
 
 
@@ -271,6 +304,23 @@ def generate_ces2_scripts(
     mdipc_bin      = str(sc_cfg.get("mdipc_binary",
                                      "${DFT_CES2_PATH}/tools/3-poisson/mdipc"))
     chgplate_bin   = str(sc_cfg.get("chgplate_binary", "/path/to/make_rho"))
+
+    # ── QE parallelization flags ─────────────────────────────────────────
+    # These map directly to pw.x command-line options:
+    #   npool  : k-point pools   (must divide n_kpoints; use 1 if Gamma-only)
+    #   ntg    : FFT task groups (improves v_of_rho; divisor of cores/pool)
+    #   ndiag  : ScaLAPACK procs for diagonalization (must be a perfect square)
+    # Leave unset (null) to omit the flag entirely.
+    _npool = sc_cfg.get("npool", None)
+    _ntg   = sc_cfg.get("ntg",   None)
+    _ndiag = sc_cfg.get("ndiag", None)
+    _qe_flags = ""
+    if _npool is not None:
+        _qe_flags += f" -npool {int(_npool)}"
+    if _ntg is not None:
+        _qe_flags += f" -ntg {int(_ntg)}"
+    if _ndiag is not None:
+        _qe_flags += f" -ndiag {int(_ndiag)}"
 
     # ── run control ───────────────────────────────────────────────────────
     np_procs       = int(sc_cfg.get("np",               24))
@@ -374,6 +424,7 @@ def generate_ces2_scripts(
     L(f'export DFT_CES2_PATH="{dft_ces2_path}"')
     L(f'LAMMPS="{lmp_binary}"')
     L(f'QEPW="{qe_binary}"')
+    L(f'QEPW_FLAGS="{_qe_flags.strip()}"  # npool/ntg/ndiag parallelization flags')
     L(f'QEPP="{pp_binary}"')
     L('CUBEADD="${DFT_CES2_PATH}/newtools/1-cube/cube_add" # Working for n cubes. Input: n cube1 ... cuben')
     L('CUBEMULTI="${DFT_CES2_PATH}/tools/1-cube/cube_multi"')
@@ -653,7 +704,7 @@ def generate_ces2_scripts(
     L("  finished=\"\"")
     L("  for ((i=0; i<$QMMAXSTEP; i++));do")
     L("    if [ $initialqm -eq 0 ]; then")
-    L("      mpirun -np $NP $QEPW < pw.in > pw.out")
+    L("      mpirun -np $NP $QEPW $QEPW_FLAGS < pw.in > pw.out")
     L("      if [ \"$QMTYPE\" == \"scf\" ]; then")
     L("        finished=`grep \"JOB DONE\" pw.out`")
     L("        if [ \"$finished\" != \"\" ]; then ")
@@ -757,7 +808,7 @@ def generate_ces2_scripts(
     L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingwfc = 'file'/\" pw.nonortho.in")
     L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingpot = 'file'/\" pw.nonortho.in")
     L("        sed -i \"s/.*\\&SYSTEM.*/&\\ntot_charge = $TOTCHG/\" pw.nonortho.in")
-    L("\tmpirun -np $NP $QEPW < pw.nonortho.in > pw.nonortho.out")
+    L("\tmpirun -np $NP $QEPW $QEPW_FLAGS < pw.nonortho.in > pw.nonortho.out")
     L("\tcp v_saw.cube v_saw_pw_nonortho.cube")
     L("  elif [ $initialqm -eq 0 -a \"$QMTYPE\" == \"opt\" -a $qmmmstep -gt 0 ]; then")
     L("\tsolute_nonortho=(`grep -A ${natoms_qm} \"ATOMIC_POSITIONS\" pw.out | tail -n ${natoms_qm} | awk '{print $1,$2,$3,$4 }'`)")
@@ -771,7 +822,7 @@ def generate_ces2_scripts(
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\ndft_ces = .true./\" pw.nonortho.in")
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\nrho_ces = '.\\/MOBILE_final.cube'/\" pw.nonortho.in")
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\npauli_rep_ces = '.\\/empty.cube'/\" pw.nonortho.in")
-    L("\tmpirun -np $NP $QEPW < pw.nonortho.in > pw.nonortho.out")
+    L("\tmpirun -np $NP $QEPW $QEPW_FLAGS < pw.nonortho.in > pw.nonortho.out")
     L("\tcp v_saw.cube v_saw_pw_nonortho.cube")
     L("  fi")
     L()
@@ -998,7 +1049,7 @@ def generate_ces2_scripts(
 
     use_pbs = (not slurm_cfg and pbs_cfg)
     if use_pbs:
-        for h in _pbs_header(pbs_cfg):
+        for h in _pbs_header(pbs_cfg, jobname=jobname, np=np_procs):
             SL(h)
     else:
         for h in _slurm_header(slurm_cfg if slurm_cfg else {}, jobname=jobname, np=np_procs):
