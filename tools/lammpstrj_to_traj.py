@@ -105,9 +105,22 @@ def auto_detect_type_map(lammps_input: Path) -> Dict[int, str]:
         r"^\s*group\s+\S+\s+type\s+([\d\s]+)#\s*(.+)$", re.IGNORECASE
     )
     # Extract element symbols from a comment string.
-    # Handles both bare symbols (Ir, O, K) and parenthesised ones like (water O).
-    # We collect all tokens that are valid element symbols.
-    elem_token = re.compile(r"\b([A-Z][a-z]?)\b")
+    # Handles bare symbols (Ir, O, K), parenthesised ones like (water O),
+    # and underscore-prefixed labels like H_ads, O_oh where the element
+    # appears before the underscore.
+    # We split the comment into whitespace-delimited tokens and check each.
+    def _extract_elements(comment: str) -> list:
+        """Extract valid element symbols from a comment string, in order."""
+        elems = []
+        for token in re.split(r"[\s()\[\]:,]+", comment):
+            if not token:
+                continue
+            # Handle "X_label" patterns: extract prefix before underscore
+            base = token.split("_")[0] if "_" in token else token
+            # Must be 1-2 chars, first uppercase, optional lowercase
+            if re.fullmatch(r"[A-Z][a-z]?", base) and base in element_symbols:
+                elems.append(base)
+        return elems
 
     with open(lammps_input) as f:
         for line in f:
@@ -119,8 +132,7 @@ def auto_detect_type_map(lammps_input: Path) -> Dict[int, str]:
             comment = m.group(2)
 
             # Collect all valid element symbols from the comment, in order
-            elems = [tok for tok in elem_token.findall(comment)
-                     if tok in element_symbols]
+            elems = _extract_elements(comment)
 
             if not elems:
                 continue
@@ -281,34 +293,39 @@ def wrap_molecules(atoms: Atoms, oh_cutoff: float = 1.3) -> Atoms:
     origin[:, :2] = origin[:, :2] % 1.0
     pos = atoms.cell.cartesian_positions(origin)
 
-    symbols = atoms.get_chemical_symbols()
-    lammps_types = atoms.info.get("lammps_type", None)
+    symbols = np.array(atoms.get_chemical_symbols())
 
-    # Build index sets for H and O atoms
-    h_indices = [i for i, s in enumerate(symbols) if s == "H"]
-    o_indices  = [i for i, s in enumerate(symbols) if s == "O"]
+    # Build index arrays for H and O atoms
+    h_indices = np.where(symbols == "H")[0]
+    o_indices = np.where(symbols == "O")[0]
 
-    if h_indices and o_indices:
-        o_pos = pos[o_indices]  # shape (n_O, 3)
+    if len(h_indices) > 0 and len(o_indices) > 0:
+        o_pos = pos[o_indices]             # (n_O, 3)
+        h_pos_all = pos[h_indices]         # (n_H, 3)
 
-        for hi in h_indices:
-            h_pos = pos[hi]
+        # Vectorised: all H–O displacement vectors at once
+        # dv[i, j, :] = H_i - O_j
+        dv = h_pos_all[:, None, :] - o_pos[None, :, :]   # (n_H, n_O, 3)
 
-            # Vector from each O to this H (Cartesian)
-            dv = h_pos - o_pos                          # (n_O, 3)
+        # Minimum-image correction in periodic directions (x, y only)
+        for dim in range(2):  # only x=0, y=1 are periodic
+            if cell[dim] > 0:
+                dv[:, :, dim] -= np.round(dv[:, :, dim] / cell[dim]) * cell[dim]
 
-            # Apply minimum-image correction in periodic directions
-            for dim in range(3):
-                if pbc_mask[dim] and cell[dim] > 0:
-                    dv[:, dim] -= np.round(dv[:, dim] / cell[dim]) * cell[dim]
+        # Squared distances → find nearest O for each H
+        dist_sq = np.sum(dv * dv, axis=2)                # (n_H, n_O)
+        nearest_o = np.argmin(dist_sq, axis=1)            # (n_H,)
+        nearest_dist_sq = dist_sq[np.arange(len(h_indices)), nearest_o]
 
-            # Distance to each O after minimum-image
-            dist = np.linalg.norm(dv, axis=1)           # (n_O,)
-            nearest_idx = int(np.argmin(dist))
+        # Boolean mask: which H atoms are bonded (within cutoff)
+        bonded = nearest_dist_sq <= oh_cutoff * oh_cutoff
 
-            if dist[nearest_idx] <= oh_cutoff:
-                # Place H relative to its bonded O using the minimum-image vector
-                pos[hi] = o_pos[nearest_idx] + dv[nearest_idx]
+        # Apply shifts for bonded H atoms
+        bonded_h = np.where(bonded)[0]
+        if len(bonded_h) > 0:
+            bonded_o = nearest_o[bonded_h]
+            shift_vectors = dv[bonded_h, bonded_o, :]     # (n_bonded, 3)
+            pos[h_indices[bonded_h]] = o_pos[bonded_o] + shift_vectors
 
     atoms.positions = pos
 
