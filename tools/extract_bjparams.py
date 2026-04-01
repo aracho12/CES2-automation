@@ -12,7 +12,9 @@ Output:
   fiscs-average.out    — per-element averages (C6ts, ALPHAscs, C6 in kcal/mol·Å^6)
   atoms_fiscs.json     — ASE Atoms JSON with ALPHAscs as initial_charges
   atoms_c6.json        — ASE Atoms JSON with DFTD3 C6 as initial_charges
-  bjparams_zsorted.dat — element / z / ALPHAscs / C6(DFTD3) sorted by z-coordinate
+  bjparams_zsorted.dat      — element / z / ALPHAscs / C6(DFTD3) sorted by z-coordinate
+  bjparams_elem_zsorted.dat — same columns, sorted by element first then z-coordinate
+  bjparams_layer_avg.dat    — layer-averaged (element+z within 0.2Å grouped & averaged)
 """
 
 import sys
@@ -211,36 +213,28 @@ def parse_d3_c6(d3_path):
 
 # ─── Z-sorted combined table ─────────────────────────────────────────────────
 
-def write_zsorted_table(atoms, alphascs_list, c6_list, filepath='bjparams_zsorted.dat'):
-    """
-    Write a table sorted by z-coordinate with columns:
-      index(original)  element  z(Å)  ALPHAscs(au)  C6_D3(au)
-    """
-    if atoms is None:
-        print(f"[zsorted] WARNING: No structure, skipping {filepath}")
-        return
-
+def _build_records(atoms, alphascs_list, c6_list):
+    """Build per-atom record list from structure + parameter lists."""
     n = len(atoms)
     symbols = atoms.get_chemical_symbols()
     positions = atoms.get_positions()  # Å
 
-    # Build per-atom records
     records = []
     for i in range(n):
-        rec = {
+        records.append({
             'idx':     i + 1,
             'element': symbols[i],
             'z':       positions[i][2],
             'alpha':   alphascs_list[i] if (alphascs_list and i < len(alphascs_list)) else None,
             'c6':      c6_list[i]       if (c6_list       and i < len(c6_list))       else None,
-        }
-        records.append(rec)
+        })
+    return records
 
-    # Sort by z
-    records.sort(key=lambda r: r['z'])
 
+def _write_dat(records, filepath, header_comment):
+    """Write records to a .dat file with standard column format."""
     with open(filepath, 'w') as f:
-        f.write(f"# BJ dispersion parameters sorted by z-coordinate\n")
+        f.write(f"# {header_comment}\n")
         f.write(f"# {'idx':>4s}  {'Element':<8s}  {'z(Ang)':>12s}  "
                 f"{'ALPHAscs(au)':>14s}  {'C6_D3(au)':>12s}\n")
         f.write("#" + "-" * 60 + "\n")
@@ -249,8 +243,110 @@ def write_zsorted_table(atoms, alphascs_list, c6_list, filepath='bjparams_zsorte
             c6_str    = f"{r['c6']:>12.4f}"    if r['c6']    is not None else f"{'N/A':>12s}"
             f.write(f"  {r['idx']:>4d}  {r['element']:<8s}  {r['z']:>12.6f}  "
                     f"{alpha_str}  {c6_str}\n")
+    print(f"[table] Written: {filepath}  ({len(records)} atoms)")
 
-    print(f"[zsorted] Written: {filepath}  ({n} atoms, sorted by z)")
+
+def write_zsorted_table(atoms, alphascs_list, c6_list, filepath='bjparams_zsorted.dat'):
+    """
+    Write table sorted purely by z-coordinate.
+    """
+    if atoms is None:
+        print(f"[zsorted] WARNING: No structure, skipping {filepath}")
+        return
+
+    records = _build_records(atoms, alphascs_list, c6_list)
+    records.sort(key=lambda r: r['z'])
+    _write_dat(records, filepath, "BJ dispersion parameters sorted by z-coordinate")
+
+
+def write_element_zsorted_table(atoms, alphascs_list, c6_list, filepath='bjparams_elem_zsorted.dat'):
+    """
+    Write table sorted by element first, then by z-coordinate within each element.
+    """
+    if atoms is None:
+        print(f"[elem_zsorted] WARNING: No structure, skipping {filepath}")
+        return
+
+    records = _build_records(atoms, alphascs_list, c6_list)
+    records.sort(key=lambda r: (r['element'], r['z']))
+    _write_dat(records, filepath, "BJ dispersion parameters sorted by element, then z-coordinate")
+
+
+def write_layer_averaged_table(atoms, alphascs_list, c6_list,
+                               filepath='bjparams_layer_avg.dat', z_tol=0.2):
+    """
+    Group atoms by (element, z-layer) and average ALPHAscs / C6 per layer.
+    Atoms of the same element within z_tol (Å) of each other belong to the
+    same layer.  Layers are sorted by z, then by element within the same z.
+
+    Algorithm:
+      1. Sort records by (element, z)
+      2. Walk through each element group; start a new layer whenever
+         Δz > z_tol from the current layer's first atom.
+      3. Average z, alpha, c6 within each layer.
+      4. Sort resulting layers by (z_avg, element) for final output.
+    """
+    if atoms is None:
+        print(f"[layer_avg] WARNING: No structure, skipping {filepath}")
+        return
+
+    records = _build_records(atoms, alphascs_list, c6_list)
+    records.sort(key=lambda r: (r['element'], r['z']))
+
+    # ── Group into layers per element ──
+    layers = []  # list of {element, n, z_avg, alpha_avg, c6_avg}
+
+    i = 0
+    while i < len(records):
+        el = records[i]['element']
+        # Collect all records of same element (already sorted by z)
+        j = i
+        while j < len(records) and records[j]['element'] == el:
+            j += 1
+        elem_recs = records[i:j]
+
+        # Sub-group by z-layer within this element
+        layer_start = 0
+        while layer_start < len(elem_recs):
+            z_ref = elem_recs[layer_start]['z']
+            layer_end = layer_start + 1
+            while layer_end < len(elem_recs) and (elem_recs[layer_end]['z'] - z_ref) <= z_tol:
+                layer_end += 1
+
+            chunk = elem_recs[layer_start:layer_end]
+            n = len(chunk)
+            z_avg = sum(r['z'] for r in chunk) / n
+
+            alphas = [r['alpha'] for r in chunk if r['alpha'] is not None]
+            c6s    = [r['c6']    for r in chunk if r['c6']    is not None]
+
+            layers.append({
+                'element':   el,
+                'n':         n,
+                'z_avg':     z_avg,
+                'alpha_avg': sum(alphas) / len(alphas) if alphas else None,
+                'c6_avg':    sum(c6s)    / len(c6s)    if c6s    else None,
+            })
+            layer_start = layer_end
+
+        i = j
+
+    # Sort layers by z_avg, then element
+    layers.sort(key=lambda L: (L['z_avg'], L['element']))
+
+    # ── Write ──
+    with open(filepath, 'w') as f:
+        f.write(f"# BJ dispersion parameters — layer-averaged (z_tol = {z_tol:.2f} Ang)\n")
+        f.write(f"# {'Element':<8s}  {'N':>4s}  {'z_avg(Ang)':>12s}  "
+                f"{'ALPHAscs_avg':>14s}  {'C6_D3_avg':>12s}\n")
+        f.write("#" + "-" * 60 + "\n")
+        for L in layers:
+            a_str = f"{L['alpha_avg']:>14.4f}" if L['alpha_avg'] is not None else f"{'N/A':>14s}"
+            c_str = f"{L['c6_avg']:>12.4f}"    if L['c6_avg']    is not None else f"{'N/A':>12s}"
+            f.write(f"  {L['element']:<8s}  {L['n']:>4d}  {L['z_avg']:>12.6f}  "
+                    f"{a_str}  {c_str}\n")
+
+    print(f"[layer_avg] Written: {filepath}  ({len(layers)} layers, z_tol={z_tol} Ang)")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -289,9 +385,11 @@ def main():
         else:
             print("[dftd3] No C6 values found in d3.out")
 
-    # ── Part 3: Z-sorted combined table ──
+    # ── Part 3: Sorted combined tables ──
     if alphascs_list or c6_list:
         write_zsorted_table(atoms, alphascs_list, c6_list, 'bjparams_zsorted.dat')
+        write_element_zsorted_table(atoms, alphascs_list, c6_list, 'bjparams_elem_zsorted.dat')
+        write_layer_averaged_table(atoms, alphascs_list, c6_list, 'bjparams_layer_avg.dat')
 
     print("[extract_bjparams] Done.")
 
