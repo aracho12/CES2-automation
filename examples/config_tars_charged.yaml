@@ -157,7 +157,7 @@ ces2:
 qe:
   prefix:      "solute"
   outdir:      "./solute"
-  pseudo_dir:  "/home01/x3246a09/pseudo"    # directory with UPF pseudopotential files
+  pseudo_dir:  "/home/aracho/bin/qe/pseudo"    # directory with UPF pseudopotential files
   ecutwfc:     50.0          # Ry - kinetic energy cutoff
   ecutrho:     400.0         # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
