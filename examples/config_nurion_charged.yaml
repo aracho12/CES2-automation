@@ -196,6 +196,8 @@ ces2_script:
   chgplate_binary: "/home01/x3246a09/ces_share/make_rho_mino"
   np:            128             # MPI tasks (= select × mpiprocs)
   n_qmmm_steps:  6              # total QM/MM outer-loop steps
+  adsorbate:   "4"              # last 4 atoms in POSCAR are adsorbate (2 O_ads + 2 H_ads)
+                                # MDIPC excludes these from point charge correction
 
   # ---- QE parallelization flags (pw.x command-line options) ----
   # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
