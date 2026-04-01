@@ -30,10 +30,12 @@ Usage
 import argparse
 import sys
 import re
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+from scipy.spatial import cKDTree
 from ase import Atoms
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io.trajectory import Trajectory
@@ -300,32 +302,36 @@ def wrap_molecules(atoms: Atoms, oh_cutoff: float = 1.3) -> Atoms:
     o_indices = np.where(symbols == "O")[0]
 
     if len(h_indices) > 0 and len(o_indices) > 0:
+        Lx, Ly = cell[0], cell[1]
         o_pos = pos[o_indices]             # (n_O, 3)
         h_pos_all = pos[h_indices]         # (n_H, 3)
 
-        # Vectorised: all H–O displacement vectors at once
-        # dv[i, j, :] = H_i - O_j
-        dv = h_pos_all[:, None, :] - o_pos[None, :, :]   # (n_H, n_O, 3)
+        # --- Use cKDTree for fast O(n log n) nearest-neighbor search ---
+        # Positions are already wrapped into [0, L) by step 1.
+        # cKDTree supports PBC natively via boxsize — all coords must be
+        # in [0, boxsize).  For z (non-periodic) use a huge box so it
+        # never wraps.
+        z_big = max(abs(pos[:, 2].max() - pos[:, 2].min()) * 10, 1e4)
+        # Shift z so all values are in [0, z_big)
+        z_min = pos[:, 2].min() - 1.0
+        o_tree = o_pos.copy()
+        o_tree[:, 2] -= z_min
+        h_tree = h_pos_all.copy()
+        h_tree[:, 2] -= z_min
 
-        # Minimum-image correction in periodic directions (x, y only)
-        for dim in range(2):  # only x=0, y=1 are periodic
-            if cell[dim] > 0:
-                dv[:, :, dim] -= np.round(dv[:, :, dim] / cell[dim]) * cell[dim]
+        tree = cKDTree(o_tree, boxsize=[Lx, Ly, z_big])
+        dists, o_local_idx = tree.query(h_tree, k=1)
 
-        # Squared distances → find nearest O for each H
-        dist_sq = np.sum(dv * dv, axis=2)                # (n_H, n_O)
-        nearest_o = np.argmin(dist_sq, axis=1)            # (n_H,)
-        nearest_dist_sq = dist_sq[np.arange(len(h_indices)), nearest_o]
-
-        # Boolean mask: which H atoms are bonded (within cutoff)
-        bonded = nearest_dist_sq <= oh_cutoff * oh_cutoff
-
-        # Apply shifts for bonded H atoms
+        bonded = dists <= oh_cutoff
         bonded_h = np.where(bonded)[0]
+
         if len(bonded_h) > 0:
-            bonded_o = nearest_o[bonded_h]
-            shift_vectors = dv[bonded_h, bonded_o, :]     # (n_bonded, 3)
-            pos[h_indices[bonded_h]] = o_pos[bonded_o] + shift_vectors
+            bonded_o_local = o_local_idx[bonded_h]
+            # Compute actual displacement with minimum-image in Cartesian
+            dv = h_pos_all[bonded_h] - o_pos[bonded_o_local]  # (n_bonded, 3)
+            dv[:, 0] -= np.round(dv[:, 0] / Lx) * Lx
+            dv[:, 1] -= np.round(dv[:, 1] / Ly) * Ly
+            pos[h_indices[bonded_h]] = o_pos[bonded_o_local] + dv
 
     atoms.positions = pos
 
@@ -353,19 +359,52 @@ def convert(
     traj = Trajectory(str(output), mode="w")
     written = 0
     frame_idx = 0
+    t_start = time.perf_counter()
+    t_parse = 0.0
+    t_wrap = 0.0
+    t_write = 0.0
 
     for frame in iter_frames(lammpstrj):
         if frame_idx % stride == 0:
+            t0 = time.perf_counter()
             atoms = frame_to_atoms(frame, type_map)
+            t1 = time.perf_counter()
+            t_parse += t1 - t0
+
             if wrap:
                 atoms = wrap_molecules(atoms)
+                t2 = time.perf_counter()
+                t_wrap += t2 - t1
+            else:
+                t2 = t1
+
             traj.write(atoms)
+            t3 = time.perf_counter()
+            t_write += t3 - t2
+
             written += 1
             if verbose and written % 100 == 0:
-                print(f"  Written {written} frames (timestep {frame['timestep']})...")
+                elapsed = time.perf_counter() - t_start
+                fps = written / elapsed if elapsed > 0 else 0
+                print(f"  Written {written} frames (timestep {frame['timestep']}) "
+                      f"[{elapsed:.1f}s elapsed, {fps:.1f} frames/s]")
         frame_idx += 1
 
     traj.close()
+    t_total = time.perf_counter() - t_start
+
+    if verbose:
+        print(f"\n  Timing breakdown:")
+        print(f"    Total         : {t_total:8.2f} s")
+        print(f"    Parse frames  : {t_parse:8.2f} s ({100*t_parse/t_total:.1f}%)")
+        if wrap:
+            print(f"    Wrap molecules: {t_wrap:8.2f} s ({100*t_wrap/t_total:.1f}%)")
+        print(f"    Write .traj   : {t_write:8.2f} s ({100*t_write/t_total:.1f}%)")
+        overhead = t_total - t_parse - t_wrap - t_write
+        print(f"    I/O + overhead : {overhead:8.2f} s ({100*overhead/t_total:.1f}%)")
+        if written > 0:
+            print(f"    Per frame     : {1000*t_total/written:.2f} ms/frame")
+
     return written
 
 
