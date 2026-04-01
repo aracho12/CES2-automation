@@ -14,7 +14,8 @@ from .composition import water_volume_L, counts_from_salts, compute_total_charge
 from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
 from .builder import (
     write_species_xyz, make_type_registry, assign_mm_types_charges_by_order,
-    build_mm_connectivity, apply_slab_charging, masses_by_type_from_labels
+    build_mm_connectivity, apply_slab_charging, masses_by_type_from_labels,
+    detect_top_layer_z, compute_charged_system_params,
 )
 from .lammps_writer import write_data_file_reference_style, DataFileFormat
 from .md_workflow import generate_md_bundle
@@ -290,7 +291,45 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # slab types/charges
     slab_types = [type_id_by_label[lbl] for lbl in slab_type_labels]
-    slab_charges = apply_slab_charging(slab_sc, q_electrode)
+
+    # ── charged system: top-layer detection & charge distribution ──────────
+    chg_cfg = cfg.get("charge_control", {})
+    _top_layer_tol = float(chg_cfg.get("top_layer_tolerance", 0.5))  # Å
+    _exclude_labels = list(chg_cfg.get("exclude_labels", []))  # e.g. ["O_ads","H_ads"]
+
+    if q_electrode != 0.0:
+        z_cutoff = detect_top_layer_z(slab_sc, tolerance=_top_layer_tol)
+        slab_charges = apply_slab_charging(
+            slab_sc, q_electrode,
+            z_cutoff=z_cutoff,
+            exclude_labels=_exclude_labels if _exclude_labels else None,
+            slab_type_labels=slab_type_labels if _exclude_labels else None,
+        )
+        print(f"[charged] top-layer z_cutoff={z_cutoff:.3f} Å, "
+              f"q_electrode={q_electrode}, "
+              f"n_top_atoms={sum(1 for c in slab_charges if c != 0.0)}")
+    else:
+        z_cutoff = None
+        slab_charges = apply_slab_charging(slab_sc, q_electrode)
+
+    # ── auto-calculate CES2 charged-system parameters ──────────────────────
+    sc_factor = int(rep[0]) * int(rep[1]) * int(rep[2])
+    import numpy as _np2
+    _max_z_all = float(_np2.max(combined.positions[:, 2]))
+    _z_hi_data = max(box.z_el_hi, _max_z_all + 1.0) + box.vacuum_z
+    _z_lo_data = -box.z_buffer_lo
+    _box_z_data = _z_hi_data - _z_lo_data
+
+    charged_params = compute_charged_system_params(
+        slab_sc, q_electrode, sc_factor, _box_z_data,
+        z_cutoff=z_cutoff,
+        top_layer_tol=_top_layer_tol,
+    )
+    (export_dir / "charged_system_params.json").write_text(
+        json.dumps(charged_params, indent=2), encoding="utf-8")
+    print(f"[charged] auto-calculated: tot_chg={charged_params['tot_chg']:.8f}, "
+          f"mpc_layer={charged_params['mpc_layer']:.4f} bohr, "
+          f"plate_pos={charged_params['plate_pos']:.6f}")
 
     atom_types = mm_types + slab_types
     charges = mm_charges + slab_charges
@@ -344,6 +383,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         qm_params_dir=qm_params_dir,
         cfg=cfg,
         n_mm=n_mm,
+        charged_params=charged_params,
     )
     timings["lammps_input"] = time.perf_counter() - t0
     print(f"[TIMING] lammps_input: {timings['lammps_input']:.3f} s")
@@ -402,6 +442,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         type_id_by_label=type_id_by_label,
         slab_elements=slab_type_labels,
         type_id_to_element=type_id_to_element,
+        charged_params=charged_params,
     )
     timings["ces2_scripts"] = time.perf_counter() - t0
     print(f"[TIMING] ces2_scripts: {timings['ces2_scripts']:.3f} s")

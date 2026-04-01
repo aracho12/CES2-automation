@@ -147,10 +147,141 @@ def build_mm_connectivity(mm_slices: List[Tuple[str,int,int]],
 
     return bonds, angles, bond_coeffs, angle_coeffs
 
-def apply_slab_charging(slab: Atoms, q_electrode: float) -> List[float]:
+def apply_slab_charging(
+    slab: Atoms,
+    q_electrode: float,
+    *,
+    z_cutoff: Optional[float] = None,
+    exclude_labels: Optional[List[str]] = None,
+    slab_type_labels: Optional[List[str]] = None,
+) -> List[float]:
+    """
+    Distribute *q_electrode* across slab atoms and return per-atom charges.
+
+    Parameters
+    ----------
+    slab              : ASE Atoms of the (supercell) slab.
+    q_electrode       : total charge to distribute (e, sign convention: negative = more e⁻).
+    z_cutoff          : if given, only atoms with z >= z_cutoff [Å] receive charge.
+                        This is the "top-layer" mode for charged-surface simulations.
+    exclude_labels    : type_labels to exclude from charging (e.g. ["O_ads", "H_ads"]).
+    slab_type_labels  : per-atom type_label list (same length as slab). Required when
+                        *exclude_labels* is provided.
+
+    Returns
+    -------
+    List[float] of length len(slab): per-atom charge.
+    """
     n = len(slab)
-    dq = float(q_electrode) / float(n) if n else 0.0
-    return [dq]*n
+    if n == 0 or q_electrode == 0.0:
+        return [0.0] * n
+
+    exclude_set = set(exclude_labels) if exclude_labels else set()
+
+    # Build boolean mask: True = this atom receives charge
+    mask = [True] * n
+    zpos = slab.positions[:, 2]
+
+    for i in range(n):
+        if z_cutoff is not None and zpos[i] < z_cutoff:
+            mask[i] = False
+        if exclude_set and slab_type_labels is not None:
+            if slab_type_labels[i] in exclude_set:
+                mask[i] = False
+
+    n_charged = sum(mask)
+    if n_charged == 0:
+        raise ValueError(
+            f"apply_slab_charging: no slab atoms selected for charging. "
+            f"z_cutoff={z_cutoff}, exclude_labels={exclude_labels}, "
+            f"z_range=[{float(zpos.min()):.3f}, {float(zpos.max()):.3f}]"
+        )
+
+    dq = float(q_electrode) / float(n_charged)
+    return [dq if mask[i] else 0.0 for i in range(n)]
+
+
+def detect_top_layer_z(slab: Atoms, tolerance: float = 0.5) -> float:
+    """
+    Auto-detect z_cutoff for the topmost atomic layer of a slab.
+
+    Finds the maximum z-coordinate and returns (z_max - tolerance),
+    so that all atoms within *tolerance* Å of the top are included.
+
+    Parameters
+    ----------
+    slab      : ASE Atoms of the slab.
+    tolerance : Å tolerance below z_max to include in "top layer".
+
+    Returns
+    -------
+    z_cutoff : float [Å]
+    """
+    z_max = float(np.max(slab.positions[:, 2]))
+    return z_max - tolerance
+
+
+def compute_charged_system_params(
+    slab: Atoms,
+    q_electrode: float,
+    sc_factor: int,
+    box_z_total: float,
+    *,
+    z_cutoff: Optional[float] = None,
+    top_layer_tol: float = 0.5,
+) -> Dict[str, float]:
+    """
+    Auto-calculate charged-system parameters for CES2 QM/MM.
+
+    Parameters
+    ----------
+    slab          : supercell slab (ASE Atoms).
+    q_electrode   : total MD electrode charge (e).
+    sc_factor     : supercell factor (e.g. 18 for 3×6×1).
+    box_z_total   : total simulation box height [Å] (from data.file).
+    z_cutoff      : explicit top-layer cutoff [Å]. If None, auto-detected.
+    top_layer_tol : tolerance for auto-detection [Å].
+
+    Returns
+    -------
+    dict with keys:
+      tot_chg      : QE tot_charge for unit cell (= q_electrode / sc_factor)
+      mpc_layer    : top-layer z in bohr
+      plate_pos    : fractional z of slab midpoint (slab_mid_z / box_z_total)
+      z_cutoff     : the cutoff used [Å]
+      n_top_atoms  : number of top-layer atoms in supercell
+    """
+    ANG_TO_BOHR = 1.0 / 0.529177
+
+    zpos = slab.positions[:, 2]
+    z_max = float(np.max(zpos))
+    z_min = float(np.min(zpos))
+
+    if z_cutoff is None:
+        z_cutoff = detect_top_layer_z(slab, tolerance=top_layer_tol)
+
+    n_top = int(np.sum(zpos >= z_cutoff))
+
+    # Mean z of top-layer atoms → mpc_layer in bohr
+    top_z_mean = float(np.mean(zpos[zpos >= z_cutoff]))
+    mpc_layer = top_z_mean * ANG_TO_BOHR
+
+    # Plate position: midpoint of slab as fraction of box z
+    slab_mid_z = 0.5 * (z_min + z_max)
+    plate_pos = slab_mid_z / box_z_total if box_z_total > 0 else 0.0
+
+    # QE tot_charge: per unit cell
+    tot_chg = float(q_electrode) / float(sc_factor) if sc_factor else 0.0
+
+    return {
+        "tot_chg":     tot_chg,
+        "mpc_layer":   mpc_layer,
+        "plate_pos":   plate_pos,
+        "z_cutoff":    z_cutoff,
+        "n_top_atoms": n_top,
+        "top_z_mean":  top_z_mean,
+        "slab_mid_z":  slab_mid_z,
+    }
 
 def masses_by_type_from_labels(label_by_type_id: Dict[int,str],
                                type_id_by_label: Dict[str,int],

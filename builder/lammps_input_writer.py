@@ -128,6 +128,7 @@ def generate_lammps_input(
     qm_params_dir: Path,
     cfg: Dict[str, Any],
     n_mm: int,
+    charged_params: Optional[Dict[str, float]] = None,
 ) -> Path:
     """
     Write base.in.lammps to export_dir/base.in.lammps.
@@ -436,20 +437,41 @@ def generate_lammps_input(
         L(f"set group OXYGEN charge {o_charge:.4f}")
 
     # Region blocks for top/bottom surface layers (electrochemistry)
+    # Use auto-calculated z_cutoff from charged_params when available;
+    # otherwise fall back to manual region config.
     region_cfg = ces2_cfg.get("regions", {})
-    z_top_lo = float(region_cfg.get("z_toplayer_lo", box.z_el_lo - 2.0))
-    z_top_hi = float(region_cfg.get("z_toplayer_hi", box.z_el_lo + 0.5))
+
+    if charged_params and charged_params.get("z_cutoff") is not None:
+        # Auto-detected top layer: z_cutoff is the lower bound.
+        # Upper bound = top_z_mean + 0.1 Å (small margin above highest atom).
+        _z_cut = charged_params["z_cutoff"]
+        _z_top_mean = charged_params.get("top_z_mean", _z_cut + 0.5)
+        z_top_lo = _z_cut
+        z_top_hi = _z_top_mean + 0.1
+    else:
+        z_top_lo = float(region_cfg.get("z_toplayer_lo", box.z_el_lo - 2.0))
+        z_top_hi = float(region_cfg.get("z_toplayer_hi", box.z_el_lo + 0.5))
+
     z_cen_lo = float(region_cfg.get("z_centerlayer_lo", 0.0))
     z_cen_hi = float(region_cfg.get("z_centerlayer_hi", box.z_el_lo - 3.0))
 
     L()
-    L("# Charged surface layer regions (adjust z bounds to match your slab geometry)")
+    L("# Charged surface layer regions")
     L(f"region   toplayer    block 0 {box.Lx:.4f} 0 {box.Ly:.4f}"
-      f" {z_top_lo:.2f} {z_top_hi:.2f} units box")
+      f" {z_top_lo:.4f} {z_top_hi:.4f} units box")
     L("group    top         region toplayer")
     L(f"region   centerlayer block 0 {box.Lx:.4f} 0 {box.Ly:.4f}"
       f" {z_cen_lo:.2f} {z_cen_hi:.2f} units box")
     L("group    center      region centerlayer")
+
+    # ── set top-layer charge (charged system) ──────────────────────────────
+    q_electrode = float(cfg.get("charge_control", {}).get("q_electrode_user_value", 0.0))
+    if charged_params and q_electrode != 0.0:
+        n_top = charged_params.get("n_top_atoms", 1)
+        _dq_per_atom = q_electrode / n_top if n_top > 0 else 0.0
+        L()
+        L(f"# Charged system: distribute q_electrode={q_electrode:.6f} across {n_top} top-layer atoms")
+        L(f"set group top charge {_dq_per_atom:.17g}")
 
     # ── Section 4: LJ pair_coeff ─────────────────────────────────────────
     section("4. LJ pair coefficients")

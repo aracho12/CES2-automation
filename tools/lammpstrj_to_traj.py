@@ -349,7 +349,7 @@ def convert(
     output: Path,
     type_map: Dict[int, str],
     stride: int = 1,
-    wrap: bool = False,
+    wrap: bool = True,
     verbose: bool = True,
 ) -> int:
     """
@@ -430,12 +430,16 @@ def main():
         help="Write every Nth frame (default: 1 = all frames)"
     )
     parser.add_argument(
-        "--wrap", action="store_true",
+        "--wrap", action="store_true", default=True,
         help=(
-            "Wrap atoms into the simulation box for clean visualization. "
+            "Wrap atoms into the simulation box for clean visualization (default: ON). "
             "Molecules (H2O, OH) are kept intact by minimum-image bond detection. "
             "Only x/y are wrapped (z is non-periodic in this system)."
         )
+    )
+    parser.add_argument(
+        "--no-wrap", action="store_true",
+        help="Disable molecule-aware wrapping."
     )
     parser.add_argument(
         "--count-only", action="store_true",
@@ -499,9 +503,12 @@ def main():
     print(f"  Stride: every {args.stride} frame(s) → ~{expected:,} frames to write")
     print()
 
-    if args.wrap:
+    do_wrap = args.wrap and not args.no_wrap
+    if do_wrap:
         print("  Molecule-aware wrapping: ON (O-H cutoff 1.3 Å, wrapping x/y only)")
-    written = convert(lammpstrj, output, type_map, stride=args.stride, wrap=args.wrap)
+    else:
+        print("  Molecule-aware wrapping: OFF")
+    written = convert(lammpstrj, output, type_map, stride=args.stride, wrap=do_wrap)
 
     print(f"\nDone. Wrote {written:,} frames → {output}")
     print(f"View with:  ase gui {output}")

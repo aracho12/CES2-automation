@@ -269,6 +269,7 @@ def generate_ces2_scripts(
     type_id_by_label: Optional[Dict[str, int]]      = None,
     slab_elements: Optional[List[str]]              = None,
     type_id_to_element: Optional[Dict[int, str]]    = None,
+    charged_params: Optional[Dict[str, float]]      = None,
 ) -> Dict[str, Path]:
     """
     Generate qmmm_dftces2_charging_pts.sh and submit_ces2.sh.
@@ -337,12 +338,19 @@ def generate_ces2_scripts(
     skip_equil     = int(sc_cfg.get("skip_equil",       0))
 
     # ── charged system parameters ─────────────────────────────────────────
-    tot_chg        = str(sc_cfg.get("tot_chg",         "0"))
-    mpc_layer      = str(sc_cfg.get("mpc_layer",       "0.0"))   # bohr
+    # Auto-calculated values from structure analysis (charged_params) are used
+    # as defaults. Explicit config values override auto-calculated ones.
+    _cp = charged_params or {}
+    _auto_tot_chg   = f"{_cp['tot_chg']:.17g}"   if "tot_chg"   in _cp else "0"
+    _auto_mpc_layer = f"{_cp['mpc_layer']:.4f}"   if "mpc_layer" in _cp else "0.0"
+    _auto_plate_pos = f"{_cp['plate_pos']:.6f}"   if "plate_pos" in _cp else "0.0"
+
+    tot_chg        = str(sc_cfg.get("tot_chg",         _auto_tot_chg))
+    mpc_layer      = str(sc_cfg.get("mpc_layer",       _auto_mpc_layer))   # bohr
     tot_layer      = str(sc_cfg.get("tot_layer",       "4"))
     mpc_one        = str(sc_cfg.get("mpc_one",         "1"))
     adsorbate      = str(sc_cfg.get("adsorbate",       "0"))
-    plate_pos      = str(sc_cfg.get("plate_pos",       "0.0"))   # bohr
+    plate_pos      = str(sc_cfg.get("plate_pos",       _auto_plate_pos))   # fraction
 
     # ── dipole correction (from qe: section) ──────────────────────────────
     dipole_dir     = str(qe_cfg.get("edir",   3))

@@ -24,8 +24,13 @@ packmol:
   maxit: 200
 
 charge_control:
-  q_target_total: 0.0
-  q_electrode_user_value: 0.0
+  q_target_total: 0.0           # total charge of MD box (usually 0 for neutrality)
+  q_electrode_user_value: 0.0   # charge on slab surface [e] (negative = more electrons)
+                                # e.g. -1.0 means surface gains 1 electron in MD supercell.
+                                # counterion_pool auto-adjusts ions to maintain q_target_total.
+                                # QM tot_charge is auto-calculated: q_electrode / supercell_factor.
+  top_layer_tolerance: 0.5      # [Å] atoms within this distance from z_max get charge
+  # exclude_labels: []          # type_labels excluded from charging (e.g. ["O_ads", "H_ads"])
 
 electrolyte_recipe:
   # Water count defines approximate volume.
@@ -191,6 +196,16 @@ ces2_script:
   chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
   np:            24              # MPI tasks (single value for both QE and LAMMPS)
   n_qmmm_steps:  6              # total QM/MM outer-loop steps
+
+  # ---- Charged system (auto-calculated from structure + charge_control) ----
+  # The following are AUTO-CALCULATED when charge_control.q_electrode_user_value != 0.
+  # Only set these explicitly to OVERRIDE the auto-calculated values.
+  # tot_chg:     "0"       # QE tot_charge per unit cell (= q_electrode / supercell_factor)
+  # mpc_layer:   "0.0"     # top-layer z position [bohr] for MDIPC point charge correction
+  # plate_pos:   "0.0"     # slab midpoint as fraction of box z (for CHGPLATE induction)
+  tot_layer:   "4"          # number of layers for Poisson solver
+  mpc_one:     "1"          # 1 = top layer only for point charge scheme
+  adsorbate:   "0"          # number of adsorbate atoms (excluded from point charge scheme)
 
   # ---- QE parallelization flags (pw.x command-line options) ----
   # npool : k-point pools       — must divide n_kpoints (Gamma-only → omit or 1)
