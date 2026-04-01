@@ -56,6 +56,6 @@ types:
   H_ads:
     element: H
     alpha_iso: 2.184         # a.u. from VASP SCS/FI calculation
-    C6: 41.751             # kcal/mol*Ang^6  (= 3.03 au * 13.77928721, CN~0.9)
+    C6: 42.71583             # kcal/mol*Ang^6  (= 3.1 au * 13.77928721, CN~0.9)
     s: 0.53                # H of surface OH H-bonds to water → s=0.53
     note: "H of OH adsorbed on IrO2 surface; alpha_iso TBD"
