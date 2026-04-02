@@ -219,7 +219,7 @@ ces2_script:
     walltime:   "48:0:0"
     queue:      "normal"
     account:    "lammps"       # -A project code
-    email:      "your@email.com"   # -M notification address (optional)
+    #email:      "your@email.com"   # -M notification address (optional)
     export_env: true           # emit #PBS -V (export environment)
     module_lines: |
       module purge
