@@ -152,7 +152,7 @@ ces2:
 qe:
   prefix:      "solute"
   outdir:      "./solute"
-  pseudo_dir:  "/home/aracho/bin/qe/pseudo"    # directory with UPF pseudopotential files
+  pseudo_dir:  "/home01/x3246a09/pseudo"    # directory with UPF pseudopotential files
   ecutwfc:     50.0          # Ry - kinetic energy cutoff
   ecutrho:     400.0         # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
@@ -212,11 +212,8 @@ ces2_script:
     walltime:   "48:0:0"
     queue:      "normal"
     account:    "lammps"       # -A project code
-    email:      "aracho1212@gmail.com"   # -M notification address (optional)
+    email:      "your@email.com"   # -M notification address (optional)
     export_env: true           # emit #PBS -V (export environment)
-    module_lines: |
-      module purge
-      module load intel/18.0.3 impi/18.0.3
 
   # SLURM (tars / local cluster) — uncomment to use instead of pbs:
   # slurm:
