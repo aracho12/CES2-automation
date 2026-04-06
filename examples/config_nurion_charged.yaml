@@ -204,7 +204,7 @@ ces2_script:
   # ntg   : FFT task groups     — divisor of (np/npool); 2~4 recommended
   # ndiag : ScaLAPACK procs     — must be a perfect square (1,4,9,16,25,...)
   # Remove or comment out any flag to omit it from the mpirun command.
-  npool: 8
+  npool: 4
   ntg:   2
   ndiag: 9
 
