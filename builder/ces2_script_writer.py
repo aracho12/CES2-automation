@@ -248,6 +248,7 @@ def _pbs_header(pbs_cfg: Dict[str, Any], jobname: str = "ces2_qmmm",
         h.append(f"#PBS -A {pbs_cfg['account']}")
     if "email" in pbs_cfg:
         h.append(f"#PBS -M {pbs_cfg['email']}")
+        h.append(f"#PBS -m bea")
     for extra in pbs_cfg.get("extra_lines", []):
         h.append(extra)
     return h
