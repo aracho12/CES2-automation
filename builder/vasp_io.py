@@ -18,6 +18,15 @@ def write_xyz(path: str, atoms: Atoms) -> None:
     write(path, atoms)
 
 def make_supercell(atoms: Atoms, rep: Tuple[int,int,int]) -> Atoms:
-    sc = atoms.repeat(rep)
+    # Wrap the primitive cell into [0, 1) fractional coordinates before tiling.
+    # Without this, atoms that VASP placed just outside the -x/-y boundary
+    # (e.g. frac = -0.0004) survive repeat() as the ix=0 copy with a negative
+    # Cartesian coordinate.  sc.wrap() then folds that copy to the *top* of the
+    # supercell (e.g. x ≈ 3·Lx), which lands 3 QE unit-cells outside the cell
+    # and causes pw.x to crash.  Pre-wrapping ensures ix=0 copies stay near
+    # x ≈ 0, well within the QE unit cell.
+    atoms_copy = atoms.copy()
+    atoms_copy.wrap()
+    sc = atoms_copy.repeat(rep)
     sc.wrap()
     return sc
