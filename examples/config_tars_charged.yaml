@@ -25,7 +25,7 @@ packmol:
 
 charge_control:
   q_target_total: 0.0           # total MD box charge (0 = neutral)
-  q_electrode_user_value: -1.0  # surface charge [e]: -1 = add 1 electron to MD slab
+  q_electrode_user_value: +1.0  # surface charge [e]: -1 = add 1 electron to MD slab
                                 # → counterion_pool adds 1 OH⁻ to compensate
                                 # → QM tot_charge = -1/(3*6*1) = -0.05556 (auto-calculated)
   top_layer_tolerance: 1.8      # [Å] atoms within this distance of z_max receive charge
