@@ -22,6 +22,9 @@ from .md_workflow import generate_md_bundle
 from .lammps_input_writer import generate_lammps_input, collect_relax_ff_params
 from .qe_writer import generate_qe_input
 from .ces2_script_writer import generate_ces2_scripts  # type_id_by_label, species info passed at call
+from .bjdisp_db import (
+    parse_layer_file, assign_layer_labels, layer_label_to_element, BjdispParams,
+)
 
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
@@ -243,6 +246,45 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # type registry
     t0 = time.perf_counter()
 
+    # ── slab.bjparams_layer_file (optional) ──────────────────────────────────
+    # When provided, every slab atom is auto-labelled from a per-layer table
+    # (bjparams_layer_avg.dat): one type_label per (element, z-layer).
+    # This replaces hand-written type_label_overrides for systems whose QM
+    # atoms have z-dependent bjdisp parameters.
+    # Overrides still apply on top, so a layer-assigned label can be changed
+    # for specific primitive indices.
+    _slab_cfg = cfg.get("slab", {}) or {}
+    _layer_file = _slab_cfg.get("bjparams_layer_file")
+    _layer_db: Dict[str, BjdispParams] = {}
+    _layer_label_by_sc_idx: Dict[int, str] = {}
+    _layer_label_to_element: Dict[str, str] = {}
+    if _layer_file:
+        _layer_path = Path(_layer_file)
+        if not _layer_path.is_absolute():
+            _layer_path = (workdir / _layer_path).resolve()
+        if not _layer_path.exists():
+            raise FileNotFoundError(
+                f"slab.bjparams_layer_file: {_layer_path} not found"
+            )
+        if int(rep[2]) != 1:
+            raise ValueError(
+                f"slab.bjparams_layer_file requires supercell rep[2]==1 "
+                f"(got rep={rep}); z-tiled slabs aren't supported because "
+                f"the layer file's z values are primitive-cell relative."
+            )
+        _z_tol, _layer_entries, _layer_db = parse_layer_file(_layer_path)
+        _layer_label_to_element = layer_label_to_element(_layer_entries)
+        _sc_syms_tmp = list(slab_sc.get_chemical_symbols())
+        _sc_z_tmp = [float(z) for z in slab_sc.positions[:, 2]]
+        _layer_labels_sc = assign_layer_labels(
+            _sc_syms_tmp, _sc_z_tmp, _layer_entries, _z_tol,
+        )
+        _layer_label_by_sc_idx = {i: lbl for i, lbl in enumerate(_layer_labels_sc)}
+        _n_unique_layers = len(set(_layer_labels_sc))
+        print(f"[layer file] {_layer_path.name}: z_tol={_z_tol} Å, "
+              f"{len(_layer_entries)} layer(s) → {len(_layer_labels_sc)} slab atoms "
+              f"labelled into {_n_unique_layers} unique type_label(s)")
+
     # ── slab.type_label_overrides ────────────────────────────────────────────
     # config: slab.type_label_overrides: {<1-based primitive index>: <type_label>}
     # Expands primitive-cell indices to the full supercell automatically.
@@ -271,12 +313,16 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
               f"{len(_slab_sc_overrides)} supercell atoms relabelled "
               f"({_n_unique} custom type_label(s))")
 
-    # Per-atom type_label list for slab supercell (element symbol or custom override)
+    # Per-atom type_label list for slab supercell. Priority:
+    #   type_label_overrides  >  layer-file label  >  element symbol
     _slab_syms = list(slab_sc.get_chemical_symbols())
-    slab_type_labels = [_slab_sc_overrides.get(i, el) for i, el in enumerate(_slab_syms)]
+    slab_type_labels = [
+        _slab_sc_overrides.get(i, _layer_label_by_sc_idx.get(i, el))
+        for i, el in enumerate(_slab_syms)
+    ]
 
     # Map custom QM labels → base element (for mass lookup)
-    _extra_label_to_element: Dict[str, str] = {}
+    _extra_label_to_element: Dict[str, str] = dict(_layer_label_to_element)
     for _sc_idx, _lbl in _slab_sc_overrides.items():
         _extra_label_to_element[_lbl] = _slab_syms[_sc_idx]
 
@@ -384,6 +430,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         cfg=cfg,
         n_mm=n_mm,
         charged_params=charged_params,
+        extra_qm_bjdisp=_layer_db if _layer_db else None,
     )
     timings["lammps_input"] = time.perf_counter() - t0
     print(f"[TIMING] lammps_input: {timings['lammps_input']:.3f} s")

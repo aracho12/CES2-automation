@@ -38,7 +38,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-from .bjdisp_db import load_all, build_bjdisp_table
+from .bjdisp_db import load_all, build_bjdisp_table, BjdispParams
 from .species import Species
 
 
@@ -129,6 +129,7 @@ def generate_lammps_input(
     cfg: Dict[str, Any],
     n_mm: int,
     charged_params: Optional[Dict[str, float]] = None,
+    extra_qm_bjdisp: Optional[Dict[str, BjdispParams]] = None,
 ) -> Path:
     """
     Write base.in.lammps to export_dir/base.in.lammps.
@@ -235,6 +236,9 @@ def generate_lammps_input(
         qm_params_dir=qm_params_dir,
         config_bjdisp=cfg.get("bjdisp"),
     )
+    # Layer-file params override any generic qm_params entries with the same label.
+    if extra_qm_bjdisp:
+        qm_bjdisp = {**qm_bjdisp, **extra_qm_bjdisp}
 
     # ------------------------------------------------------------------ #
     #  MD settings from config

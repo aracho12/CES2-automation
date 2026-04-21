@@ -17,11 +17,21 @@ Main public functions:
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Sequence, Tuple, Any
 
 import yaml
+
+
+# C6 unit conversion: atomic units → kcal/mol·Å^6
+_AU_TO_KCALMOL_ANG6 = 13.77928721
+
+# Default BJ scaling per element when not provided in source.
+# H of an OH-like donor uses 0.53; everything else uses 1.40.
+_DEFAULT_S_BY_ELEMENT: Dict[str, float] = {"H": 0.53}
+_DEFAULT_S_FALLBACK: float = 1.40
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +285,170 @@ def build_bjdisp_table(
                 )
 
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Layer-file loader: bjparams_layer_avg.dat
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LayerEntry:
+    """One row of bjparams_layer_avg.dat → one type_label group."""
+    type_label: str     # e.g. "Ir_L01"
+    element: str
+    z_avg: float        # [Å] relative z (file column, lowest atom = 0)
+    n_atoms: int
+    params: BjdispParams
+
+
+_Z_TOL_RE = re.compile(r"z_tol\s*=\s*([0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)")
+
+
+def _default_s_for(element: str) -> float:
+    return _DEFAULT_S_BY_ELEMENT.get(element, _DEFAULT_S_FALLBACK)
+
+
+def parse_layer_file(
+    path: Path,
+    default_z_tol: float = 0.20,
+) -> Tuple[float, List[LayerEntry], Dict[str, BjdispParams]]:
+    """
+    Parse a bjparams_layer_avg.dat file.
+
+    File format:
+        # BJ dispersion parameters — layer-averaged (z_tol = 0.20 Ang)
+        # Element      N    z_avg(Ang)    ALPHAscs_avg     C6_D3_avg
+        # ----------------------------------------------------------
+          O            4      0.000000          4.6230       10.5000
+          Ir           8      1.226200         30.3319      305.5000
+          ...
+
+    Type label scheme: <Element>_L<NN>, 1-based per-element, z-ascending.
+    C6 values are converted from atomic units → kcal/mol·Å^6 at load.
+    s defaults to 0.53 for H, 1.40 for everything else.
+
+    Returns
+    -------
+    (z_tol, entries, db):
+        z_tol   : tolerance parsed from header, or *default_z_tol* if absent
+        entries : list of LayerEntry for atom→layer matching
+        db      : {type_label: BjdispParams} for bjdisp lookup
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+
+    z_tol = default_z_tol
+    rows: List[Tuple[str, int, float, float, float]] = []  # (el, N, z, alpha_au, C6_au)
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            m = _Z_TOL_RE.search(stripped)
+            if m:
+                z_tol = float(m.group(1))
+            continue
+        parts = stripped.split()
+        if len(parts) < 5:
+            raise ValueError(
+                f"[layer file {path.name}] expected 5 columns "
+                f"(Element N z_avg alpha C6), got: {line!r}"
+            )
+        el = parts[0]
+        n_atoms = int(parts[1])
+        z_avg = float(parts[2])
+        alpha_au = float(parts[3])
+        c6_au = float(parts[4])
+        rows.append((el, n_atoms, z_avg, alpha_au, c6_au))
+
+    # Assign per-element labels in z-ascending order (stable)
+    sorted_rows = sorted(enumerate(rows), key=lambda kv: (kv[1][0], kv[1][2]))
+    label_by_orig_idx: Dict[int, str] = {}
+    per_el_counter: Dict[str, int] = {}
+    for orig_idx, (el, _n, _z, _a, _c) in sorted_rows:
+        per_el_counter[el] = per_el_counter.get(el, 0) + 1
+        label_by_orig_idx[orig_idx] = f"{el}_L{per_el_counter[el]:02d}"
+
+    entries: List[LayerEntry] = []
+    db: Dict[str, BjdispParams] = {}
+    for orig_idx, (el, n_atoms, z_avg, alpha_au, c6_au) in enumerate(rows):
+        lbl = label_by_orig_idx[orig_idx]
+        params = BjdispParams(
+            type_label=lbl,
+            alpha_iso=alpha_au,
+            C6=c6_au * _AU_TO_KCALMOL_ANG6,
+            s=_default_s_for(el),
+            source=f"{path.name}: layer {lbl} ({el}, z={z_avg:.3f} Å, N={n_atoms})",
+        )
+        db[lbl] = params
+        entries.append(LayerEntry(
+            type_label=lbl,
+            element=el,
+            z_avg=z_avg,
+            n_atoms=n_atoms,
+            params=params,
+        ))
+    return z_tol, entries, db
+
+
+def assign_layer_labels(
+    elements: Sequence[str],
+    z_positions: Sequence[float],
+    entries: Sequence[LayerEntry],
+    z_tol: float,
+) -> List[str]:
+    """
+    For each atom (element, Cartesian z), find the matching LayerEntry.
+
+    Matching rule: same element AND |z_atom_rel - entry.z_avg| <= z_tol,
+    where z_atom_rel = z_atom - min(z_positions).  If multiple entries match,
+    the nearest by |Δz| wins.  Raises ValueError if any atom has no match.
+
+    Returns per-atom list of type_label strings.
+    """
+    if len(elements) != len(z_positions):
+        raise ValueError(
+            f"assign_layer_labels: elements ({len(elements)}) and "
+            f"z_positions ({len(z_positions)}) have different lengths"
+        )
+
+    z_min = min(z_positions) if z_positions else 0.0
+    labels: List[str] = []
+    misses: List[str] = []
+
+    for i, (el, z_abs) in enumerate(zip(elements, z_positions)):
+        z_rel = float(z_abs) - float(z_min)
+        best: Optional[Tuple[float, LayerEntry]] = None
+        for e in entries:
+            if e.element != el:
+                continue
+            dz = abs(z_rel - e.z_avg)
+            if dz <= z_tol and (best is None or dz < best[0]):
+                best = (dz, e)
+        if best is None:
+            # Collect available z's for this element for the error message
+            el_zs = sorted({round(e.z_avg, 3) for e in entries if e.element == el})
+            misses.append(
+                f"  atom {i}: element={el}, z_rel={z_rel:.3f} Å "
+                f"(z_abs={z_abs:.3f}); available {el} layers at z_rel={el_zs}"
+            )
+            labels.append("")
+        else:
+            labels.append(best[1].type_label)
+
+    if misses:
+        raise ValueError(
+            f"[layer assignment] {len(misses)} atom(s) could not be matched "
+            f"to any layer (z_tol={z_tol} Å):\n" + "\n".join(misses[:10]) +
+            (f"\n  ... ({len(misses)-10} more)" if len(misses) > 10 else "")
+        )
+    return labels
+
+
+def layer_label_to_element(entries: Sequence[LayerEntry]) -> Dict[str, str]:
+    """Mapping {type_label: element} for mass lookup on layer-derived labels."""
+    return {e.type_label: e.element for e in entries}
 
 
 # ---------------------------------------------------------------------------
