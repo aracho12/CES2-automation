@@ -1,0 +1,65 @@
+# Hydronium (H3O+) — PLACEHOLDER
+# Parameters below are NOT final. Fill in charges, geometry, and bjdisp values
+# before using in production runs.
+#
+# Geometry: pyramidal (C3v), typical r_OH ~0.98 Å, H-O-H ~113°.
+# Initial xyz below is a rough C3v template (O at origin, 3 H on a cone);
+# replace with your validated coordinates.
+
+id: H3O_plus
+name: Hydronium
+net_charge: 1.0
+charge_scheme: uniform_from_net_charge   # distributes +1 over null charges
+
+atoms:
+  - element: O
+    type_label: O_h3o
+    charge: null                         # TODO: set or leave for uniform scheme
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 0.0                     # TODO: fill from reference
+      C6: 0.0                            # TODO: kcal/mol*Ang^6
+      s: 1.40                            # O is not H-bond H → s=1.40
+
+  - element: H
+    type_label: H_h3o
+    charge: null
+    xyz: [0.960000, 0.000000, 0.320000]
+    bjdisp:
+      alpha_iso: 0.0                     # TODO
+      C6: 0.0                            # TODO
+      s: 0.53                            # H-bond donor H → s=0.53
+
+  - element: H
+    type_label: H_h3o
+    charge: null
+    xyz: [-0.480000, 0.831384, 0.320000]
+    bjdisp:
+      alpha_iso: 0.0                     # TODO
+      C6: 0.0                            # TODO
+      s: 0.53
+
+  - element: H
+    type_label: H_h3o
+    charge: null
+    xyz: [-0.480000, -0.831384, 0.320000]
+    bjdisp:
+      alpha_iso: 0.0                     # TODO
+      C6: 0.0                            # TODO
+      s: 0.53
+
+connectivity:
+  bonds:
+    - [3, 1, 2]    # O-H1   (bond_type 3 = H3O+ O-H)
+    - [3, 1, 3]    # O-H2
+    - [3, 1, 4]    # O-H3
+  angles:
+    - [2, 2, 1, 3] # H1-O-H2 (angle_type 2 = H3O+ H-O-H)
+    - [2, 2, 1, 4]
+    - [2, 3, 1, 4]
+
+coeffs:
+  bond_coeffs:
+    3: [450.0, 0.980]        # TODO: validate k, r0
+  angle_coeffs:
+    2: [55.0, 113.0]         # TODO: validate k, theta0
