@@ -17,10 +17,17 @@ Outputs
 
 Usage
 -----
-  python tools/workfunction.py [run_dir]   (default: current directory)
+  python tools/workfunction.py [run_dir] [--cube PATH]
+
+  # default: run_dir = current directory
+  # If pot.z.avg is missing in run_dir, the script automatically planar-
+  # averages a Gaussian cube of V_H+V_bare (solute.pot_ortho.cube or
+  # solute.pot.cube) along z and writes pot.z.avg.  Use --cube to point
+  # at a specific cube file.
 
   # from repo root:
   python tools/workfunction.py test/04_Cs/run
+  python tools/workfunction.py test/04_Cs/run --cube solute.pot_ortho.cube
 """
 
 import sys
@@ -59,20 +66,106 @@ U_SHE_TRASATTI = 4.28   # V  (Trasatti, J. Electroanal. Chem. 1986)
 
 # ─────────────────────────── helpers ────────────────────────────────────────
 
-def find_run_dir(argv):
-    if len(argv) > 1:
-        d = argv[1]
-        if not os.path.isdir(d):
-            sys.exit(f"ERROR: directory not found: {d}")
-        return os.path.abspath(d)
-    return os.getcwd()
+def parse_args(argv):
+    """Parse: [run_dir] [--cube PATH]  (run_dir defaults to cwd)."""
+    run_dir, cube = None, None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(__doc__); sys.exit(0)
+        elif a == "--cube" and i + 1 < len(argv):
+            cube = argv[i + 1]; i += 2
+        else:
+            if run_dir is None:
+                run_dir = a
+            i += 1
+    if run_dir is None:
+        run_dir = os.getcwd()
+    if not os.path.isdir(run_dir):
+        sys.exit(f"ERROR: directory not found: {run_dir}")
+    if cube and not os.path.isfile(cube):
+        sys.exit(f"ERROR: cube file not found: {cube}")
+    return os.path.abspath(run_dir), (os.path.abspath(cube) if cube else None)
 
 
-def load_pot_z_avg(run_dir):
-    """Load pot.z.avg → arrays  z_bohr, z_ang, v_ry, v_ev."""
+# Cube files containing raw V_H+V_bare from pp.x (no V_saw added).
+# These are what workfunction.py needs for the planar average.
+CUBE_CANDIDATES = ("solute.pot_ortho.cube", "solute.pot.cube")
+
+
+def load_cube(path):
+    """Parse a Gaussian cube file.
+    Returns: (origin_bohr, (nx,ny,nz), (vx,vy,vz) in Bohr, data grid[nx,ny,nz])."""
+    with open(path) as f:
+        f.readline(); f.readline()          # 2 comment lines
+        parts  = f.readline().split()
+        natoms = int(parts[0])
+        origin = np.array([float(x) for x in parts[1:4]])
+
+        def vox(line):
+            p = line.split()
+            return int(p[0]), np.array([float(x) for x in p[1:4]])
+
+        nx, vx = vox(f.readline())
+        ny, vy = vox(f.readline())
+        nz, vz = vox(f.readline())
+        for _ in range(abs(natoms)):
+            f.readline()
+        data = np.array(f.read().split(), dtype=np.float64)
+
+    if data.size != nx * ny * nz:
+        sys.exit(f"ERROR: cube data size mismatch. Expected {nx*ny*nz}, got {data.size}")
+    return origin, (nx, ny, nz), (vx, vy, vz), data.reshape((nx, ny, nz))
+
+
+def find_cube(run_dir):
+    """Locate a suitable V_H+V_bare cube near run_dir."""
+    for name in CUBE_CANDIDATES:
+        p = os.path.join(run_dir, name)
+        if os.path.isfile(p):
+            return p
+    for qmdir in sorted(glob.glob(os.path.join(run_dir, "qm_*"))):
+        for name in CUBE_CANDIDATES:
+            p = os.path.join(qmdir, name)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def cube_to_pot_z_avg(cube_path, out_path):
+    """Planar-average a cube (Ry) along z and write pot.z.avg."""
+    print(f"    Reading cube: {cube_path}")
+    origin, (nx, ny, nz), (vx, vy, vz), grid = load_cube(cube_path)
+    print(f"      grid = {nx}x{ny}x{nz},  dz = {vz[2]:.5f} Bohr")
+    if abs(vz[0]) > 1e-6 or abs(vz[1]) > 1e-6 or abs(vx[2]) > 1e-6 or abs(vy[2]) > 1e-6:
+        print("      WARNING: non-orthogonal z axis; planar average is approximate.")
+    v_z    = grid.mean(axis=(0, 1))
+    z_bohr = origin[2] + np.arange(nz) * vz[2]
+    with open(out_path, "w") as f:
+        f.write("# z (Bohr)        V (Ry, cube units)\n")
+        for z, v in zip(z_bohr, v_z):
+            f.write(f"{z:14.8f}  {v:18.10e}\n")
+    print(f"      Wrote {out_path}  ({nz} z-points)")
+
+
+def load_pot_z_avg(run_dir, cube_override=None):
+    """Load pot.z.avg → arrays z_bohr, z_ang, v_ry, v_ev.
+    If pot.z.avg is missing, planar-average a cube (solute.pot_ortho.cube
+    or solute.pot.cube — or --cube PATH) and write pot.z.avg in run_dir.
+    """
     fpath = os.path.join(run_dir, "pot.z.avg")
     if not os.path.isfile(fpath):
-        sys.exit(f"ERROR: pot.z.avg not found in {run_dir}")
+        cube_path = cube_override or find_cube(run_dir)
+        if not cube_path:
+            sys.exit(
+                f"ERROR: pot.z.avg not found in {run_dir}, and no cube file "
+                f"({', '.join(CUBE_CANDIDATES)}) was found to derive it from.\n"
+                f"       Pass --cube PATH to specify one explicitly."
+            )
+        print("    pot.z.avg missing — deriving from cube:")
+        cube_to_pot_z_avg(cube_path, fpath)
+
     data = np.loadtxt(fpath, comments="#")
     if data.ndim != 2 or data.shape[1] < 2:
         sys.exit("ERROR: unexpected format in pot.z.avg")
@@ -480,14 +573,14 @@ def write_summary_table(run_dir, fermi_data, regions, v_vac_ry, v_vac_std_ry,
 # ─────────────────────────── main ───────────────────────────────────────────
 
 def main():
-    run_dir = find_run_dir(sys.argv)
+    run_dir, cube_override = parse_args(sys.argv)
     print(f"\n{'='*55}")
     print(f"  workfunction.py  →  {run_dir}")
     print(f"{'='*55}")
 
     # 1. Load potential
     print("\n[1] Loading pot.z.avg ...")
-    z_bohr, z_ang, v_ry, v_ev = load_pot_z_avg(run_dir)
+    z_bohr, z_ang, v_ry, v_ev = load_pot_z_avg(run_dir, cube_override=cube_override)
     print(f"    {len(z_bohr)} grid points,  z = {z_bohr[0]:.3f}–{z_bohr[-1]:.3f} Bohr")
 
     # 2. Cell regions
