@@ -256,6 +256,14 @@ def generate_lammps_input(
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
     _wall_buffer     = float(md_cfg.get("wall_buffer",      10.0))
     z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
+    # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
+    # Max wall force is 2*K*wall_cutoff. K=1.0 (the relax-stage default) is too
+    # soft to bounce waters back against ~10 kcal/mol/Å upward forces from the
+    # QM grid near the water/vacuum interface, so they punch through and trip
+    # "Particle on or inside fix wall surface". K=10 gives ~10× headroom.
+    wall_K           = float(md_cfg.get("wall_K",          10.0))
+    wall_sigma       = float(md_cfg.get("wall_sigma",       1.0))
+    wall_cutoff      = float(md_cfg.get("wall_cutoff",      5.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
 
     # ------------------------------------------------------------------ #
@@ -666,7 +674,8 @@ def generate_lammps_input(
 
     # Wall, momentum, SHAKE, NVT
     L("# Keep solvent from escaping through fixed-z boundaries")
-    L(f"fix   wallhi  SOLVENT wall/harmonic zhi {z_wall_hi:.2f} 1.0 1.0 5.0")
+    L(f"fix   wallhi  SOLVENT wall/harmonic zhi {z_wall_hi:.2f}"
+      f" {wall_K:g} {wall_sigma:g} {wall_cutoff:g}")
     L()
     L("# Remove spurious COM momentum drift")
     L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
