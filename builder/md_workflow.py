@@ -40,6 +40,9 @@ def write_in_relax_min(
     # ── Harmonic walls — confine solvent within electrolyte region ─────────
     z_wall:              Optional[float] = None,  # Å — upper wall (z_el_hi + buffer)
     z_wall_lo:           Optional[float] = None,  # Å — lower wall (z_el_lo - margin)
+    wall_K:              float = 1.0,              # kcal/mol/Å² spring constant
+    wall_sigma:          float = 1.0,              # Å
+    wall_cutoff:         float = 5.0,              # Å
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -86,10 +89,10 @@ def write_in_relax_min(
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
-        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
+        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} 1.0 1.0 5.0 units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── pair_coeff / bond_coeff / angle_coeff lines ──────────────────────
@@ -194,6 +197,9 @@ def _nvt_common_header(
     qm_hi: Optional[int],
     z_wall: Optional[float],
     z_wall_lo: Optional[float] = None,
+    wall_K: float = 1.0,
+    wall_sigma: float = 1.0,
+    wall_cutoff: float = 5.0,
 ) -> dict:
     """Build common text blocks for NVT scripts (heat & equil)."""
 
@@ -220,10 +226,10 @@ def _nvt_common_header(
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
-        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} 1.0 1.0 5.0 units box\n"
+        wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} 1.0 1.0 5.0 units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── SHAKE block ──────────────────────────────────────────────────────
@@ -278,6 +284,9 @@ def write_in_relax_heat(
     # ── Harmonic walls — confine solvent within electrolyte region ─────────
     z_wall:              Optional[float] = None,
     z_wall_lo:           Optional[float] = None,
+    wall_K:              float = 1.0,
+    wall_sigma:          float = 1.0,
+    wall_cutoff:         float = 5.0,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -296,7 +305,8 @@ def write_in_relax_heat(
     """
     ff = relax_ff
     heat_ps = heat_steps * timestep_fs / 1000.0
-    c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall, z_wall_lo)
+    c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
+                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff)
 
     txt = f"""\
 # in.relax_heat — Part 2: NVT heating  {t_start:.0f} K → {t_target:.0f} K
@@ -385,6 +395,9 @@ def write_in_relax_equil(
     # ── Harmonic walls — confine solvent within electrolyte region ─────────
     z_wall:              Optional[float] = None,
     z_wall_lo:           Optional[float] = None,
+    wall_K:              float = 1.0,
+    wall_sigma:          float = 1.0,
+    wall_cutoff:         float = 5.0,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -405,7 +418,8 @@ def write_in_relax_equil(
     """
     ff = relax_ff
     equil_ps = equil_steps * timestep_fs / 1000.0
-    c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall, z_wall_lo)
+    c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
+                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff)
 
     txt = f"""\
 # in.relax_equil — Part 3: NVT equilibration at {t_target:.0f} K
@@ -496,7 +510,7 @@ def generate_md_bundle(
     qm_hi: Optional[int]   = None
     z_wall: Optional[float] = None
     z_wall_lo: Optional[float] = None
-    wall_buffer: float = float(md_cfg.get("wall_buffer", 10.0))  # Å above z_el_hi
+    wall_buffer: float = float(md_cfg.get("relax_wall_buffer", 5.0))  # Å above z_el_hi
     wall_buffer_lo: float = float(md_cfg.get("wall_buffer_lo", 2.0))  # Å above slab top
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
@@ -520,10 +534,18 @@ def generate_md_bundle(
         except Exception:
             pass
 
+    # ── Wall spring parameters (configurable for tighter confinement) ────
+    relax_wall_K       = float(md_cfg.get("relax_wall_K",       10.0))
+    relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
+    relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
+
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(
         z_wall=z_wall,
         z_wall_lo=z_wall_lo,
+        wall_K=relax_wall_K,
+        wall_sigma=relax_wall_sigma,
+        wall_cutoff=relax_wall_cutoff,
         qm_lo=qm_lo,
         qm_hi=qm_hi,
     )
@@ -548,6 +570,9 @@ def generate_md_bundle(
             min_dump_every=int(md_cfg.get("min_dump_every", 10)),
             z_wall=z_wall,
             z_wall_lo=z_wall_lo,
+            wall_K=relax_wall_K,
+            wall_sigma=relax_wall_sigma,
+            wall_cutoff=relax_wall_cutoff,
             qm_lo=qm_lo,
             qm_hi=qm_hi,
         )
