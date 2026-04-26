@@ -23,6 +23,10 @@ set -euo pipefail
 DRYRUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRYRUN=1
 
+# ---- Log all output to file (and still print to terminal) ----
+LOGFILE="ces2_resubmit_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOGFILE") 2>&1
+
 QMMM="qmmm_dftces2_charging_pts.sh"
 SUB="submit_ces2.sh"
 
