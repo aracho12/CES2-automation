@@ -28,6 +28,10 @@ Usage examples
 
   # Auto-detect type map from in.lammps (searched automatically)
   python tools/z_density.py run_dir/ces2.emd.lammpstrj
+
+  # Quick scan: frame count, element composition, box size (no density calc)
+  python tools/z_density.py ces2.emd.lammpstrj --info
+  python tools/z_density.py md.traj --info
 """
 
 from __future__ import annotations
@@ -157,6 +161,230 @@ def _find_lammps_input(traj_path: Path) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  --info : trajectory scan (no density calculation)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def scan_lammpstrj_info(path: Path, type_map: Dict[int, str]) -> dict:
+    """Scan a .lammpstrj file and return summary info."""
+    from collections import Counter
+    n_frames = 0
+    timesteps: List[int] = []
+    n_atoms = 0
+    elem_counts: Counter = Counter()
+    type_counts: Counter = Counter()
+    box_first = None
+    box_last = None
+    z_min_global = np.inf
+    z_max_global = -np.inf
+
+    with open(path) as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            if "TIMESTEP" not in line:
+                continue
+            ts = int(f.readline().strip())
+            timesteps.append(ts)
+
+            f.readline()  # ITEM: NUMBER OF ATOMS
+            n_atoms = int(f.readline().strip())
+
+            f.readline()  # ITEM: BOX BOUNDS
+            xlo, xhi = map(float, f.readline().split())
+            ylo, yhi = map(float, f.readline().split())
+            zlo, zhi = map(float, f.readline().split())
+            box = {"Lx": xhi - xlo, "Ly": yhi - ylo, "Lz": zhi - zlo,
+                   "xlo": xlo, "xhi": xhi, "ylo": ylo, "yhi": yhi,
+                   "zlo": zlo, "zhi": zhi}
+            if box_first is None:
+                box_first = box
+            box_last = box
+
+            header = f.readline().split()[2:]
+            try:
+                col_type = header.index("type")
+                col_z = header.index("zu") if "zu" in header else header.index("z")
+            except ValueError:
+                for _ in range(n_atoms):
+                    f.readline()
+                n_frames += 1
+                continue
+
+            # only count element composition on first frame to keep it fast
+            if n_frames == 0:
+                for i in range(n_atoms):
+                    tok = f.readline().split()
+                    t = int(tok[col_type])
+                    type_counts[t] += 1
+                    elem_counts[type_map.get(t, f"X(type{t})")] += 1
+                    z_val = float(tok[col_z])
+                    if z_val < z_min_global:
+                        z_min_global = z_val
+                    if z_val > z_max_global:
+                        z_max_global = z_val
+            else:
+                for _ in range(n_atoms):
+                    f.readline()
+
+            n_frames += 1
+            if n_frames % 500 == 0:
+                print(f"    ... scanning frame {n_frames}")
+
+    # timestep interval
+    if len(timesteps) >= 2:
+        dt = timesteps[1] - timesteps[0]
+    else:
+        dt = None
+
+    return {
+        "n_frames": n_frames,
+        "n_atoms": n_atoms,
+        "timesteps_first": timesteps[0] if timesteps else None,
+        "timesteps_last": timesteps[-1] if timesteps else None,
+        "timestep_interval": dt,
+        "type_map": type_map,
+        "type_counts": dict(type_counts),
+        "elem_counts": dict(elem_counts),
+        "box_first": box_first,
+        "box_last": box_last,
+        "z_min": z_min_global,
+        "z_max": z_max_global,
+    }
+
+
+def scan_traj_info(path: Path) -> dict:
+    """Scan an ASE .traj file and return summary info."""
+    from collections import Counter
+    from ase.io.trajectory import Trajectory as ASETraj
+
+    traj = ASETraj(str(path), mode="r")
+    n_frames = len(traj)
+
+    # read first and last frame
+    first = traj[0]
+    last = traj[n_frames - 1] if n_frames > 1 else first
+
+    symbols = first.get_chemical_symbols()
+    elem_counts = dict(Counter(symbols))
+
+    cell_first = first.cell.diagonal()
+    cell_last = last.cell.diagonal()
+
+    z_all = first.positions[:, 2]
+    z_min = float(z_all.min())
+    z_max = float(z_all.max())
+
+    ts_first = first.info.get("timestep", None)
+    ts_last = last.info.get("timestep", None)
+    dt = None
+    if n_frames >= 2:
+        second = traj[1]
+        ts_second = second.info.get("timestep", None)
+        if ts_first is not None and ts_second is not None:
+            dt = ts_second - ts_first
+
+    traj.close()
+
+    return {
+        "n_frames": n_frames,
+        "n_atoms": len(first),
+        "timesteps_first": ts_first,
+        "timesteps_last": ts_last,
+        "timestep_interval": dt,
+        "elem_counts": dict(elem_counts),
+        "box_first": {"Lx": cell_first[0], "Ly": cell_first[1], "Lz": cell_first[2]},
+        "box_last": {"Lx": cell_last[0], "Ly": cell_last[1], "Lz": cell_last[2]},
+        "pbc": list(first.pbc),
+        "z_min": z_min,
+        "z_max": z_max,
+    }
+
+
+def print_info(info: dict, traj_path: Path):
+    """Pretty-print trajectory info."""
+    print(f"\n{'=' * 60}")
+    print(f"  z_density.py --info")
+    print(f"{'=' * 60}")
+    print(f"  File       : {traj_path}")
+    print(f"  Format     : {traj_path.suffix}")
+    fsize = traj_path.stat().st_size
+    if fsize > 1e9:
+        print(f"  File size  : {fsize / 1e9:.2f} GB")
+    elif fsize > 1e6:
+        print(f"  File size  : {fsize / 1e6:.1f} MB")
+    else:
+        print(f"  File size  : {fsize / 1e3:.1f} KB")
+
+    print(f"\n  ── Frames ──")
+    print(f"  Total frames : {info['n_frames']}")
+    print(f"  N atoms      : {info['n_atoms']}")
+    if info["timesteps_first"] is not None:
+        print(f"  Timestep     : {info['timesteps_first']} → {info['timesteps_last']}")
+    if info["timestep_interval"] is not None:
+        print(f"  Interval     : {info['timestep_interval']} steps between frames")
+
+    print(f"\n  ── Element composition (from first frame) ──")
+    elem_counts = info["elem_counts"]
+    total = sum(elem_counts.values())
+    # separate solvent vs electrode
+    solvent_elems = {}
+    electrode_elems = {}
+    for el, cnt in sorted(elem_counts.items(), key=lambda x: -x[1]):
+        if el.split("(")[0] in ELECTRODE_ELEMENTS:
+            electrode_elems[el] = cnt
+        else:
+            solvent_elems[el] = cnt
+
+    if solvent_elems:
+        print(f"  Solvent:")
+        for el, cnt in sorted(solvent_elems.items(), key=lambda x: -x[1]):
+            print(f"    {el:10s}  {cnt:6d}  ({100 * cnt / total:5.1f} %)")
+    if electrode_elems:
+        print(f"  Electrode:")
+        for el, cnt in sorted(electrode_elems.items(), key=lambda x: -x[1]):
+            print(f"    {el:10s}  {cnt:6d}  ({100 * cnt / total:5.1f} %)")
+
+    # LAMMPS type counts if available
+    if "type_counts" in info:
+        print(f"\n  ── LAMMPS type → element map ──")
+        tm = info.get("type_map", {})
+        for t, cnt in sorted(info["type_counts"].items()):
+            el = tm.get(t, "?")
+            print(f"    type {t:2d} → {el:4s}  ({cnt:6d} atoms)")
+
+    print(f"\n  ── Box dimensions ──")
+    b = info["box_first"]
+    print(f"  Lx = {b['Lx']:.4f} Å,  Ly = {b['Ly']:.4f} Å,  Lz = {b['Lz']:.4f} Å")
+    if "pbc" in info:
+        print(f"  PBC = {info['pbc']}")
+    print(f"  z range (first frame) : {info['z_min']:.2f} → {info['z_max']:.2f} Å")
+
+    # skip/stride suggestions
+    nf = info["n_frames"]
+    print(f"\n  ── Suggested skip / stride ──")
+    if nf > 200:
+        skip_10 = nf // 10
+        skip_20 = nf // 5
+        print(f"  To discard first 10%: --skip {skip_10}")
+        print(f"  To discard first 20%: --skip {skip_20}")
+    if nf > 100:
+        for target in [200, 500, 1000]:
+            s = max(1, nf // target)
+            actual = (nf + s - 1) // s
+            if s > 1:
+                print(f"  ~{target} frames: --stride {s}  (→ {actual} frames)")
+    if nf > 200:
+        skip_sug = nf // 10
+        stride_sug = max(1, (nf - skip_sug) // 500)
+        actual = ((nf - skip_sug) + stride_sug - 1) // stride_sug
+        print(f"  Recommended : --skip {skip_sug} --stride {stride_sug}"
+              f"  (→ {actual} frames)")
+
+    print()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -489,6 +717,9 @@ def parse_args():
     )
     p.add_argument("traj", type=Path,
                    help="Trajectory file (.lammpstrj or .traj)")
+    p.add_argument("--info", action="store_true",
+                   help="Scan trajectory and print summary (frames, elements, "
+                        "box, suggested skip/stride). No density calculation.")
     p.add_argument("--elements", nargs="+", default=None,
                    help="Element symbols to analyse (default: all solvent elements)")
     p.add_argument("--dz", type=float, default=0.1,
@@ -540,6 +771,22 @@ def main():
             type_map = auto_detect_type_map(args.lammps_input)
             print(f"  Auto-detected type map from {args.lammps_input}")
         # else: auto-detect inside compute_z_density
+
+    # ── --info mode: scan and exit ──
+    if args.info:
+        print(f"\n  Scanning trajectory ...")
+        if traj_path.suffix.lower() == ".lammpstrj":
+            if type_map is None:
+                lmp_in = _find_lammps_input(traj_path)
+                if lmp_in:
+                    type_map = auto_detect_type_map(lmp_in)
+                else:
+                    type_map = dict(DEFAULT_TYPE_MAP)
+            info = scan_lammpstrj_info(traj_path, type_map)
+        else:
+            info = scan_traj_info(traj_path)
+        print_info(info, traj_path)
+        return
 
     # ── compute ──
     print(f"\n[1] Computing density profiles ...")
