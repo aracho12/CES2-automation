@@ -1,0 +1,579 @@
+#!/usr/bin/env python3
+"""
+z_density.py — Element-resolved number-density profiles ρ(z)
+=============================================================
+Computes planar-averaged number density along the z-axis for selected
+elements from a LAMMPS dump (.lammpstrj) or ASE trajectory (.traj) file.
+
+  ρ(z) [Å⁻³] = N_in_bin(z, z+dz) / (Lx · Ly · dz · N_frames)
+
+By default, **all solvent elements** (everything except electrode metals)
+are plotted.  You can override with ``--elements O H K`` etc.
+
+Outputs (written next to the trajectory)
+-----------------------------------------
+  z_density_rawdata.csv   — z and ρ(z) for every element
+  z_density.png           — density profile plot
+
+Usage examples
+--------------
+  # All solvent elements, skip first 100 frames, stride 5
+  python tools/z_density.py path/to/ces2.emd.lammpstrj --skip 100 --stride 5
+
+  # Only O and H from a .traj file
+  python tools/z_density.py md.traj --elements O H --dz 0.05
+
+  # Provide LAMMPS type→element map explicitly for .lammpstrj
+  python tools/z_density.py ces2.emd.lammpstrj --type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"
+
+  # Auto-detect type map from in.lammps (searched automatically)
+  python tools/z_density.py run_dir/ces2.emd.lammpstrj
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
+
+import numpy as np
+
+# ── shared plot style ────────────────────────────────────────────────────────
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+try:
+    import plot_setting as ps
+    _C  = ps.colors
+    _FS = ps.fontsize
+    _LS = ps.labelsize
+    _LW = ps.linewidth
+    _FW, _FH = ps.figsize
+except ImportError:
+    ps = None
+    _C  = ["#515151", "#F14040", "#1A6FDF", "#37AD6B", "#B177DE",
+           "#FEC211", "#999999", "#FF4081", "#FB6501", "#6699CC"]
+    _FS = 9; _LS = 9; _LW = 0.4; _FW, _FH = 3.5, 2.8
+
+# ── atomic masses (g/mol) ────────────────────────────────────────────────────
+ATOMIC_MASS: Dict[str, float] = {
+    "H": 1.008, "He": 4.003, "Li": 6.941, "Be": 9.012, "B": 10.81,
+    "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.180,
+    "Na": 22.990, "Mg": 24.305, "Al": 26.982, "Si": 28.086, "P": 30.974,
+    "S": 32.065, "Cl": 35.453, "Ar": 39.948, "K": 39.098, "Ca": 40.078,
+    "Ti": 47.867, "V": 50.942, "Cr": 51.996, "Mn": 54.938, "Fe": 55.845,
+    "Co": 58.933, "Ni": 58.693, "Cu": 63.546, "Zn": 65.38,
+    "Br": 79.904, "Rb": 85.468, "Sr": 87.62, "Zr": 91.224,
+    "Mo": 95.95, "Ru": 101.07, "Rh": 102.906, "Pd": 106.42,
+    "Ag": 107.868, "Cs": 132.905, "Ba": 137.327, "La": 138.905,
+    "Ce": 140.116, "Ir": 192.217, "Pt": 195.084, "Au": 196.967,
+}
+
+# Electrode / slab metals — excluded from "solvent" by default
+ELECTRODE_ELEMENTS: Set[str] = {
+    "Ir", "Pt", "Au", "Ru", "Rh", "Pd", "Ag", "Cu", "Ni", "Co", "Fe",
+    "Ti", "Zr", "Mo", "La", "Ce",
+}
+
+# ── unit conversion ──────────────────────────────────────────────────────────
+_ANG3_TO_GCM3 = 1e24 / 6.02214076e23   # ρ[g/cm³] = ρ_num[Å⁻³] × M × this
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LAMMPS type-map detection (reused from lammpstrj_to_traj.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ELEMENT_SYMBOLS = {
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+    "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
+}
+
+DEFAULT_TYPE_MAP: Dict[int, str] = {1: "H", 2: "O"}
+
+
+def parse_type_map_str(s: str) -> Dict[int, str]:
+    """Parse '1:H 2:O 3:K ...' → {1: 'H', 2: 'O', 3: 'K', ...}."""
+    result = {}
+    for token in s.split():
+        t, elem = token.split(":")
+        result[int(t)] = elem
+    return result
+
+
+def auto_detect_type_map(lammps_input: Path) -> Dict[int, str]:
+    """Extract type→element mapping from a LAMMPS input file."""
+    type_map = dict(DEFAULT_TYPE_MAP)
+    if not lammps_input.exists():
+        return type_map
+
+    group_pattern = re.compile(
+        r"^\s*group\s+\S+\s+type\s+([\d\s]+)#\s*(.+)$", re.IGNORECASE
+    )
+
+    def _extract_elements(comment: str) -> list:
+        elems = []
+        for token in re.split(r"[\s()\[\]:,]+", comment):
+            if not token:
+                continue
+            base = token.split("_")[0] if "_" in token else token
+            if re.fullmatch(r"[A-Z][a-z]?", base) and base in _ELEMENT_SYMBOLS:
+                elems.append(base)
+        return elems
+
+    with open(lammps_input) as f:
+        for line in f:
+            m = group_pattern.match(line)
+            if not m:
+                continue
+            type_ids = [int(x) for x in m.group(1).split()]
+            elems = _extract_elements(m.group(2))
+            if not elems:
+                continue
+            if len(type_ids) == 1:
+                type_map[type_ids[0]] = elems[0]
+            elif len(type_ids) == len(elems):
+                for tid, elem in zip(type_ids, elems):
+                    type_map[tid] = elem
+            else:
+                for tid in type_ids:
+                    type_map[tid] = elems[0]
+
+    return type_map
+
+
+def _find_lammps_input(traj_path: Path) -> Optional[Path]:
+    """Search for in.lammps near the trajectory file."""
+    for d in [traj_path.parent, traj_path.parent.parent]:
+        p = d / "in.lammps"
+        if p.exists():
+            return p
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Frame iterators — .lammpstrj and .traj
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def iter_lammpstrj(path: Path, type_map: Dict[int, str],
+                   skip: int = 0, stride: int = 1):
+    """
+    Yield (elements, z_coords, Lx, Ly, Lz) per selected frame.
+
+    Parameters
+    ----------
+    skip   : discard the first `skip` frames (equilibration).
+    stride : after skipping, yield every `stride`-th frame.
+    """
+    frame_idx = 0
+    accepted = 0
+    with open(path) as f:
+        while True:
+            line = f.readline()
+            if not line:
+                return
+            if "TIMESTEP" not in line:
+                continue
+            _ts = f.readline()  # timestep value (unused)
+
+            f.readline()  # ITEM: NUMBER OF ATOMS
+            n_atoms = int(f.readline().strip())
+
+            f.readline()  # ITEM: BOX BOUNDS
+            xlo, xhi = map(float, f.readline().split())
+            ylo, yhi = map(float, f.readline().split())
+            zlo, zhi = map(float, f.readline().split())
+
+            header = f.readline().split()[2:]  # strip "ITEM:" "ATOMS"
+            try:
+                col_type = header.index("type")
+                col_z = header.index("zu") if "zu" in header else header.index("z")
+            except ValueError:
+                for _ in range(n_atoms):
+                    f.readline()
+                frame_idx += 1
+                continue
+
+            # read atom data regardless (to advance file pointer)
+            types_raw = np.empty(n_atoms, dtype=np.int32)
+            z_arr = np.empty(n_atoms, dtype=np.float64)
+            for i in range(n_atoms):
+                tok = f.readline().split()
+                types_raw[i] = int(tok[col_type])
+                z_arr[i] = float(tok[col_z])
+
+            # skip / stride logic
+            if frame_idx < skip:
+                frame_idx += 1
+                continue
+            if (frame_idx - skip) % stride != 0:
+                frame_idx += 1
+                continue
+            frame_idx += 1
+
+            elements = np.array([type_map.get(t, "X") for t in types_raw])
+            Lx = xhi - xlo
+            Ly = yhi - ylo
+            Lz = zhi - zlo
+
+            # wrap z into [zlo, zhi)
+            z_wrap = zlo + ((z_arr - zlo) % Lz)
+
+            accepted += 1
+            yield elements, z_wrap, Lx, Ly, Lz
+
+
+def iter_traj(path: Path, skip: int = 0, stride: int = 1):
+    """
+    Yield (elements, z_coords, Lx, Ly, Lz) per selected frame from ASE .traj.
+    """
+    from ase.io.trajectory import Trajectory as ASETraj
+
+    traj = ASETraj(str(path), mode="r")
+    n_total = len(traj)
+
+    for frame_idx in range(n_total):
+        if frame_idx < skip:
+            continue
+        if (frame_idx - skip) % stride != 0:
+            continue
+
+        atoms = traj[frame_idx]
+        elements = np.array(atoms.get_chemical_symbols())
+        z_arr = atoms.positions[:, 2]
+        cell = atoms.cell.diagonal()
+        Lx, Ly, Lz = cell[0], cell[1], cell[2]
+
+        # wrap z if periodic in z
+        if atoms.pbc[2]:
+            zlo = 0.0
+            z_arr = zlo + ((z_arr - zlo) % Lz)
+
+        yield elements, z_arr, Lx, Ly, Lz
+
+    traj.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Core density calculation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_z_density(
+    traj_path: Path,
+    type_map: Optional[Dict[int, str]],
+    target_elements: Optional[List[str]],
+    dz: float = 0.1,
+    skip: int = 0,
+    stride: int = 1,
+    zlo: Optional[float] = None,
+    zhi: Optional[float] = None,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], dict]:
+    """
+    Compute z-density profiles.
+
+    Returns
+    -------
+    z_centers      : bin centres [Å]
+    num_profiles   : {element: ρ(z) [Å⁻³]}
+    mass_profiles  : {element: ρ(z) [g/cm³]}
+    meta           : dict with n_frames, Lx, Ly, etc.
+    """
+    suffix = traj_path.suffix.lower()
+
+    # ── choose iterator ──
+    if suffix == ".lammpstrj":
+        if type_map is None:
+            lmp_in = _find_lammps_input(traj_path)
+            if lmp_in:
+                type_map = auto_detect_type_map(lmp_in)
+                print(f"    Auto-detected type map from {lmp_in}")
+            else:
+                type_map = dict(DEFAULT_TYPE_MAP)
+                print(f"    Using default type map (water only): {type_map}")
+        print(f"    Type map: {type_map}")
+        frame_iter = iter_lammpstrj(traj_path, type_map, skip=skip, stride=stride)
+    elif suffix == ".traj":
+        frame_iter = iter_traj(traj_path, skip=skip, stride=stride)
+    else:
+        sys.exit(f"ERROR: unsupported file format '{suffix}'. Use .lammpstrj or .traj")
+
+    # ── first pass: detect elements & z-range if not given ──
+    # We stream frames, accumulating histograms on the fly.
+    # On the first frame we discover which elements are present and set up bins.
+
+    counts: Dict[str, np.ndarray] = {}
+    edges: Optional[np.ndarray] = None
+    all_elements: Set[str] = set()
+    n_frames = 0
+    Lx_sum = 0.0
+    Ly_sum = 0.0
+    n_bins = 0
+
+    t0 = time.perf_counter()
+
+    for elements, z_arr, Lx, Ly, Lz in frame_iter:
+        # ── first frame: set up bins ──
+        if edges is None:
+            all_elements = set(elements)
+            z_min = zlo if zlo is not None else z_arr.min() - 1.0
+            z_max = zhi if zhi is not None else z_arr.max() + 1.0
+            edges = np.arange(z_min, z_max + dz, dz)
+            n_bins = len(edges) - 1
+
+            # determine target elements
+            if target_elements is None:
+                # all solvent = everything minus electrode metals
+                solvent = sorted(all_elements - ELECTRODE_ELEMENTS - {"X"})
+                if not solvent:
+                    solvent = sorted(all_elements - {"X"})
+                target_elements = solvent
+                print(f"    Auto-detected solvent elements: {target_elements}")
+            else:
+                print(f"    Target elements: {target_elements}")
+
+            for el in target_elements:
+                counts[el] = np.zeros(n_bins, dtype=np.float64)
+        else:
+            all_elements |= set(elements)
+
+        Lx_sum += Lx
+        Ly_sum += Ly
+
+        for el in target_elements:
+            mask = elements == el
+            if mask.any():
+                h, _ = np.histogram(z_arr[mask], bins=edges)
+                counts[el] += h
+
+        n_frames += 1
+        if n_frames % 200 == 0:
+            elapsed = time.perf_counter() - t0
+            print(f"    ... {n_frames} frames processed ({elapsed:.1f} s)")
+
+    if n_frames == 0:
+        sys.exit("ERROR: no frames read (check --skip / --stride values).")
+
+    elapsed = time.perf_counter() - t0
+    print(f"    Total frames: {n_frames}  ({elapsed:.1f} s)")
+
+    # ── normalise ──
+    Lx_avg = Lx_sum / n_frames
+    Ly_avg = Ly_sum / n_frames
+    area = Lx_avg * Ly_avg
+    z_centers = 0.5 * (edges[:-1] + edges[1:])
+
+    num_profiles: Dict[str, np.ndarray] = {}
+    mass_profiles: Dict[str, np.ndarray] = {}
+    norm = area * dz * n_frames
+
+    for el in target_elements:
+        num_profiles[el] = counts[el] / norm
+        M = ATOMIC_MASS.get(el, 1.0)
+        mass_profiles[el] = num_profiles[el] * M * _ANG3_TO_GCM3
+
+    meta = {
+        "n_frames": n_frames,
+        "skip": skip,
+        "stride": stride,
+        "dz": dz,
+        "Lx": Lx_avg,
+        "Ly": Ly_avg,
+        "area": area,
+        "all_elements": sorted(all_elements),
+        "target_elements": target_elements,
+    }
+    return z_centers, num_profiles, mass_profiles, meta
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Output
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
+    elems = meta["target_elements"]
+    with open(out_path, "w") as f:
+        f.write(f"# z_density.py output\n")
+        f.write(f"# frames={meta['n_frames']}  skip={meta['skip']}"
+                f"  stride={meta['stride']}  dz={meta['dz']:.3f} Ang\n")
+        f.write(f"# Lx={meta['Lx']:.4f} Ang  Ly={meta['Ly']:.4f} Ang\n")
+        f.write(f"# rho_*: number density [Ang^-3]   mass_*: mass density [g/cm^3]\n")
+        num_cols  = [f"rho_{e}" for e in elems]
+        mass_cols = [f"mass_{e}" for e in elems]
+        f.write(",".join(["z_ang"] + num_cols + mass_cols) + "\n")
+        for i, z in enumerate(z_centers):
+            nv = [f"{num_profiles[e][i]:.8f}" for e in elems]
+            mv = [f"{mass_profiles[e][i]:.8f}" for e in elems]
+            f.write(",".join([f"{z:.4f}"] + nv + mv) + "\n")
+    print(f"  Saved: {out_path}")
+
+
+def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import AutoMinorLocator
+
+    elems = meta["target_elements"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(_FW * 2.4, _FH * 1.4))
+
+    # ── left panel: number density ──
+    ax = axes[0]
+    for i, el in enumerate(elems):
+        ax.plot(z_centers, num_profiles[el],
+                color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
+    ax.set_xlabel("z (Å)", fontsize=_LS)
+    ax.set_ylabel("Number density (Å$^{-3}$)", fontsize=_LS)
+    ax.set_title("Number density ρ(z)", fontsize=_FS)
+    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(elems) // 4))
+    ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    if ps:
+        ps.set_ylim_top_margin(ax)
+
+    # ── right panel: mass density ──
+    ax = axes[1]
+    for i, el in enumerate(elems):
+        ax.plot(z_centers, mass_profiles[el],
+                color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
+    ax.set_xlabel("z (Å)", fontsize=_LS)
+    ax.set_ylabel("Mass density (g/cm³)", fontsize=_LS)
+    ax.set_title("Mass density ρ(z)", fontsize=_FS)
+    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(elems) // 4))
+    ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    if ps:
+        ps.set_ylim_top_margin(ax)
+
+    # annotation
+    axes[0].text(
+        0.99, 0.97,
+        f"frames={meta['n_frames']}  skip={meta['skip']}  "
+        f"stride={meta['stride']}  dz={meta['dz']:.2f} Å",
+        transform=axes[0].transAxes, ha="right", va="top",
+        fontsize=_FS - 2, color="gray",
+    )
+
+    fig.tight_layout()
+    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CLI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description=(
+            "Compute element-resolved z-density profiles ρ(z) from "
+            ".lammpstrj or .traj trajectory files."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python tools/z_density.py run/ces2.emd.lammpstrj --skip 100 --stride 5\n"
+            "  python tools/z_density.py md.traj --elements O H K\n"
+            "  python tools/z_density.py run/ces2.emd.lammpstrj "
+            '--type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"\n'
+        ),
+    )
+    p.add_argument("traj", type=Path,
+                   help="Trajectory file (.lammpstrj or .traj)")
+    p.add_argument("--elements", nargs="+", default=None,
+                   help="Element symbols to analyse (default: all solvent elements)")
+    p.add_argument("--dz", type=float, default=0.1,
+                   help="Bin width in Å (default: 0.1)")
+    p.add_argument("--skip", type=int, default=0,
+                   help="Discard the first N frames (equilibration, default: 0)")
+    p.add_argument("--stride", type=int, default=1,
+                   help="After skipping, use every N-th frame (default: 1 = all)")
+    p.add_argument("--zlo", type=float, default=None,
+                   help="Lower z-limit for binning [Å] (default: auto from data)")
+    p.add_argument("--zhi", type=float, default=None,
+                   help="Upper z-limit for binning [Å] (default: auto from data)")
+    p.add_argument("--type-map", type=str, default=None,
+                   help=("Manual LAMMPS type→element map for .lammpstrj, "
+                         "e.g. '1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O'"))
+    p.add_argument("--lammps-input", type=Path, default=None,
+                   help="LAMMPS input file for auto-detecting type→element map")
+    p.add_argument("-o", "--outdir", type=Path, default=None,
+                   help="Output directory (default: same as trajectory)")
+    p.add_argument("--prefix", type=str, default="z_density",
+                   help="Output file prefix (default: z_density)")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    traj_path = args.traj.resolve()
+    if not traj_path.exists():
+        sys.exit(f"ERROR: file not found: {traj_path}")
+
+    out_dir = args.outdir or traj_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'=' * 60}")
+    print(f"  z_density.py — Element-resolved z-density profiles")
+    print(f"{'=' * 60}")
+    print(f"  Trajectory : {traj_path}")
+    print(f"  Format     : {traj_path.suffix}")
+    print(f"  skip={args.skip}  stride={args.stride}  dz={args.dz} Å")
+
+    # ── type map (for .lammpstrj only) ──
+    type_map = None
+    if traj_path.suffix.lower() == ".lammpstrj":
+        if args.type_map:
+            type_map = parse_type_map_str(args.type_map)
+            print(f"  Manual type map: {type_map}")
+        elif args.lammps_input:
+            type_map = auto_detect_type_map(args.lammps_input)
+            print(f"  Auto-detected type map from {args.lammps_input}")
+        # else: auto-detect inside compute_z_density
+
+    # ── compute ──
+    print(f"\n[1] Computing density profiles ...")
+    z_centers, num_profiles, mass_profiles, meta = compute_z_density(
+        traj_path,
+        type_map=type_map,
+        target_elements=args.elements,
+        dz=args.dz,
+        skip=args.skip,
+        stride=args.stride,
+        zlo=args.zlo,
+        zhi=args.zhi,
+    )
+
+    # ── peak info ──
+    print(f"\n    Peak densities:")
+    for el in meta["target_elements"]:
+        rho = num_profiles[el]
+        mrho = mass_profiles[el]
+        if rho.max() > 0:
+            z_peak = z_centers[np.argmax(rho)]
+            print(f"    {el:4s}  ρ_max = {rho.max():.5f} Å⁻³"
+                  f"  ({mrho.max():.4f} g/cm³)  at z = {z_peak:.2f} Å")
+
+    # ── write outputs ──
+    prefix = args.prefix
+    print(f"\n[2] Writing outputs to {out_dir} ...")
+    write_csv(z_centers, num_profiles, mass_profiles, meta,
+              out_dir / f"{prefix}_rawdata.csv")
+    plot_profiles(z_centers, num_profiles, mass_profiles, meta,
+                  out_dir / f"{prefix}.png")
+
+    print("\nDone.\n")
+
+
+if __name__ == "__main__":
+    main()
