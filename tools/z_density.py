@@ -29,6 +29,13 @@ Usage examples
   # Auto-detect type map from in.lammps (searched automatically)
   python tools/z_density.py run_dir/ces2.emd.lammpstrj
 
+  # QM/SOLUTE atoms are excluded by default if in.lammps is found.
+  # To include all atoms (including QM slab):
+  python tools/z_density.py ces2.emd.lammpstrj --all-atoms
+
+  # Exclude specific LAMMPS types manually (e.g. types 6,7 = Ir, slab O)
+  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7
+
   # Quick scan: frame count, element composition, box size (no density calc)
   python tools/z_density.py ces2.emd.lammpstrj --info
   python tools/z_density.py md.traj --info
@@ -161,6 +168,35 @@ def _find_lammps_input(traj_path: Path) -> Optional[Path]:
         if p.exists():
             return p
     return None
+
+
+def detect_solute_types(lammps_input: Path) -> Set[int]:
+    """
+    Parse in.lammps to find SOLUTE/QM atom types.
+
+    Looks for patterns like:
+      group  SOLUTE   type 6 7   # QM slab: Ir O
+      group  QM       type 6 7
+    """
+    if not lammps_input.exists():
+        return set()
+
+    solute_pattern = re.compile(
+        r"^\s*group\s+(SOLUTE|QM|QM_ATOMS|SLAB)\s+type\s+([\d\s]+)",
+        re.IGNORECASE,
+    )
+
+    with open(lammps_input) as f:
+        for line in f:
+            m = solute_pattern.match(line.split("#")[0].rstrip() + " "
+                                     if "#" not in line
+                                     else line)
+            # simpler: match against the full line
+            m = solute_pattern.match(line)
+            if m:
+                type_ids = {int(x) for x in m.group(2).split()}
+                return type_ids
+    return set()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -392,17 +428,20 @@ def print_info(info: dict, traj_path: Path):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def iter_lammpstrj(path: Path, type_map: Dict[int, str],
-                   skip: int = 0, stride: int = 1):
+                   skip: int = 0, stride: int = 1,
+                   exclude_types: Optional[Set[int]] = None):
     """
     Yield (elements, z_coords, Lx, Ly, Lz) per selected frame.
 
     Parameters
     ----------
-    skip   : discard the first `skip` frames (equilibration).
-    stride : after skipping, yield every `stride`-th frame.
+    skip          : discard the first `skip` frames (equilibration).
+    stride        : after skipping, yield every `stride`-th frame.
+    exclude_types : LAMMPS type IDs to drop (e.g. QM slab atoms).
     """
     frame_idx = 0
     accepted = 0
+    _excl = exclude_types or set()
     with open(path) as f:
         while True:
             line = f.readline()
@@ -447,6 +486,12 @@ def iter_lammpstrj(path: Path, type_map: Dict[int, str],
                 continue
             frame_idx += 1
 
+            # filter out excluded types
+            if _excl:
+                keep = np.array([t not in _excl for t in types_raw])
+                types_raw = types_raw[keep]
+                z_arr = z_arr[keep]
+
             elements = np.array([type_map.get(t, "X") for t in types_raw])
             Lx = xhi - xlo
             Ly = yhi - ylo
@@ -459,14 +504,21 @@ def iter_lammpstrj(path: Path, type_map: Dict[int, str],
             yield elements, z_wrap, Lx, Ly, Lz
 
 
-def iter_traj(path: Path, skip: int = 0, stride: int = 1):
+def iter_traj(path: Path, skip: int = 0, stride: int = 1,
+              exclude_types: Optional[Set[int]] = None):
     """
     Yield (elements, z_coords, Lx, Ly, Lz) per selected frame from ASE .traj.
+
+    Parameters
+    ----------
+    exclude_types : LAMMPS type IDs to drop. Uses atoms.info["lammps_type"]
+                    stored by lammpstrj_to_traj.py.
     """
     from ase.io.trajectory import Trajectory as ASETraj
 
     traj = ASETraj(str(path), mode="r")
     n_total = len(traj)
+    _excl = exclude_types or set()
 
     for frame_idx in range(n_total):
         if frame_idx < skip:
@@ -476,9 +528,16 @@ def iter_traj(path: Path, skip: int = 0, stride: int = 1):
 
         atoms = traj[frame_idx]
         elements = np.array(atoms.get_chemical_symbols())
-        z_arr = atoms.positions[:, 2]
+        z_arr = atoms.positions[:, 2].copy()
         cell = atoms.cell.diagonal()
         Lx, Ly, Lz = cell[0], cell[1], cell[2]
+
+        # filter out excluded types via stored lammps_type info
+        if _excl and "lammps_type" in atoms.info:
+            lmp_types = np.array(atoms.info["lammps_type"])
+            keep = np.array([t not in _excl for t in lmp_types])
+            elements = elements[keep]
+            z_arr = z_arr[keep]
 
         # wrap z if periodic in z
         if atoms.pbc[2]:
@@ -503,6 +562,7 @@ def compute_z_density(
     stride: int = 1,
     zlo: Optional[float] = None,
     zhi: Optional[float] = None,
+    exclude_types: Optional[Set[int]] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], dict]:
     """
     Compute z-density profiles.
@@ -516,6 +576,9 @@ def compute_z_density(
     """
     suffix = traj_path.suffix.lower()
 
+    if exclude_types:
+        print(f"    Excluding LAMMPS types: {sorted(exclude_types)}")
+
     # ── choose iterator ──
     if suffix == ".lammpstrj":
         if type_map is None:
@@ -527,9 +590,14 @@ def compute_z_density(
                 type_map = dict(DEFAULT_TYPE_MAP)
                 print(f"    Using default type map (water only): {type_map}")
         print(f"    Type map: {type_map}")
-        frame_iter = iter_lammpstrj(traj_path, type_map, skip=skip, stride=stride)
+        if exclude_types:
+            excl_elems = [f"{t}→{type_map.get(t,'?')}" for t in sorted(exclude_types)]
+            print(f"    Excluded: {', '.join(excl_elems)}")
+        frame_iter = iter_lammpstrj(traj_path, type_map, skip=skip, stride=stride,
+                                    exclude_types=exclude_types)
     elif suffix == ".traj":
-        frame_iter = iter_traj(traj_path, skip=skip, stride=stride)
+        frame_iter = iter_traj(traj_path, skip=skip, stride=stride,
+                               exclude_types=exclude_types)
     else:
         sys.exit(f"ERROR: unsupported file format '{suffix}'. Use .lammpstrj or .traj")
 
@@ -711,6 +779,8 @@ def parse_args():
             "Examples:\n"
             "  python tools/z_density.py run/ces2.emd.lammpstrj --skip 100 --stride 5\n"
             "  python tools/z_density.py md.traj --elements O H K\n"
+            "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
+            "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
             "  python tools/z_density.py run/ces2.emd.lammpstrj "
             '--type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"\n'
         ),
@@ -732,6 +802,13 @@ def parse_args():
                    help="Lower z-limit for binning [Å] (default: auto from data)")
     p.add_argument("--zhi", type=float, default=None,
                    help="Upper z-limit for binning [Å] (default: auto from data)")
+    p.add_argument("--exclude-types", nargs="+", type=int, default=None,
+                   help=("LAMMPS type IDs to exclude (e.g. QM slab atoms). "
+                         "Example: --exclude-types 6 7"))
+    p.add_argument("--all-atoms", action="store_true",
+                   help=("Include ALL atoms including SOLUTE/QM slab. "
+                         "By default, SOLUTE types are auto-excluded if "
+                         "in.lammps is found (solvent-only mode)."))
     p.add_argument("--type-map", type=str, default=None,
                    help=("Manual LAMMPS type→element map for .lammpstrj, "
                          "e.g. '1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O'"))
@@ -763,23 +840,49 @@ def main():
 
     # ── type map (for .lammpstrj only) ──
     type_map = None
+    lmp_in_path = args.lammps_input or _find_lammps_input(traj_path)
     if traj_path.suffix.lower() == ".lammpstrj":
         if args.type_map:
             type_map = parse_type_map_str(args.type_map)
             print(f"  Manual type map: {type_map}")
-        elif args.lammps_input:
-            type_map = auto_detect_type_map(args.lammps_input)
-            print(f"  Auto-detected type map from {args.lammps_input}")
+        elif lmp_in_path:
+            type_map = auto_detect_type_map(lmp_in_path)
+            print(f"  Auto-detected type map from {lmp_in_path}")
         # else: auto-detect inside compute_z_density
+
+    # ── resolve exclude_types ──
+    # Default: solvent-only (auto-exclude SOLUTE/QM types from in.lammps).
+    # Override with --all-atoms to include everything, or --exclude-types for manual control.
+    exclude_types: Optional[Set[int]] = None
+    if args.exclude_types:
+        exclude_types = set(args.exclude_types)
+        print(f"  Excluding LAMMPS types: {sorted(exclude_types)}")
+    elif not args.all_atoms:
+        # solvent-only by default
+        if lmp_in_path:
+            solute_types = detect_solute_types(lmp_in_path)
+            if solute_types:
+                exclude_types = solute_types
+                if type_map:
+                    excl_info = [f"{t}→{type_map.get(t,'?')}" for t in sorted(solute_types)]
+                else:
+                    excl_info = [str(t) for t in sorted(solute_types)]
+                print(f"  Solvent-only (default): excluding SOLUTE types "
+                      f"{', '.join(excl_info)}  (from {lmp_in_path.name})")
+                print(f"  Use --all-atoms to include SOLUTE/QM atoms")
+            else:
+                print(f"  No SOLUTE group found in {lmp_in_path} — using all atoms")
+        # if no in.lammps found, silently use all atoms
+    else:
+        print(f"  --all-atoms: including all atoms (no type exclusion)")
 
     # ── --info mode: scan and exit ──
     if args.info:
         print(f"\n  Scanning trajectory ...")
         if traj_path.suffix.lower() == ".lammpstrj":
             if type_map is None:
-                lmp_in = _find_lammps_input(traj_path)
-                if lmp_in:
-                    type_map = auto_detect_type_map(lmp_in)
+                if lmp_in_path:
+                    type_map = auto_detect_type_map(lmp_in_path)
                 else:
                     type_map = dict(DEFAULT_TYPE_MAP)
             info = scan_lammpstrj_info(traj_path, type_map)
@@ -799,6 +902,7 @@ def main():
         stride=args.stride,
         zlo=args.zlo,
         zhi=args.zhi,
+        exclude_types=exclude_types,
     )
 
     # ── peak info ──
