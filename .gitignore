@@ -41,3 +41,6 @@ dist/
 
 # Test directory (local testing only)
 test/
+
+# AI
+CLAUDE.md
