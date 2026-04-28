@@ -82,6 +82,44 @@ else
   echo "       expected last_mm == last_qm or last_qm - 1." >&2
   exit 1
 fi
+
+# ---------- 3.5 Sanity-check QE restart files when qmmmini > 0 ----------
+# When qmmmini > 0, qmmm_dftces2_charging_pts.sh injects
+#   startingpot = 'file'
+#   startingwfc = 'file'
+# into pw.in, which makes QE try to read <outdir>/<prefix>.xml (or
+# <outdir>/<prefix>.save/data-file-schema.xml). If those files are gone
+# (e.g. scratch cleanup, manual deletion), QE aborts with
+#   "Error in routine pw_readschemafile (1): xml data file not found".
+# Detect that case and fall back to a fresh start from qm_0.
+if (( qmmmini > 0 )); then
+  qe_in=""
+  for cand in base.pw.in pw.in; do
+    [ -f "$cand" ] && { qe_in="$cand"; break; }
+  done
+  if [ -n "$qe_in" ]; then
+    qe_prefix=$(grep -E "^[[:space:]]*prefix[[:space:]]*=" "$qe_in" | head -1 \
+      | sed -E "s/.*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/")
+    qe_outdir=$(grep -E "^[[:space:]]*outdir[[:space:]]*=" "$qe_in" | head -1 \
+      | sed -E "s/.*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/")
+    qe_outdir="${qe_outdir%/}"
+    if [ -n "$qe_prefix" ] && [ -n "$qe_outdir" ]; then
+      xml_a="${qe_outdir}/${qe_prefix}.xml"
+      xml_b="${qe_outdir}/${qe_prefix}.save/data-file-schema.xml"
+      if [ ! -f "$xml_a" ] && [ ! -f "$xml_b" ]; then
+        echo "   ! QE restart missing under '$qe_outdir' (prefix='$qe_prefix')"
+        echo "     neither $xml_a nor $xml_b exists."
+        echo "     Falling back to fresh start from qm_0 (cannot resume SCF without it)."
+        qmmmini=0
+        initialqm=0
+        reason="$reason; QE restart missing → fresh start from qm_0"
+      fi
+    else
+      echo "   ! Could not parse prefix/outdir from $qe_in — skipping QE restart check."
+    fi
+  fi
+fi
+
 echo "   → $reason"
 echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm"
 
