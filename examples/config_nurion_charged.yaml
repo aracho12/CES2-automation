@@ -247,7 +247,11 @@ ces2_script:
   #   comment:    "qmmm"
 
 md_relax:
-  enabled: true
+  # Disabled — running CES2 QM/MM directly from packmol coordinates.
+  # NOTE: base.in.lammps has no velocity-init / minimize / heat ramp, so
+  # packmol overlaps may cause large forces in the first MD steps.  If
+  # LAMMPS dies with "lost atoms" or NaN, re-enable md_relax.
+  enabled: false
   # FF params are inlined automatically (no ff/ directory needed).
   # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
   lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)

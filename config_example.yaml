@@ -122,7 +122,7 @@ ces2:
   # Use the equilibrated.dump produced by md_relax to start QM/MM from a
   # relaxed structure.  Timestep is read from md_relax.equil_steps.
   # Comment out (or remove) to start from the raw data.file coordinates.
-  initial_dump: "equilibrated.dump"
+  # initial_dump: "equilibrated.dump"   # disabled — starting QM/MM directly from packmol
 
   # BJ-dispersion global damping parameters (bjdisp pair style)
   # These are the global shape parameters of the BJ damping function,
@@ -248,7 +248,11 @@ ces2_script:
   #   comment:    "qmmm"
 
 md_relax:
-  enabled: true
+  # Disabled — running CES2 QM/MM directly from packmol coordinates.
+  # NOTE: base.in.lammps has no velocity-init / minimize / heat ramp, so
+  # packmol overlaps may cause large forces in the first MD steps.  If
+  # LAMMPS dies with "lost atoms" or NaN, re-enable md_relax.
+  enabled: false
   # FF params are inlined automatically (no ff/ directory needed).
   # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
   lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)

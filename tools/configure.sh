@@ -1,11 +1,56 @@
 #!/usr/bin/env bash
 # Interactive wizard to configure a CES2 build YAML.
-# Usage:  tools/configure.sh [path/to/config.yaml]
+#
+# Usage:
+#   tools/configure.sh [OPTIONS] [path/to/config.yaml]
+#
+# Without options, prompts for: salt, concentration, electrode charge,
+# adsorbate count, job name (and only edits those keys).
+#
+# Optional section flags — each opens an extra interactive prompt block that
+# shows the current YAML value as the default, so hitting <Enter> keeps it.
+# Sections that aren't requested are NOT touched at all:
+#
+#   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å]
+#   --prerelax      Pre-relaxation pipeline: md_relax.enabled (on/off) and
+#                   ces2.initial_dump (auto-set when on, removed when off)
+#   -h, --help      Show this help and exit.
+#
+# Combine freely:
+#   tools/configure.sh --box --prerelax myconfig.yaml
+#
 # Backup: writes .<basename>.bak alongside the original before editing.
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${1:-${REPO_ROOT}/config_example.yaml}"
+
+print_help() {
+    sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed -e 's/^# \{0,1\}//' -e '/^set -euo/d'
+}
+
+# ---- parse CLI flags ----
+DO_BOX=0        # 1 => prompt for electrolyte_box.{thickness, vacuum_z}
+DO_PRERELAX=0   # 1 => prompt for md_relax.enabled (and sync ces2.initial_dump)
+CONFIG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --box)              DO_BOX=1; shift ;;
+        --prerelax)         DO_PRERELAX=1; shift ;;
+        -h|--help)          print_help; exit 0 ;;
+        --)                 shift; CONFIG="${1:-}"; break ;;
+        -*)                 echo "ERROR: unknown option: $1" >&2; print_help; exit 2 ;;
+        *)                  CONFIG="$1"; shift ;;
+    esac
+done
+
+CONFIG="${CONFIG:-${REPO_ROOT}/config_example.yaml}"
+
+# These get populated by interactive prompts only when their section flag is set.
+# Empty value at python-apply time means "do not touch".
+THICKNESS=""
+VACUUM_Z=""
+PRERELAX=""
 
 if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
@@ -48,12 +93,17 @@ salt_conc = salts[0].get("concentration_M", 0.1) if salts else 0.1
 qcharge   = g("charge_control", "q_electrode_user_value", default=0.0)
 adsorb    = g("ces2_script", "adsorbate", default="0")
 jobname   = g("ces2_script", "jobname", default="ces2_qmmm")
+# Current values for fields gated behind CLI flags (shown as defaults in section prompts).
+cur_thick   = g("electrolyte_box", "thickness", default="?")
+cur_vacz    = g("electrolyte_box", "vacuum_z",  default="?")
+cur_relax   = g("md_relax", "enabled", default=False)
+cur_initdmp = g("ces2", "initial_dump", default="")
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}")
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP <<<"$(read_defaults)"
 
 ask() {
     # ask "prompt" "default" -> echoes user reply (or default if blank)
@@ -149,6 +199,44 @@ ADSORB="$(ask "Adsorbate atom count (last N atoms in POSCAR; 0 = none)" "$CUR_AD
 # ---- 6. job name ----
 JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$CUR_JOB")"
 
+# ---- 7. (optional, --box) electrolyte box geometry ----
+if [[ "$DO_BOX" == "1" ]]; then
+    echo
+    echo "Box geometry  (current values shown as defaults — Enter to keep)"
+    echo "  thickness/vacuum_z must satisfy:"
+    echo "    0.8·(z_top_slab + thickness + vacuum_z + z_buffer_lo) ≥ z_top_slab + thickness + 5"
+    echo "  Recommended: thickness=50, vacuum_z=30 (~6 Å margin to QE emaxpos zone)."
+    THICKNESS="$(ask "  electrolyte_box.thickness [Å]" "$CUR_THICK")"
+    VACUUM_Z="$(ask  "  electrolyte_box.vacuum_z  [Å]" "$CUR_VACZ")"
+    if ! [[ "$THICKNESS" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "ERROR: thickness must be a positive number, got '$THICKNESS'" >&2; exit 2
+    fi
+    if ! [[ "$VACUUM_Z" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "ERROR: vacuum_z must be a positive number, got '$VACUUM_Z'" >&2; exit 2
+    fi
+fi
+
+# ---- 8. (optional, --prerelax) pre-relaxation pipeline toggle ----
+if [[ "$DO_PRERELAX" == "1" ]]; then
+    echo
+    echo "Pre-relaxation pipeline  (md_relax.enabled + ces2.initial_dump)"
+    if [[ "$CUR_RELAX" == "True" ]] || [[ "$CUR_RELAX" == "true" ]]; then
+        cur_pre="on"
+    else
+        cur_pre="off"
+    fi
+    echo "  current: enabled=$CUR_RELAX, initial_dump='$CUR_INITDMP'"
+    echo "  on  → MM relax (min→heat→equil) before QM/MM, base.in.lammps reads equilibrated.dump"
+    echo "  off → skip relax, QM/MM starts directly from packmol coords"
+    while :; do
+        PRERELAX="$(ask "  enable pre-relaxation? (on/off)" "$cur_pre")"
+        case "$(printf '%s' "$PRERELAX" | tr '[:upper:]' '[:lower:]')" in
+            on|off|true|false|1|0|yes|no) break ;;
+            *) echo "  please answer on or off" ;;
+        esac
+    done
+fi
+
 echo
 echo "------------------------------------------"
 echo "Summary:"
@@ -159,6 +247,17 @@ echo "  anion  in pool : $ANION"
 echo "  electrode q    : $QCHARGE e"
 echo "  adsorbate N    : $ADSORB"
 echo "  job name       : $JOBNAME"
+if [[ "$DO_BOX" == "1" ]]; then
+    echo "  thickness      : $THICKNESS Å         (was $CUR_THICK)"
+    echo "  vacuum_z       : $VACUUM_Z Å         (was $CUR_VACZ)"
+fi
+if [[ "$DO_PRERELAX" == "1" ]]; then
+    case "$(printf '%s' "$PRERELAX" | tr '[:upper:]' '[:lower:]')" in
+        on|true|1|yes)  PR_VIEW="on  (md_relax.enabled=true,  initial_dump=equilibrated.dump)" ;;
+        *)              PR_VIEW="off (md_relax.enabled=false, initial_dump removed)" ;;
+    esac
+    echo "  pre-relaxation : $PR_VIEW           (was enabled=$CUR_RELAX)"
+fi
 echo "------------------------------------------"
 read -r -p "Apply these changes to $CONFIG? [Y/n] " confirm
 confirm="${confirm:-Y}"
@@ -175,7 +274,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME
+export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -232,6 +331,34 @@ cs["adsorbate"] = str(adsorb)
 cs["jobname"]   = jobname
 if "pbs" in cs and isinstance(cs["pbs"], dict):
     cs["pbs"]["job_name"] = jobname
+
+# --- (optional, --box) electrolyte_box geometry ----------------------------
+# Empty env var means the section flag wasn't given; preserve current YAML.
+thickness_str = os.environ.get("THICKNESS", "").strip()
+vacuum_z_str  = os.environ.get("VACUUM_Z",  "").strip()
+if thickness_str or vacuum_z_str:
+    ebox = d.setdefault("electrolyte_box", CommentedMap())
+    if thickness_str:
+        ebox["thickness"] = float(thickness_str)
+    if vacuum_z_str:
+        ebox["vacuum_z"] = float(vacuum_z_str)
+
+# --- (optional, --prerelax) pre-relaxation toggle --------------------------
+# on  → md_relax.enabled=true,  ces2.initial_dump="equilibrated.dump"
+# off → md_relax.enabled=false, drop ces2.initial_dump
+prerelax_str = os.environ.get("PRERELAX", "").strip().lower()
+if prerelax_str:
+    enable_relax = prerelax_str in ("on", "true", "1", "yes", "y")
+    relax = d.setdefault("md_relax", CommentedMap())
+    relax["enabled"] = enable_relax
+    ces2_blk = d.setdefault("ces2", CommentedMap())
+    if enable_relax:
+        ces2_blk["initial_dump"] = "equilibrated.dump"
+    else:
+        # Remove the key entirely so base.in.lammps emits no read_dump line.
+        # Block-level documentation comments above the (now-removed) key are
+        # left in place by ruamel.yaml's comment preservation.
+        ces2_blk.pop("initial_dump", None)
 
 with open(path, "w") as f:
     yaml.dump(d, f)
