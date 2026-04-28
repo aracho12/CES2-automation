@@ -18,6 +18,28 @@ def water_volume_L(n_water: int, rho_g_ml: float) -> float:
     mass_g = n_w * M_H2O
     return (mass_g / rho_g_ml) * 1e-3
 
+
+def auto_water_count(Lx_A: float, Ly_A: float, thickness_A: float,
+                     rho_g_ml: float = 1.0,
+                     underfill: float = 0.97) -> int:
+    """Number of water molecules to fill an Lx·Ly·thickness Å³ box.
+
+    n = V·ρ·N_A / M_H2O · underfill, with V in cm³.
+
+    `underfill` (default 0.97) leaves ~3 % volumetric slack so packmol can
+    place molecules without rejecting a large fraction on overlap. The
+    relaxation/equilibration stage then equilibrates to the true TIP4P-EW
+    density (~1.00 g/cm³). At underfill=1.0 packmol either fails to converge
+    or produces structures with stressed contacts that take longer to relax.
+    """
+    if Lx_A <= 0 or Ly_A <= 0 or thickness_A <= 0:
+        raise ValueError(f"Non-positive box: Lx={Lx_A}, Ly={Ly_A}, t={thickness_A}")
+    if not (0.0 < underfill <= 1.0):
+        raise ValueError(f"underfill must be in (0, 1], got {underfill}")
+    V_cm3 = Lx_A * Ly_A * thickness_A * 1.0e-24
+    n_real = V_cm3 * rho_g_ml * N_A / M_H2O * underfill
+    return int(round(n_real))
+
 def counts_from_salts(V_L: float, salts: List[dict]) -> Dict[str, int]:
     out: Dict[str, int] = {}
     for s in salts:

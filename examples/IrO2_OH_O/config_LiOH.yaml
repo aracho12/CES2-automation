@@ -13,9 +13,15 @@ cell:
 
 electrolyte_box:
   z_gap: 0.0
-  thickness: 60.0
+  # thickness/vacuum_z must satisfy: 0.8·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
+  # ≥ z_top_slab + thickness + 5.  Otherwise the SOLVENT upper wall gets clamped
+  # below z_el_hi (water column compressed) to keep solvent out of QE's
+  # dipole-correction zone (emaxpos·c).  Recommended (thickness, vacuum_z) =
+  # (50, 30) gives ~6 Å margin without changing cell c, and reduces water count
+  # vs (60, 20) by ~17% so MM/cube cost drops while QE cost is unchanged.
+  thickness:   50.0            # [Å] water column height above slab
   z_margin_top: 2.0
-  vacuum_z:    20.0            # [Å] vacuum gap above water for boundary p p f
+  vacuum_z:    30.0            # [Å] vacuum gap above water for boundary p p f
   z_buffer_lo:  1.0            # [Å] buffer below slab (zlo = -z_buffer_lo)
 
 packmol:
@@ -35,8 +41,12 @@ electrolyte_recipe:
   # Only set species_id explicitly if you need a custom water species.
   water:
     # species_id: "water_tip4p"   # optional: auto-derived from ces2.water_model
-    count: 2850
-    density_g_per_ml: 1.0
+    # count: auto  → derived from Lx·Ly·thickness·ρ·packmol_underfill (default).
+    # count: <int> → explicit override (e.g. for reproducing legacy runs).
+    count: auto                   # builder logs the resolved n_water at runtime
+    density_g_per_ml: 1.0         # bulk water density (used for both ion-conc and auto count)
+    packmol_underfill: 0.97       # 3 % volumetric slack for packmol convergence;
+                                  # equilibration recovers true TIP4P-EW density
 
   # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
   salts: 
@@ -147,6 +157,12 @@ ces2:
     shake_tol:     1.0e-4  # SHAKE convergence tolerance
     shake_iter:    20      # SHAKE max iterations
     shake_maxiter: 500     # SHAKE absolute max iterations
+    # ── SOLVENT upper-wall during QM/MM production ──────────────────────────
+    # Defaults below match what the writer applies if omitted.
+    # wall_buffer:           10.0   # [Å] requested z_wall = z_el_hi + buffer
+    # wall_K:                50.0   # [kcal/mol/Å²] harmonic spring (was 10, bumped to hold under TIP4P+ion impact)
+    # emaxpos_safety_margin:  5.0   # [Å] hard cap: z_wall ≤ z_emaxpos − margin
+                                    # (prevents wall from sitting inside QE dipole zone)
 
 # ---- QE (Quantum ESPRESSO) settings for CES2 QM calculation ----
 qe:
@@ -234,3 +250,10 @@ md_relax:
   timestep_fs: 1.0             # fs
   dump_every:  2000
   write_equilibrated: "equilibrated.data"
+
+  # ── SOLVENT walls during pre-relax (min/heat/equil) ─────────────────────
+  # Defaults below match what the writer applies if omitted.
+  # relax_wall_buffer:      5.0   # [Å] requested z_wall = z_el_hi + buffer
+  # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
+  # relax_wall_K:          50.0   # [kcal/mol/Å²] harmonic spring (was 10)
+  # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone

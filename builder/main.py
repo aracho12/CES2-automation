@@ -10,7 +10,7 @@ from .config import load_config
 from .species import load_species_db
 from .vasp_io import read_vasp, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
 from .box import compute_box_meta
-from .composition import water_volume_L, counts_from_salts, compute_total_charge, adjust_with_counterions
+from .composition import water_volume_L, auto_water_count, counts_from_salts, compute_total_charge, adjust_with_counterions
 from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
 from .builder import (
     write_species_xyz, make_type_registry, assign_mm_types_charges_by_order,
@@ -104,10 +104,26 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     _default_sid = _WATER_MODEL_TO_SID.get(_water_model, "water_tip4p")
     water_sid = recipe["water"].get("species_id", _default_sid)
 
-    n_water = int(recipe["water"]["count"])
     rho = float(recipe["water"].get("density_g_per_ml", cfg.get("composition", {}).get("density_g_per_ml", 1.0)))
     if water_sid not in species_db:
         raise KeyError(f"Water species_id '{water_sid}' not found in species_db")
+
+    # Water count: explicit integer or auto-derive from electrolyte-box geometry.
+    # Accepts:  count: <int>   (explicit)
+    #           count: auto    (default — derived from Lx·Ly·thickness·ρ·underfill)
+    #           count omitted  (treated as 'auto')
+    _w_count = recipe["water"].get("count", "auto")
+    if isinstance(_w_count, str) and _w_count.strip().lower() == "auto":
+        underfill = float(recipe["water"].get("packmol_underfill", 0.97))
+        thickness_A = box.z_el_hi - box.z_el_lo
+        n_water = auto_water_count(box.Lx, box.Ly, thickness_A,
+                                   rho_g_ml=rho, underfill=underfill)
+        print(f"[main] water.count: auto → {n_water}  "
+              f"(Lx·Ly·t = {box.Lx:.2f}·{box.Ly:.2f}·{thickness_A:.2f} = "
+              f"{box.Lx*box.Ly*thickness_A:.0f} Å³, ρ={rho:g} g/ml, "
+              f"underfill={underfill:g})")
+    else:
+        n_water = int(_w_count)
 
     V_L = water_volume_L(n_water, rho)
 
@@ -414,6 +430,21 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings["qm_mm_lists"] = time.perf_counter() - t0
     print(f"[TIMING] qm_mm_lists: {timings['qm_mm_lists']:.3f} s")
 
+    # Compute full simulation-box z span (must match data.file exactly).
+    # Uses the same formula as write_data_file_reference_style:
+    #   z_hi = max(z_el_hi, max_atom_z + 1.0) + vacuum_z
+    #   z_lo = -z_buffer_lo
+    # Computed here (before generate_lammps_input) so the writer can clamp the
+    # SOLVENT upper wall safely below QE's emaxpos zone.
+    import numpy as _np
+    _max_atom_z = float(_np.max(combined.positions[:, 2]))
+    _z_hi = max(box.z_el_hi, _max_atom_z + 1.0) + box.vacuum_z
+    _z_lo = -box.z_buffer_lo
+    box_z_total = _z_hi - _z_lo
+    box.box_z_total = box_z_total
+    box.box_zlo     = _z_lo
+    box.box_zhi     = _z_hi
+
     # Generate base.in.lammps (CES2 QM/MM LAMMPS input)
     t0 = time.perf_counter()
     qm_params_dir = species_db_path / "qm_params"
@@ -438,15 +469,6 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # Generate base.pw.in + base.pp.in (QE input)
     t0 = time.perf_counter()
     qm_elements_ordered = sorted(set(slab_sc.get_chemical_symbols()))
-    # Compute full simulation-box z span (must match data.file exactly).
-    # Uses the same formula as write_data_file_reference_style:
-    #   z_hi = max(z_el_hi, max_atom_z + 1.0) + vacuum_z
-    #   z_lo = -z_buffer_lo
-    import numpy as _np
-    _max_atom_z = float(_np.max(combined.positions[:, 2]))
-    _z_hi = max(box.z_el_hi, _max_atom_z + 1.0) + box.vacuum_z
-    _z_lo = -box.z_buffer_lo
-    box_z_total = _z_hi - _z_lo
     generate_qe_input(
         export_dir=export_dir,
         slab_cell=slab_sc.cell.array,
@@ -531,7 +553,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
             cfg=cfg,
             relax_cutoff=relax_cutoff,
         )
-        md_out = generate_md_bundle(export_dir, md_cfg, relax_ff=relax_ff)
+        md_out = generate_md_bundle(export_dir, md_cfg, relax_ff=relax_ff,
+                                    qe_cfg=cfg.get("qe", {}))
         timings["md_bundle"] = time.perf_counter() - t0
         print(f"[TIMING] md_bundle: {timings['md_bundle']:.3f} s")
         summary["md_relax_bundle"] = md_out.__dict__

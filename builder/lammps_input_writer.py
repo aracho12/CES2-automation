@@ -256,12 +256,42 @@ def generate_lammps_input(
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
     _wall_buffer     = float(md_cfg.get("wall_buffer",      10.0))
     z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
+
+    # Cap the upper wall safely below QE's dipole-correction (emaxpos) zone.
+    # Any solvent that crosses QE z = emaxpos·c sees a discontinuous cube
+    # potential → gridforce/net produces singular forces → run dies. The wall
+    # MUST sit at least `emaxpos_safety_margin` Å below emaxpos in absolute
+    # LAMMPS coords. Without this clamp, the default `z_el_hi + 10` could
+    # easily land *inside* the dipole region (e.g. emaxpos=0.8 with a thin
+    # vacuum_z), making the wall protect nothing.
+    qe_cfg              = cfg.get("qe", {})
+    emaxpos             = float(qe_cfg.get("emaxpos", 0.8))
+    emaxpos_safety      = float(md_cfg.get("emaxpos_safety_margin", 5.0))
+    _box_z_total = getattr(box, "box_z_total", None)
+    _box_zlo     = getattr(box, "box_zlo",     None)
+    if _box_z_total is None or _box_zlo is None:
+        # Fallback: conservative approximation when BoxMeta fields weren't
+        # populated (e.g. older callers). Underestimates box_z_total slightly,
+        # which makes the cap stricter — safe direction.
+        _box_zlo     = -float(getattr(box, "z_buffer_lo", 1.0))
+        _box_z_total = float(box.z_el_hi) + float(box.vacuum_z) + float(getattr(box, "z_buffer_lo", 1.0))
+    _z_emaxpos   = _box_zlo + emaxpos * _box_z_total
+    _z_wall_safe = _z_emaxpos - emaxpos_safety
+    if z_wall_hi > _z_wall_safe:
+        print(f"[lammps_input_writer] Capping CES2 upper wall {z_wall_hi:.3f} → {_z_wall_safe:.3f} Å "
+              f"(emaxpos={emaxpos} → z_emaxpos={_z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
+        z_wall_hi = _z_wall_safe
+        if z_wall_hi < float(box.z_el_hi):
+            print(f"[lammps_input_writer] WARNING: capped wall ({z_wall_hi:.3f}) is BELOW z_el_hi "
+                  f"({float(box.z_el_hi):.3f}). Increase cell.vacuum_z or decrease cell.thickness "
+                  f"for headroom.")
+
     # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
-    # Max wall force is 2*K*wall_cutoff. K=1.0 (the relax-stage default) is too
-    # soft to bounce waters back against ~10 kcal/mol/Å upward forces from the
-    # QM grid near the water/vacuum interface, so they punch through and trip
-    # "Particle on or inside fix wall surface". K=10 gives ~10× headroom.
-    wall_K           = float(md_cfg.get("wall_K",          10.0))
+    # Max wall force is 2*K*wall_cutoff. K=10 (old default) bent under TIP4P
+    # impact + ~10 kcal/mol/Å upward grid forces near the water/vacuum interface,
+    # letting tail atoms punch through and trip "Particle on or inside fix wall
+    # surface". K=50 gives ~5× more headroom and held in stress tests.
+    wall_K           = float(md_cfg.get("wall_K",          50.0))
     wall_sigma       = float(md_cfg.get("wall_sigma",       1.0))
     wall_cutoff      = float(md_cfg.get("wall_cutoff",      5.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))

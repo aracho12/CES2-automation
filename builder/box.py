@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Optional
 import numpy as np
 from ase import Atoms
 
@@ -13,6 +14,13 @@ class BoxMeta:
     z_el_hi: float
     vacuum_z: float = 20.0      # Å vacuum gap above water for boundary p p f
     z_buffer_lo: float = 1.0    # Å buffer below slab (zlo = -z_buffer_lo)
+    # Full simulation-box z extent (set after data.file is built in main.py).
+    # Needed by wall-clamp logic that maps QE emaxpos (fractional, 0..1) into
+    # absolute LAMMPS z so the upper SOLVENT wall stays below the dipole-correction
+    # region of the cube.
+    box_z_total: Optional[float] = None
+    box_zlo:     Optional[float] = None
+    box_zhi:     Optional[float] = None
 
 def compute_box_meta(slab: Atoms, z_gap: float, thickness: float,
                      z_margin_top: float,

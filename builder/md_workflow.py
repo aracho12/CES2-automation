@@ -493,6 +493,7 @@ def generate_md_bundle(
     export_dir:  Path,
     md_cfg:      Dict,
     relax_ff:    "Optional[RelaxFFParams]" = None,
+    qe_cfg:      Optional[Dict] = None,
 ) -> MDOutputs:
     """
     Generate the MD pre-relax bundle:
@@ -512,6 +513,8 @@ def generate_md_bundle(
     z_wall_lo: Optional[float] = None
     wall_buffer: float = float(md_cfg.get("relax_wall_buffer", 5.0))  # Å above z_el_hi
     wall_buffer_lo: float = float(md_cfg.get("wall_buffer_lo", 2.0))  # Å above slab top
+    box_zlo: Optional[float] = None
+    box_z_total: Optional[float] = None
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
         try:
@@ -531,13 +534,46 @@ def generate_md_bundle(
             z_top_slab = box_info.get("z_top_slab")
             if z_top_slab is not None:
                 z_wall_lo = float(z_top_slab) + wall_buffer_lo
+            # Geometry needed to clamp upper wall below QE dipole-correction zone.
+            box_zlo     = box_info.get("box_zlo")
+            box_z_total = box_info.get("box_z_total")
+            if box_zlo is None or box_z_total is None:
+                # Fallback: approximate from BoxMeta-style fields written before
+                # box_zlo/box_zhi were populated by main.py.
+                _vac = float(box_info.get("vacuum_z",    20.0))
+                _zbl = float(box_info.get("z_buffer_lo",  1.0))
+                if z_el_hi is not None:
+                    box_zlo     = -_zbl
+                    box_z_total = float(z_el_hi) + _vac + _zbl
         except Exception:
             pass
 
     # ── Wall spring parameters (configurable for tighter confinement) ────
-    relax_wall_K       = float(md_cfg.get("relax_wall_K",       10.0))
+    # K bumped 10→50: at 10 kcal/mol/Å² walls bend under TIP4P + ion impact and
+    # let stray waters drift past z_wall into QE's dipole-correction region.
+    relax_wall_K       = float(md_cfg.get("relax_wall_K",       50.0))
     relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
     relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
+
+    # ── Cap upper wall safely below QE dipole-correction (emaxpos) zone ──
+    # The QM cube's potential becomes discontinuous starting at QE z = emaxpos·c,
+    # which in LAMMPS box coords is  box_zlo + emaxpos·box_z_total.  Any solvent
+    # atom that crosses into that region experiences a singular gridforce/net force
+    # and the run dies.  Force the wall to sit at least `emaxpos_safety_margin` Å
+    # below it (default 5 Å).
+    emaxpos        = float((qe_cfg or {}).get("emaxpos", 0.8))
+    emaxpos_safety = float(md_cfg.get("emaxpos_safety_margin", 5.0))
+    if z_wall is not None and box_zlo is not None and box_z_total is not None:
+        z_emaxpos      = box_zlo + emaxpos * box_z_total
+        z_wall_safe    = z_emaxpos - emaxpos_safety
+        if z_wall > z_wall_safe:
+            print(f"[md_workflow] Capping upper wall {z_wall:.3f} → {z_wall_safe:.3f} Å "
+                  f"(emaxpos={emaxpos} → z_emaxpos={z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
+            z_wall = z_wall_safe
+            if z_el_hi is not None and z_wall < float(z_el_hi):
+                print(f"[md_workflow] WARNING: capped wall ({z_wall:.3f}) is BELOW z_el_hi "
+                      f"({float(z_el_hi):.3f}). Solvent column will be slightly compressed. "
+                      f"Increase cell.vacuum_z or decrease cell.thickness for more headroom.")
 
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(
