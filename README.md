@@ -32,7 +32,7 @@ Running `python run_builder.py` generates a complete, ready-to-run CES2 QM/MM di
 
 ## Quick Start
 
-### 1. Clone and set up Python environment
+### 1-1. Clone and set up Python environment
 
 ```bash
 git clone https://github.com/aracho12/CES2-automation.git
@@ -43,14 +43,36 @@ source venv/bin/activate       # Mac/Linux
 pip install -r requirements.txt
 ```
 
+### 1-2. Clone and set up Python environment using conda
+
+```bash
+git clone https://github.com/aracho12/CES2-automation.git
+cd CES2-automation
+
+python -m venv venv
+source venv/bin/activate       # Mac/Linux
+pip install -r requirements.txt
+ 
+conda create -n ces2 python=3.10
+conda activate ces2
+conda install --file requirements.txt 
+```
+
 ### 2. Install PACKMOL
 
-PACKMOL must be installed separately and on your PATH.
+PACKMOL must be installed separately.
 
 ```bash
 conda install -c conda-forge packmol   # easiest
 # or build from source: https://github.com/m3g/packmol
-which packmol                          # verify
+which packmol                          # get the full path
+```
+
+Set the full binary path in `config.yaml`:
+
+```yaml
+packmol:
+  binary: "/path/to/your/packmol"   # e.g. /home/user/anaconda3/envs/ces2/bin/packmol
 ```
 
 ### 3. Prepare your config
@@ -536,4 +558,4 @@ The builder executes the following steps in order:
 - Python ≥ 3.9
 - PACKMOL (separate install — see Quick Start)
 - Python packages: `ase`, `numpy`, `pyyaml`, `scipy` (see `requirements.txt`)
-- For running simulations: LAMMPS with `gridforce/net` and `bjdisp` pair style, Quantum ESPRESSO ≥ 7.0
+- For running simulations: LAMMPS with `gridforce/net` and `bjdisp` pair style, modified Quantum ESPRESSO ≥ 7.0 for DFT-CES2 simulation. (Refer https://github.com/dft-ces/dft-ces2)

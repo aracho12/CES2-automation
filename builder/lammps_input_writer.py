@@ -125,7 +125,8 @@ def generate_lammps_input(
     box,                                        # BoxMeta
     bond_coeffs: Dict[int, Tuple[float, float]],
     angle_coeffs: Dict[int, Tuple[float, float]],
-    qm_params_dir: Path,
+    qm_params_dir: Optional[Path],
+    qm_params_file: Optional[str] = None,
     cfg: Dict[str, Any],
     n_mm: int,
     charged_params: Optional[Dict[str, float]] = None,
@@ -235,6 +236,7 @@ def generate_lammps_input(
         species_db=species_db,
         qm_params_dir=qm_params_dir,
         config_bjdisp=cfg.get("bjdisp"),
+        qm_params_file=qm_params_file,
     )
     # Layer-file params override any generic qm_params entries with the same label.
     if extra_qm_bjdisp:
