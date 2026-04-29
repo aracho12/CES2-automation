@@ -246,6 +246,26 @@ slab:
 
 ---
 
+### `builder/lammps_input_writer.py` — TIP3P LJ defaults
+
+**What:** Uncommented `_DEFAULT_LJ_TIP3P` which was defined but commented out, causing a `NameError` when `ces2.water_model: TIP3P` was set.
+
+```diff
+-# _DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
+-#     "Ow":    (0.1521, 3.1507),
+-#     ...
+-# }
++_DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
++    # Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
++    "Ow":    (0.1521, 3.1507),
++    ...
++}
+```
+
+**Why:** TIP3P mode was documented and wired up in the code but the LJ parameter table was accidentally left commented out, making it completely unusable.
+
+---
+
 ### `builder/builder.py` — `PLATEPOS` unit fix
 
 **What:** Fixed `plate_pos` calculation from dimensionless fraction to bohr.
