@@ -246,6 +246,23 @@ slab:
 
 ---
 
+### `builder/builder.py` — `PLATEPOS` unit fix
+
+**What:** Fixed `plate_pos` calculation from dimensionless fraction to bohr.
+
+```diff
+-    # Plate position: midpoint of slab as fraction of box z
+-    slab_mid_z = 0.5 * (z_min + z_max)
+-    plate_pos = slab_mid_z / box_z_total if box_z_total > 0 else 0.0
++    # Plate position: midpoint of slab in bohr
++    slab_mid_z = 0.5 * (z_min + z_max)
++    plate_pos = slab_mid_z * ANG_TO_BOHR
+```
+
+**Why:** `CHGPLATE` expects `PLATEPOS` in bohr (as documented in the generated script comment), but the code was passing a dimensionless fraction of box height. `mpc_layer` was already converted to bohr correctly.
+
+---
+
 ### `builder/builder.py` — `ATOMIC_MASS` table + error message
 
 **What 1:** Added `Au` to the hardcoded atomic mass table.

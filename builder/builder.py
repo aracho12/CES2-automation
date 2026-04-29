@@ -267,9 +267,9 @@ def compute_charged_system_params(
     top_z_mean = float(np.mean(zpos[zpos >= z_cutoff]))
     mpc_layer = top_z_mean * ANG_TO_BOHR
 
-    # Plate position: midpoint of slab as fraction of box z
+    # Plate position: midpoint of slab in bohr
     slab_mid_z = 0.5 * (z_min + z_max)
-    plate_pos = slab_mid_z / box_z_total if box_z_total > 0 else 0.0
+    plate_pos = slab_mid_z * ANG_TO_BOHR
 
     # QE tot_charge: per unit cell
     tot_chg = float(q_electrode) / float(sc_factor) if sc_factor else 0.0
