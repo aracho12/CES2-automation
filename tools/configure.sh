@@ -16,10 +16,13 @@
 #                   ces2.initial_dump (auto-set when on, removed when off)
 #   --parallel      QE parallelization flags: ces2_script.{npool, ntg, ndiag}
 #                   (pw.x mpirun options; see config_example.yaml comments)
+#   --qmmm          Edit QMMMFINSTEP in ./qmmm_dftces2_charging_pts.sh (if
+#                   present in CWD) and keep YAML's ces2_script.n_qmmm_steps
+#                   in sync (n_qmmm_steps = QMMMFINSTEP + 1).
 #   -h, --help      Show this help and exit.
 #
 # Combine freely:
-#   tools/configure.sh --box --prerelax --parallel myconfig.yaml
+#   tools/configure.sh --box --prerelax --parallel --qmmm myconfig.yaml
 #
 # Backup: writes .<basename>.bak alongside the original before editing.
 set -euo pipefail
@@ -34,6 +37,7 @@ print_help() {
 DO_BOX=0        # 1 => prompt for electrolyte_box.{thickness, vacuum_z}
 DO_PRERELAX=0   # 1 => prompt for md_relax.enabled (and sync ces2.initial_dump)
 DO_PARALLEL=0   # 1 => prompt for ces2_script.{npool, ntg, ndiag}
+DO_QMMM=0       # 1 => prompt for QMMMFINSTEP (and sync ces2_script.n_qmmm_steps)
 CONFIG=""
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --box)              DO_BOX=1; shift ;;
         --prerelax)         DO_PRERELAX=1; shift ;;
         --parallel)         DO_PARALLEL=1; shift ;;
+        --qmmm)             DO_QMMM=1; shift ;;
         -h|--help)          print_help; exit 0 ;;
         --)                 shift; CONFIG="${1:-}"; break ;;
         -*)                 echo "ERROR: unknown option: $1" >&2; print_help; exit 2 ;;
@@ -58,6 +63,10 @@ PRERELAX=""
 NPOOL=""
 NTG=""
 NDIAG=""
+QMMMFINSTEP=""
+
+# Path to the qmmm script in the current working directory (if any).
+QMMM_SCRIPT_PATH="./qmmm_dftces2_charging_pts.sh"
 
 if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
@@ -108,12 +117,20 @@ cur_initdmp = g("ces2", "initial_dump", default="")
 cur_npool   = g("ces2_script", "npool", default="")
 cur_ntg     = g("ces2_script", "ntg",   default="")
 cur_ndiag   = g("ces2_script", "ndiag", default="")
+cur_nsteps  = g("ces2_script", "n_qmmm_steps", default="")
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}")
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS <<<"$(read_defaults)"
+
+# Try to read QMMMFINSTEP from the qmmm script in CWD (if present).
+CUR_QMMMFINSTEP=""
+if [[ -f "$QMMM_SCRIPT_PATH" ]]; then
+    CUR_QMMMFINSTEP="$(grep -E '^[[:space:]]*QMMMFINSTEP=' "$QMMM_SCRIPT_PATH" | head -1 \
+        | sed -E 's/^[[:space:]]*QMMMFINSTEP=([0-9]+).*/\1/')"
+fi
 
 ask() {
     # ask "prompt" "default" -> echoes user reply (or default if blank)
@@ -272,6 +289,31 @@ if [[ "$DO_PARALLEL" == "1" ]]; then
     fi
 fi
 
+# ---- 10. (optional, --qmmm) QMMMFINSTEP ----
+if [[ "$DO_QMMM" == "1" ]]; then
+    echo
+    echo "QM/MM outer-loop length  (QMMMFINSTEP in qmmm_dftces2_charging_pts.sh)"
+    echo "  Inclusive 0-based upper bound: total steps = QMMMFINSTEP + 1."
+    echo "  YAML's ces2_script.n_qmmm_steps is auto-synced to (QMMMFINSTEP + 1)."
+    if [[ -n "$CUR_QMMMFINSTEP" ]]; then
+        echo "  current QMMMFINSTEP in $QMMM_SCRIPT_PATH : $CUR_QMMMFINSTEP"
+        DEFAULT_FIN="$CUR_QMMMFINSTEP"
+    elif [[ -n "$CUR_NSTEPS" ]]; then
+        echo "  qmmm script not found in CWD; deriving default from YAML"
+        echo "    YAML n_qmmm_steps = $CUR_NSTEPS  →  QMMMFINSTEP = $((CUR_NSTEPS - 1))"
+        DEFAULT_FIN="$((CUR_NSTEPS - 1))"
+    else
+        DEFAULT_FIN=""
+    fi
+    if [[ -z "$CUR_QMMMFINSTEP" ]]; then
+        echo "  (no qmmm script in CWD — only YAML's n_qmmm_steps will be updated)"
+    fi
+    QMMMFINSTEP="$(ask "  QMMMFINSTEP" "$DEFAULT_FIN")"
+    if ! [[ "$QMMMFINSTEP" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: QMMMFINSTEP must be a non-negative integer, got '$QMMMFINSTEP'" >&2; exit 2
+    fi
+fi
+
 echo
 echo "------------------------------------------"
 echo "Summary:"
@@ -298,6 +340,11 @@ if [[ "$DO_PARALLEL" == "1" ]]; then
     echo "  ntg            : $NTG          (was $CUR_NTG)"
     echo "  ndiag          : $NDIAG          (was $CUR_NDIAG)"
 fi
+if [[ "$DO_QMMM" == "1" ]]; then
+    new_nsteps=$((QMMMFINSTEP + 1))
+    echo "  QMMMFINSTEP    : $QMMMFINSTEP          (was ${CUR_QMMMFINSTEP:-?})"
+    echo "  n_qmmm_steps   : $new_nsteps          (was ${CUR_NSTEPS:-?})  [YAML, auto-synced]"
+fi
 echo "------------------------------------------"
 read -r -p "Apply these changes to $CONFIG? [Y/n] " confirm
 confirm="${confirm:-Y}"
@@ -314,7 +361,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX NPOOL NTG NDIAG
+export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX NPOOL NTG NDIAG QMMMFINSTEP
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -409,10 +456,33 @@ for env_key, yaml_key in (("NPOOL", "npool"), ("NTG", "ntg"), ("NDIAG", "ndiag")
         cs.setdefault(yaml_key, 0)
         cs[yaml_key] = int(val)
 
+# --- (optional, --qmmm) QMMMFINSTEP → YAML n_qmmm_steps sync ---------------
+# QMMMFINSTEP is the inclusive 0-based upper bound used by the qmmm script's
+# for-loop. Total iterations = QMMMFINSTEP + 1, which is what n_qmmm_steps
+# represents in the YAML. Keep them in lockstep so the next rebuild doesn't
+# silently revert the script.
+qmmmfinstep_str = os.environ.get("QMMMFINSTEP", "").strip()
+if qmmmfinstep_str:
+    cs["n_qmmm_steps"] = int(qmmmfinstep_str) + 1
+
 with open(path, "w") as f:
     yaml.dump(d, f)
 
 print(f"updated -> {path}")
 PY
+
+# ---- (optional, --qmmm) patch QMMMFINSTEP in qmmm_dftces2_charging_pts.sh ----
+# The YAML side was already synced inside the Python block above. Now also
+# patch the in-place qmmm script if it exists in CWD, so a resubmit picks up
+# the new bound without having to rebuild.
+if [[ "$DO_QMMM" == "1" ]] && [[ -f "$QMMM_SCRIPT_PATH" ]]; then
+    QMMM_BAK="${QMMM_SCRIPT_PATH}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp -p -- "$QMMM_SCRIPT_PATH" "$QMMM_BAK"
+    # Replace ONLY the numeric value, preserve any trailing comment.
+    sed -i.tmp -E "s|^([[:space:]]*QMMMFINSTEP=)[0-9]+([[:space:]]*.*)?$|\1${QMMMFINSTEP}\2|" "$QMMM_SCRIPT_PATH"
+    rm -f "${QMMM_SCRIPT_PATH}.tmp"
+    echo "qmmm script -> $QMMM_SCRIPT_PATH  (backup: $QMMM_BAK)"
+    grep -E '^[[:space:]]*QMMMFINSTEP=' "$QMMM_SCRIPT_PATH" | sed 's/^/  /'
+fi
 
 echo "Done."

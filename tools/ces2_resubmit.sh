@@ -15,13 +15,48 @@
 #   5. qsub submit_ces2.sh (unless --dry-run)
 #
 # Usage:
-#   ces2_resubmit.sh                 # detect, patch, qsub
-#   ces2_resubmit.sh --dry-run       # detect and patch, do not submit
+#   ces2_resubmit.sh                       # detect, patch, qsub (one-shot)
+#   ces2_resubmit.sh --dry-run             # detect+patch only, no qsub
+#   ces2_resubmit.sh --continue            # also inject SIGTERM trap into
+#                                          # submit_ces2.sh so PBS walltime
+#                                          # kill auto-resubmits the chain
+#   ces2_resubmit.sh --continue --max=N    # cap chain retries (default 5)
+#   ces2_resubmit.sh --no-continue         # remove the trap (stop the chain)
 
 set -euo pipefail
 
 DRYRUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRYRUN=1
+CONTINUE=0
+NO_CONTINUE=0
+MAX_RESUBMIT=5
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)         DRYRUN=1; shift ;;
+    --continue)        CONTINUE=1; shift ;;
+    --no-continue)     NO_CONTINUE=1; shift ;;
+    --max=*)           MAX_RESUBMIT="${1#--max=}"; shift ;;
+    --max)             MAX_RESUBMIT="${2:?--max needs an integer}"; shift 2 ;;
+    -h|--help)
+      sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed -e 's/^# \{0,1\}//' -e '/^set -euo/d'
+      exit 0 ;;
+    *)
+      echo "ERROR: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+if (( CONTINUE == 1 && NO_CONTINUE == 1 )); then
+  echo "ERROR: --continue and --no-continue are mutually exclusive." >&2
+  exit 2
+fi
+if ! [[ "$MAX_RESUBMIT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --max must be a positive integer, got '$MAX_RESUBMIT'" >&2
+  exit 2
+fi
+
+# Absolute path to this script — embedded into the trap block so the chain
+# survives different working directories on compute nodes.
+SELF_ABS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
 
 # ---- Log all output to file (and still print to terminal) ----
 LOGFILE="ces2_resubmit_$(date +%Y%m%d_%H%M%S).log"
@@ -173,6 +208,100 @@ if (( sub_patched == 1 )); then
   grep -n 'in\.relax_' "$SUB" | sed 's/^/     /' || true
 else
   echo "   $SUB  (no relax lines found — left as-is)"
+fi
+
+# ---------- 5.5 Auto-resubmit chain (--continue / --no-continue) ----------
+# When --continue is given, inject a SIGTERM trap into submit_ces2.sh that
+# fires when PBS sends SIGTERM (typically on walltime exceeded) and re-runs
+# this script with --continue, perpetuating the chain. A counter file caps
+# total retries; on clean script exit the counter is reset.
+TRAP_BEGIN='# >>> CES2_AUTORESUBMIT >>> (managed by ces2_resubmit.sh, do not edit by hand)'
+TRAP_END='# <<< CES2_AUTORESUBMIT <<<'
+
+remove_trap_block() {
+  # Strip any existing trap block from $SUB (idempotent).
+  if grep -qF "$TRAP_BEGIN" "$SUB"; then
+    sed -i.tmp "\|^${TRAP_BEGIN}\$|,\|^${TRAP_END}\$|d" "$SUB"
+    rm -f "${SUB}.tmp"
+    return 0
+  fi
+  return 1
+}
+
+inject_trap_block() {
+  # Always strip first so re-injection picks up new --max etc.
+  remove_trap_block || true
+
+  # Build the block in a temp file. Single-quoted heredoc keeps $vars literal
+  # in the output; the path/max are substituted via printf afterwards.
+  local tmpf
+  tmpf="$(mktemp)"
+  cat >"$tmpf" <<EOF
+${TRAP_BEGIN}
+__CES2_RESUBMIT_SCRIPT="${SELF_ABS}"
+__CES2_MAX_RESUBMIT=${MAX_RESUBMIT}
+__CES2_COUNT_FILE=".resubmit_count"
+__cesresub_via_term=0
+__cesresub_term_handler() {
+    __cesresub_via_term=1
+    local count
+    count=\$(cat "\$__CES2_COUNT_FILE" 2>/dev/null || echo 0)
+    if [ "\$count" -lt "\$__CES2_MAX_RESUBMIT" ]; then
+        echo "[\$(date)] SIGTERM (likely walltime) — auto-resubmit \$((count+1))/\$__CES2_MAX_RESUBMIT" >&2
+        echo \$((count+1)) > "\$__CES2_COUNT_FILE"
+        bash "\$__CES2_RESUBMIT_SCRIPT" --continue --max="\$__CES2_MAX_RESUBMIT" \\
+            >> resubmit_chain.log 2>&1 || true
+    else
+        echo "[\$(date)] Hit MAX_RESUBMIT=\$__CES2_MAX_RESUBMIT — chain stopped." >&2
+    fi
+    exit 143
+}
+__cesresub_exit_handler() {
+    if [ "\$__cesresub_via_term" -eq 0 ]; then
+        rm -f "\$__CES2_COUNT_FILE"
+    fi
+}
+trap __cesresub_term_handler TERM
+trap __cesresub_exit_handler EXIT
+${TRAP_END}
+EOF
+
+  # Insert the block right after "cd \$curr_dir" (or "cd \${PBS_O_WORKDIR}").
+  local anchor_line
+  anchor_line=$(grep -nE '^[[:space:]]*cd[[:space:]]+(\$curr_dir|\$\{?PBS_O_WORKDIR\}?)[[:space:]]*$' "$SUB" | head -1 | cut -d: -f1)
+  if [ -z "$anchor_line" ]; then
+    echo "ERROR: could not find 'cd \$curr_dir' anchor in $SUB — trap NOT injected." >&2
+    rm -f "$tmpf"
+    return 1
+  fi
+  sed -i.tmp "${anchor_line}r ${tmpf}" "$SUB"
+  rm -f "${SUB}.tmp" "$tmpf"
+  return 0
+}
+
+if (( CONTINUE == 1 )); then
+  echo
+  echo "==[ Auto-resubmit chain: ON (--continue) ]=="
+  if [ -z "${sub_patched_for_chain:-}" ]; then
+    cp -p "$SUB" "${SUB}.bak.chain.${ts}" 2>/dev/null || true
+  fi
+  if inject_trap_block; then
+    echo "   trap injected into $SUB  (max retries: $MAX_RESUBMIT)"
+    echo "   counter file: .resubmit_count  (auto-reset on clean exit)"
+    echo "   chain log:    resubmit_chain.log"
+  else
+    echo "   trap NOT injected (see error above)."
+    exit 1
+  fi
+elif (( NO_CONTINUE == 1 )); then
+  echo
+  echo "==[ Auto-resubmit chain: OFF (--no-continue) ]=="
+  if remove_trap_block; then
+    echo "   trap removed from $SUB."
+  else
+    echo "   no trap was present in $SUB."
+  fi
+  rm -f .resubmit_count
 fi
 
 # ---------- 6. Submit ----------
