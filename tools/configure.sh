@@ -14,10 +14,12 @@
 #   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å]
 #   --prerelax      Pre-relaxation pipeline: md_relax.enabled (on/off) and
 #                   ces2.initial_dump (auto-set when on, removed when off)
+#   --parallel      QE parallelization flags: ces2_script.{npool, ntg, ndiag}
+#                   (pw.x mpirun options; see config_example.yaml comments)
 #   -h, --help      Show this help and exit.
 #
 # Combine freely:
-#   tools/configure.sh --box --prerelax myconfig.yaml
+#   tools/configure.sh --box --prerelax --parallel myconfig.yaml
 #
 # Backup: writes .<basename>.bak alongside the original before editing.
 set -euo pipefail
@@ -31,12 +33,14 @@ print_help() {
 # ---- parse CLI flags ----
 DO_BOX=0        # 1 => prompt for electrolyte_box.{thickness, vacuum_z}
 DO_PRERELAX=0   # 1 => prompt for md_relax.enabled (and sync ces2.initial_dump)
+DO_PARALLEL=0   # 1 => prompt for ces2_script.{npool, ntg, ndiag}
 CONFIG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --box)              DO_BOX=1; shift ;;
         --prerelax)         DO_PRERELAX=1; shift ;;
+        --parallel)         DO_PARALLEL=1; shift ;;
         -h|--help)          print_help; exit 0 ;;
         --)                 shift; CONFIG="${1:-}"; break ;;
         -*)                 echo "ERROR: unknown option: $1" >&2; print_help; exit 2 ;;
@@ -51,6 +55,9 @@ CONFIG="${CONFIG:-${REPO_ROOT}/config_example.yaml}"
 THICKNESS=""
 VACUUM_Z=""
 PRERELAX=""
+NPOOL=""
+NTG=""
+NDIAG=""
 
 if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
@@ -98,12 +105,15 @@ cur_thick   = g("electrolyte_box", "thickness", default="?")
 cur_vacz    = g("electrolyte_box", "vacuum_z",  default="?")
 cur_relax   = g("md_relax", "enabled", default=False)
 cur_initdmp = g("ces2", "initial_dump", default="")
+cur_npool   = g("ces2_script", "npool", default="")
+cur_ntg     = g("ces2_script", "ntg",   default="")
+cur_ndiag   = g("ces2_script", "ndiag", default="")
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}")
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG <<<"$(read_defaults)"
 
 ask() {
     # ask "prompt" "default" -> echoes user reply (or default if blank)
@@ -237,6 +247,31 @@ if [[ "$DO_PRERELAX" == "1" ]]; then
     done
 fi
 
+# ---- 9. (optional, --parallel) QE parallelization flags ----
+if [[ "$DO_PARALLEL" == "1" ]]; then
+    echo
+    echo "QE parallelization flags  (ces2_script.{npool, ntg, ndiag})"
+    echo "  npool : k-point pools     — must divide n_kpoints"
+    echo "  ntg   : FFT task groups   — divisor of (np/npool); 2~4 typical"
+    echo "  ndiag : ScaLAPACK procs   — perfect square (1,4,9,16,25,...)"
+    echo "  Tip: ndiag=1 disables parallel Cholesky; useful when pzpotrf fails."
+    NPOOL="$(ask "  npool" "$CUR_NPOOL")"
+    NTG="$(ask   "  ntg"   "$CUR_NTG")"
+    NDIAG="$(ask "  ndiag" "$CUR_NDIAG")"
+    for var in NPOOL NTG NDIAG; do
+        val="${!var}"
+        if [[ -n "$val" && ! "$val" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: $var must be a positive integer, got '$val'" >&2; exit 2
+        fi
+    done
+    if [[ -n "$NDIAG" ]]; then
+        sq=$(awk -v n="$NDIAG" 'BEGIN{r=int(sqrt(n)); print (r*r==n) ? 1 : 0}')
+        if [[ "$sq" != "1" ]]; then
+            echo "ERROR: ndiag must be a perfect square (1,4,9,16,25,...), got '$NDIAG'" >&2; exit 2
+        fi
+    fi
+fi
+
 echo
 echo "------------------------------------------"
 echo "Summary:"
@@ -258,6 +293,11 @@ if [[ "$DO_PRERELAX" == "1" ]]; then
     esac
     echo "  pre-relaxation : $PR_VIEW           (was enabled=$CUR_RELAX)"
 fi
+if [[ "$DO_PARALLEL" == "1" ]]; then
+    echo "  npool          : $NPOOL          (was $CUR_NPOOL)"
+    echo "  ntg            : $NTG          (was $CUR_NTG)"
+    echo "  ndiag          : $NDIAG          (was $CUR_NDIAG)"
+fi
 echo "------------------------------------------"
 read -r -p "Apply these changes to $CONFIG? [Y/n] " confirm
 confirm="${confirm:-Y}"
@@ -274,7 +314,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX
+export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX NPOOL NTG NDIAG
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -359,6 +399,15 @@ if prerelax_str:
         # Block-level documentation comments above the (now-removed) key are
         # left in place by ruamel.yaml's comment preservation.
         ces2_blk.pop("initial_dump", None)
+
+# --- (optional, --parallel) QE parallelization flags -----------------------
+# Sets ces2_script.{npool, ntg, ndiag}. Empty env var (section flag absent)
+# leaves the YAML untouched; otherwise each provided value overwrites.
+for env_key, yaml_key in (("NPOOL", "npool"), ("NTG", "ntg"), ("NDIAG", "ndiag")):
+    val = os.environ.get(env_key, "").strip()
+    if val:
+        cs.setdefault(yaml_key, 0)
+        cs[yaml_key] = int(val)
 
 with open(path, "w") as f:
     yaml.dump(d, f)
