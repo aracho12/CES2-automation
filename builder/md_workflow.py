@@ -570,10 +570,22 @@ def generate_md_bundle(
             print(f"[md_workflow] Capping upper wall {z_wall:.3f} → {z_wall_safe:.3f} Å "
                   f"(emaxpos={emaxpos} → z_emaxpos={z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
             z_wall = z_wall_safe
-            if z_el_hi is not None and z_wall < float(z_el_hi):
-                print(f"[md_workflow] WARNING: capped wall ({z_wall:.3f}) is BELOW z_el_hi "
-                      f"({float(z_el_hi):.3f}). Solvent column will be slightly compressed. "
-                      f"Increase cell.vacuum_z or decrease cell.thickness for more headroom.")
+            # Hard guard: a wall below z_el_hi guarantees solvent atoms start
+            # inside the wall and LAMMPS aborts at step 0 with
+            # "Particle on or inside fix wall surface". Fail the build now.
+            _min_clearance = float(md_cfg.get("min_wall_clearance", 0.5))
+            if z_el_hi is not None and z_wall < float(z_el_hi) + _min_clearance:
+                raise ValueError(
+                    f"[md_workflow] Relax upper wall (z_wall={z_wall:.3f} Å) lands at or "
+                    f"below the solvent column top (z_el_hi={float(z_el_hi):.3f} Å, "
+                    f"min_clearance={_min_clearance:.2f} Å). LAMMPS would die at step 0 "
+                    f"with 'Particle on or inside fix wall surface'. Geometry is "
+                    f"inconsistent: emaxpos={emaxpos}, emaxpos_safety_margin="
+                    f"{emaxpos_safety:.2f} Å, z_emaxpos={z_emaxpos:.3f} Å. Fix by either "
+                    f"(a) increasing cell.vacuum_z, (b) decreasing cell.thickness, "
+                    f"(c) raising qe.emaxpos toward 1.0, or (d) lowering "
+                    f"md.emaxpos_safety_margin. Aborting build."
+                )
 
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(

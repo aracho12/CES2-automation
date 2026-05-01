@@ -281,10 +281,22 @@ def generate_lammps_input(
         print(f"[lammps_input_writer] Capping CES2 upper wall {z_wall_hi:.3f} → {_z_wall_safe:.3f} Å "
               f"(emaxpos={emaxpos} → z_emaxpos={_z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
         z_wall_hi = _z_wall_safe
-        if z_wall_hi < float(box.z_el_hi):
-            print(f"[lammps_input_writer] WARNING: capped wall ({z_wall_hi:.3f}) is BELOW z_el_hi "
-                  f"({float(box.z_el_hi):.3f}). Increase cell.vacuum_z or decrease cell.thickness "
-                  f"for headroom.")
+        # Hard guard: if the emaxpos cap pushes the wall below the solvent
+        # column top, the very first LAMMPS step will trip
+        # "Particle on or inside fix wall surface" on every solvent atom
+        # above z_wall_hi. Refuse to write a guaranteed-broken input file.
+        _min_clearance = float(md_cfg.get("min_wall_clearance", 0.5))
+        if z_wall_hi < float(box.z_el_hi) + _min_clearance:
+            raise ValueError(
+                f"[lammps_input_writer] Upper wall (z_wall_hi={z_wall_hi:.3f} Å) lands at or "
+                f"below the solvent column top (z_el_hi={float(box.z_el_hi):.3f} Å, "
+                f"min_clearance={_min_clearance:.2f} Å). LAMMPS would die at step 0 with "
+                f"'Particle on or inside fix wall surface'. Geometry is inconsistent: "
+                f"emaxpos={emaxpos}, emaxpos_safety_margin={emaxpos_safety:.2f} Å, "
+                f"z_emaxpos={_z_emaxpos:.3f} Å. Fix by either (a) increasing cell.vacuum_z, "
+                f"(b) decreasing cell.thickness, (c) raising qe.emaxpos toward 1.0, or "
+                f"(d) lowering md.emaxpos_safety_margin. Aborting build."
+            )
 
     # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
     # Max wall force is 2*K*wall_cutoff. K=10 (old default) bent under TIP4P
