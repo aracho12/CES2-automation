@@ -11,7 +11,11 @@
 # shows the current YAML value as the default, so hitting <Enter> keeps it.
 # Sections that aren't requested are NOT touched at all:
 #
-#   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å]
+#   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å].
+#                   When thickness changes and water.count is an explicit
+#                   integer (not "auto"), prompts to switch to auto, keep
+#                   the value, or enter a new integer (with a suggested
+#                   auto count for the new geometry).
 #   --prerelax      Pre-relaxation pipeline: md_relax.enabled (on/off) and
 #                   ces2.initial_dump (auto-set when on, removed when off)
 #   --parallel      QE parallelization flags: ces2_script.{npool, ntg, ndiag}
@@ -59,6 +63,7 @@ CONFIG="${CONFIG:-${REPO_ROOT}/config_example.yaml}"
 # Empty value at python-apply time means "do not touch".
 THICKNESS=""
 VACUUM_Z=""
+WATER_COUNT=""   # set by --box block when thickness change makes explicit count stale
 PRERELAX=""
 NPOOL=""
 NTG=""
@@ -88,7 +93,7 @@ fi
 
 # ---- read current values for default-prompts ----
 read_defaults() {
-    CONFIG="$CONFIG" python3 <<'PY'
+    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
 import os
 from ruamel.yaml import YAML
 yaml = YAML()
@@ -118,12 +123,44 @@ cur_npool   = g("ces2_script", "npool", default="")
 cur_ntg     = g("ces2_script", "ntg",   default="")
 cur_ndiag   = g("ces2_script", "ndiag", default="")
 cur_nsteps  = g("ces2_script", "n_qmmm_steps", default="")
+# water block (used by --box water.count helper)
+cur_wcount    = g("electrolyte_recipe", "water", "count",            default="auto")
+cur_wrho      = g("electrolyte_recipe", "water", "density_g_per_ml", default=1.0)
+cur_wuf       = g("electrolyte_recipe", "water", "packmol_underfill", default=0.97)
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}")
+# Slab Lx, Ly via builder.vasp_io (best-effort — needed to compute a suggested
+# auto water count for the new thickness).  Empty strings on any failure so the
+# shell can fall back to a non-numeric prompt.
+slab_lx, slab_ly = "", ""
+try:
+    import sys
+    sys.path.insert(0, os.environ["REPO_ROOT"])
+    from builder.vasp_io import read_vasp, make_supercell  # type: ignore
+    cfg_dir   = os.path.dirname(os.path.abspath(os.environ["CONFIG"]))
+    workdir   = (d.get("project") or {}).get("workdir", "./") or "./"
+    vasp_file = (d.get("input") or {}).get("vasp_file", "CONTCAR") or "CONTCAR"
+    candidates = [
+        os.path.join(os.getcwd(), workdir, vasp_file),
+        os.path.join(cfg_dir,    workdir, vasp_file),
+        os.path.join(cfg_dir,             vasp_file),
+        vasp_file,
+    ]
+    poscar = next((c for c in candidates if os.path.isfile(c)), None)
+    if poscar is not None:
+        slab    = read_vasp(poscar)
+        rep     = tuple(int(x) for x in (d.get("cell") or {}).get("supercell", [1, 1, 1]))
+        slab_sc = make_supercell(slab, rep)
+        cell    = slab_sc.cell.array
+        slab_lx = f"{float(cell[0][0]):.6f}"
+        slab_ly = f"{float(cell[1][1]):.6f}"
+except Exception:
+    pass
+
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}|{cur_wcount}|{cur_wrho}|{cur_wuf}|{slab_lx}|{slab_ly}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS CUR_WCOUNT CUR_WRHO CUR_WUF SLAB_LX SLAB_LY <<<"$(read_defaults)"
 
 # Try to read QMMMFINSTEP from the qmmm script in CWD (if present).
 CUR_QMMMFINSTEP=""
@@ -241,6 +278,58 @@ if [[ "$DO_BOX" == "1" ]]; then
     if ! [[ "$VACUUM_Z" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         echo "ERROR: vacuum_z must be a positive number, got '$VACUUM_Z'" >&2; exit 2
     fi
+
+    # --- water.count helper: only matters if thickness actually changed ---
+    # If current count is "auto", builder will recompute n_water at runtime
+    # using the new thickness, so nothing to do.  If it's an explicit integer,
+    # the previous value was sized for the old thickness and is now stale.
+    thickness_changed=$(awk -v a="$THICKNESS" -v b="$CUR_THICK" \
+        'BEGIN{ if (a+0 != b+0) print 1; else print 0 }')
+    if [[ "$thickness_changed" == "1" ]]; then
+        # Normalize current count for case-insensitive "auto" check.
+        wcount_lc="$(printf '%s' "$CUR_WCOUNT" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$wcount_lc" == "auto" ]]; then
+            echo "  (water.count is 'auto' — builder will resize to new thickness)"
+        else
+            # Compute a suggested auto count if we managed to resolve Lx, Ly.
+            # Formula mirrors builder/composition.py:auto_water_count.
+            sugg=""
+            if [[ -n "$SLAB_LX" && -n "$SLAB_LY" ]]; then
+                sugg=$(awk -v lx="$SLAB_LX" -v ly="$SLAB_LY" -v t="$THICKNESS" \
+                          -v rho="${CUR_WRHO:-1.0}" -v uf="${CUR_WUF:-0.97}" \
+                          'BEGIN{
+                              NA = 6.02214076e23; M = 18.01528;
+                              V_cm3 = lx*ly*t * 1.0e-24;
+                              n     = V_cm3 * rho * NA / M * uf;
+                              printf("%d", int(n + 0.5));
+                          }')
+            fi
+            echo
+            echo "  Box thickness changed: explicit water.count is now stale."
+            echo "    current count : $CUR_WCOUNT   (sized for thickness=$CUR_THICK Å)"
+            if [[ -n "$sugg" ]]; then
+                echo "    suggested auto: $sugg   (Lx·Ly·t = ${SLAB_LX}·${SLAB_LY}·${THICKNESS} Å³,"
+                echo "                              ρ=${CUR_WRHO:-1.0} g/ml, underfill=${CUR_WUF:-0.97})"
+            else
+                echo "    (POSCAR not resolvable from this directory — no numeric suggestion;"
+                echo "     'auto' will still be evaluated correctly at build time.)"
+            fi
+            while :; do
+                read -r -p "  set water.count to [auto/keep/<int>] (default: auto): " wc_choice
+                wc_choice="${wc_choice:-auto}"
+                case "$(printf '%s' "$wc_choice" | tr '[:upper:]' '[:lower:]')" in
+                    auto)  WATER_COUNT="auto"; break ;;
+                    keep)  WATER_COUNT=""; break ;;   # leave YAML untouched
+                    *)
+                        if [[ "$wc_choice" =~ ^[1-9][0-9]*$ ]]; then
+                            WATER_COUNT="$wc_choice"; break
+                        fi
+                        echo "  please answer 'auto', 'keep', or a positive integer"
+                        ;;
+                esac
+            done
+        fi
+    fi
 fi
 
 # ---- 8. (optional, --prerelax) pre-relaxation pipeline toggle ----
@@ -327,6 +416,9 @@ echo "  job name       : $JOBNAME"
 if [[ "$DO_BOX" == "1" ]]; then
     echo "  thickness      : $THICKNESS Å         (was $CUR_THICK)"
     echo "  vacuum_z       : $VACUUM_Z Å         (was $CUR_VACZ)"
+    if [[ -n "$WATER_COUNT" ]]; then
+        echo "  water.count    : $WATER_COUNT          (was $CUR_WCOUNT)"
+    fi
 fi
 if [[ "$DO_PRERELAX" == "1" ]]; then
     case "$(printf '%s' "$PRERELAX" | tr '[:upper:]' '[:lower:]')" in
@@ -361,7 +453,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z PRERELAX NPOOL NTG NDIAG QMMMFINSTEP
+export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z WATER_COUNT PRERELAX NPOOL NTG NDIAG QMMMFINSTEP
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -429,6 +521,18 @@ if thickness_str or vacuum_z_str:
         ebox["thickness"] = float(thickness_str)
     if vacuum_z_str:
         ebox["vacuum_z"] = float(vacuum_z_str)
+
+# --- (optional, --box helper) electrolyte_recipe.water.count -----------------
+# WATER_COUNT is set by the bash helper only when thickness changed AND the
+# user picked a non-"keep" answer.  "auto" -> bare auto string;  positive int
+# -> explicit override.  Empty string -> leave YAML untouched.
+water_count_str = os.environ.get("WATER_COUNT", "").strip()
+if water_count_str:
+    water_blk = recipe.setdefault("water", CommentedMap())
+    if water_count_str.lower() == "auto":
+        water_blk["count"] = "auto"
+    else:
+        water_blk["count"] = int(water_count_str)
 
 # --- (optional, --prerelax) pre-relaxation toggle --------------------------
 # on  → md_relax.enabled=true,  ces2.initial_dump="equilibrated.dump"
