@@ -12,10 +12,12 @@
 # Sections that aren't requested are NOT touched at all:
 #
 #   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å].
-#                   When thickness changes and water.count is an explicit
-#                   integer (not "auto"), prompts to switch to auto, keep
-#                   the value, or enter a new integer (with a suggested
-#                   auto count for the new geometry).
+#                   Always shows the current water.count and the auto count
+#                   that would be computed for the (new) thickness, and lets
+#                   you keep, switch to auto, or enter an explicit integer.
+#                   Default answer is "auto" only when the thickness changed
+#                   AND the existing count is an explicit integer (i.e. now
+#                   stale); otherwise "keep" to avoid silent rewrites.
 #   --prerelax      Pre-relaxation pipeline: md_relax.enabled (on/off) and
 #                   ces2.initial_dump (auto-set when on, removed when off)
 #   --parallel      QE parallelization flags: ces2_script.{npool, ntg, ndiag}
@@ -279,57 +281,60 @@ if [[ "$DO_BOX" == "1" ]]; then
         echo "ERROR: vacuum_z must be a positive number, got '$VACUUM_Z'" >&2; exit 2
     fi
 
-    # --- water.count helper: only matters if thickness actually changed ---
-    # If current count is "auto", builder will recompute n_water at runtime
-    # using the new thickness, so nothing to do.  If it's an explicit integer,
-    # the previous value was sized for the old thickness and is now stale.
+    # --- water.count helper: always fires under --box -------------------------
+    # Show the current count and the auto count that *would* be computed for
+    # the (possibly new) thickness, then let the user accept, switch, or
+    # override.  Default answer is "auto" when an explicit integer is stale
+    # (thickness actually changed), otherwise "keep" so a no-op --box run
+    # doesn't silently rewrite the count.
     thickness_changed=$(awk -v a="$THICKNESS" -v b="$CUR_THICK" \
         'BEGIN{ if (a+0 != b+0) print 1; else print 0 }')
-    if [[ "$thickness_changed" == "1" ]]; then
-        # Normalize current count for case-insensitive "auto" check.
-        wcount_lc="$(printf '%s' "$CUR_WCOUNT" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$wcount_lc" == "auto" ]]; then
-            echo "  (water.count is 'auto' — builder will resize to new thickness)"
-        else
-            # Compute a suggested auto count if we managed to resolve Lx, Ly.
-            # Formula mirrors builder/composition.py:auto_water_count.
-            sugg=""
-            if [[ -n "$SLAB_LX" && -n "$SLAB_LY" ]]; then
-                sugg=$(awk -v lx="$SLAB_LX" -v ly="$SLAB_LY" -v t="$THICKNESS" \
-                          -v rho="${CUR_WRHO:-1.0}" -v uf="${CUR_WUF:-0.97}" \
-                          'BEGIN{
-                              NA = 6.02214076e23; M = 18.01528;
-                              V_cm3 = lx*ly*t * 1.0e-24;
-                              n     = V_cm3 * rho * NA / M * uf;
-                              printf("%d", int(n + 0.5));
-                          }')
-            fi
-            echo
-            echo "  Box thickness changed: explicit water.count is now stale."
-            echo "    current count : $CUR_WCOUNT   (sized for thickness=$CUR_THICK Å)"
-            if [[ -n "$sugg" ]]; then
-                echo "    suggested auto: $sugg   (Lx·Ly·t = ${SLAB_LX}·${SLAB_LY}·${THICKNESS} Å³,"
-                echo "                              ρ=${CUR_WRHO:-1.0} g/ml, underfill=${CUR_WUF:-0.97})"
-            else
-                echo "    (POSCAR not resolvable from this directory — no numeric suggestion;"
-                echo "     'auto' will still be evaluated correctly at build time.)"
-            fi
-            while :; do
-                read -r -p "  set water.count to [auto/keep/<int>] (default: auto): " wc_choice
-                wc_choice="${wc_choice:-auto}"
-                case "$(printf '%s' "$wc_choice" | tr '[:upper:]' '[:lower:]')" in
-                    auto)  WATER_COUNT="auto"; break ;;
-                    keep)  WATER_COUNT=""; break ;;   # leave YAML untouched
-                    *)
-                        if [[ "$wc_choice" =~ ^[1-9][0-9]*$ ]]; then
-                            WATER_COUNT="$wc_choice"; break
-                        fi
-                        echo "  please answer 'auto', 'keep', or a positive integer"
-                        ;;
-                esac
-            done
-        fi
+    wcount_lc="$(printf '%s' "$CUR_WCOUNT" | tr '[:upper:]' '[:lower:]')"
+
+    # Compute a suggested auto count if we managed to resolve Lx, Ly.
+    # Formula mirrors builder/composition.py:auto_water_count.
+    sugg=""
+    if [[ -n "$SLAB_LX" && -n "$SLAB_LY" ]]; then
+        sugg=$(awk -v lx="$SLAB_LX" -v ly="$SLAB_LY" -v t="$THICKNESS" \
+                  -v rho="${CUR_WRHO:-1.0}" -v uf="${CUR_WUF:-0.97}" \
+                  'BEGIN{
+                      NA = 6.02214076e23; M = 18.01528;
+                      V_cm3 = lx*ly*t * 1.0e-24;
+                      n     = V_cm3 * rho * NA / M * uf;
+                      printf("%d", int(n + 0.5));
+                  }')
     fi
+
+    echo
+    echo "  water.count:"
+    echo "    current        : $CUR_WCOUNT"
+    if [[ -n "$sugg" ]]; then
+        echo "    auto would be  : $sugg   (Lx·Ly·t = ${SLAB_LX}·${SLAB_LY}·${THICKNESS} Å³,"
+        echo "                              ρ=${CUR_WRHO:-1.0} g/ml, underfill=${CUR_WUF:-0.97})"
+    else
+        echo "    (POSCAR not resolvable from this directory — no numeric suggestion;"
+        echo "     'auto' will still be evaluated correctly at build time.)"
+    fi
+    if [[ "$thickness_changed" == "1" && "$wcount_lc" != "auto" ]]; then
+        echo "    NOTE: thickness changed → explicit count is sized for the old box."
+        default_wc="auto"
+    else
+        default_wc="keep"
+    fi
+    while :; do
+        read -r -p "  set water.count to [auto/keep/<int>] (default: $default_wc): " wc_choice
+        wc_choice="${wc_choice:-$default_wc}"
+        case "$(printf '%s' "$wc_choice" | tr '[:upper:]' '[:lower:]')" in
+            auto)  WATER_COUNT="auto"; break ;;
+            keep)  WATER_COUNT=""; break ;;   # leave YAML untouched
+            *)
+                if [[ "$wc_choice" =~ ^[1-9][0-9]*$ ]]; then
+                    WATER_COUNT="$wc_choice"; break
+                fi
+                echo "  please answer 'auto', 'keep', or a positive integer"
+                ;;
+        esac
+    done
 fi
 
 # ---- 8. (optional, --prerelax) pre-relaxation pipeline toggle ----
