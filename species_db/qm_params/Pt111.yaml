@@ -1,0 +1,22 @@
+system: Pt111
+
+types:
+
+  Pt:
+    element: Pt
+    alpha_iso: 14.5533125        # a.u. — inner layers (layers 2–4)
+    C6: 4642.241861               # kcal/mol·Å^6
+    s: 1.40
+
+  Pt_surf:
+    element: Pt
+    alpha_iso: 42.27259375       # a.u. — top layer (layer 1)
+    C6: 4642.241861               # kcal/mol·Å^6
+    s: 1.40
+    note: "top-layer Pt; assigned via type_label_overrides"
+
+  H:
+    element: H
+    alpha_iso: 0.0               # PLACEHOLDER — not a real value, fill in before production
+    C6: 0.0                      # PLACEHOLDER — not a real value, fill in before production
+    s: 0.53                      # 0.53 if H is H-bond donor; 1.40 otherwise

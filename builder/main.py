@@ -8,7 +8,7 @@ from ase.io import read, write
 
 from .config import load_config
 from .species import load_species_db
-from .vasp_io import read_vasp, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
+from .vasp_io import read_structure, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
 from .box import compute_box_meta
 from .composition import water_volume_L, auto_water_count, counts_from_salts, compute_total_charge, adjust_with_counterions
 from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
@@ -63,13 +63,21 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
 
     # read slab + supercell
-    # Priority: --input/-i argument > config input.vasp_file
+    # Priority: --input/-i argument > config input.vasp_file (also accepts
+    # input.structure_file). Format is auto-detected from filename, or set
+    # explicitly via input.format ("vasp", "espresso-in", "espresso-out", ...).
     t0 = time.perf_counter()
+    _input_cfg = cfg.get("input", {})
     if vasp_file is not None:
         _vasp_path = Path(vasp_file).resolve()
     else:
-        _vasp_path = (workdir / cfg["input"]["vasp_file"]).resolve()
-    slab = read_vasp(_vasp_path.as_posix())
+        # Priority: structure_file > vasp_file > "CONTCAR" (default)
+        _file = _input_cfg.get("structure_file") or _input_cfg.get("vasp_file") or "CONTCAR"
+        _vasp_path = (workdir / _file).resolve()
+    _input_fmt = _input_cfg.get("format")
+    slab = read_structure(_vasp_path.as_posix(), fmt=_input_fmt)
+    print(f"[input] read {_vasp_path.name} ({len(slab)} atoms)"
+          + (f" [format={_input_fmt}]" if _input_fmt else ""))
     if cfg.get("cell", {}).get("require_orthogonal", True) and not is_orthogonal_cell(slab.cell.array):
         raise ValueError("Cell is not orthogonal. v0.2 still assumes orthogonal (matches your current writer).")
 
@@ -98,8 +106,14 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     recipe = cfg["electrolyte_recipe"]
 
     # Auto-derive water species_id from ces2.water_model when not explicitly set.
-    # Mapping: TIP4P → water_tip4p,  TIP3P → water_tip3p
-    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    # Mapping: TIP4P → water_tip4p, TIP3P → water_tip3p,
+    #          SPCE → water_spce, TIP3PEW → water_tip3p_ew
+    _WATER_MODEL_TO_SID = {
+        "TIP4P":   "water_tip4p",
+        "TIP3P":   "water_tip3p",
+        "SPCE":    "water_spce",
+        "TIP3PEW": "water_tip3p_ew",
+    }
     _water_model = str(cfg.get("ces2", {}).get("water_model", "TIP4P")).upper()
     _default_sid = _WATER_MODEL_TO_SID.get(_water_model, "water_tip4p")
     water_sid = recipe["water"].get("species_id", _default_sid)
