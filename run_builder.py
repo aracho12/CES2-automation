@@ -10,6 +10,9 @@ def _find_config_yaml() -> Path | None:
     candidates = sorted(Path(".").glob("config*.yaml"))
     if len(candidates) == 1:
         return candidates[0]
+    if len(candidates) > 1:
+        names = ", ".join(str(c) for c in candidates)
+        raise SystemExit(f"Multiple config*.yaml files found ({names}). Please specify one with --config.")
     return None
 
 
@@ -27,6 +30,11 @@ def main():
 
     summary = run(config_path, vasp_file=args.input)
     print(json.dumps(summary, indent=2))
+
+    export_dir = Path(summary["export_dir"])
+    print(f"\nBuild complete. Output files in: {export_dir}")
+    for f in sorted(export_dir.iterdir()):
+        print(f"  {f.name}")
 
 if __name__ == "__main__":
     main()

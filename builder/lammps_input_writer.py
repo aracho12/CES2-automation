@@ -73,23 +73,25 @@ _DEFAULT_LJ_TIP4P: Dict[str, Tuple[float, float]] = {
     "I":     (0.04170820,  5.25987),
 }
 
-# _DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
-#     # TIP3P water
-#     "Ow":    (0.1521,      3.1507),
-#     "Hw":    (0.0000,      1.0000),
-#     "O_oh":  (0.1521,      3.1507),
-#     "H_oh":  (0.0000,      1.0000),
-#     # Joung-Cheatham ions (TIP3P-compatible)
-#     "Na":    (0.3526418,   2.1600),
-#     "K":     (0.4184,      3.3330),
-#     "Li":    (0.0279,      1.8250),
-#     "Rb":    (0.4748,      3.6560),
-#     "Cs":    (0.5000,      4.1430),
-#     "Cl":    (0.7200,      4.4170),
-#     "Br":    (0.7150,      4.8370),
-#     "F":     (0.7530,      3.1180),
-#     "I":     (0.6130,      5.4000),
-# }
+_DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
+    # TIP3P water
+    # Source: Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
+    "Ow":    (0.1521,      3.1507),
+    "Hw":    (0.0000,      1.0000),
+    "O_oh":  (0.1521,      3.1507),
+    "H_oh":  (0.0000,      1.0000),
+    # Joung-Cheatham ions (TIP3P-compatible)
+    # Source: Joung & Cheatham, J. Phys. Chem. B 112, 9020 (2008) — TIP3P column
+    "Na":    (0.3526418,   2.1600),
+    "K":     (0.4184,      3.3330),
+    "Li":    (0.0279,      1.8250),
+    "Rb":    (0.4748,      3.6560),
+    "Cs":    (0.5000,      4.1430),
+    "Cl":    (0.7200,      4.4170),
+    "Br":    (0.7150,      4.8370),
+    "F":     (0.7530,      3.1180),
+    "I":     (0.6130,      5.4000),
+}
 
 # Additional common non-water/ion types (same for both models)
 _DEFAULT_LJ_COMMON: Dict[str, Tuple[float, float]] = {
@@ -125,7 +127,8 @@ def generate_lammps_input(
     box,                                        # BoxMeta
     bond_coeffs: Dict[int, Tuple[float, float]],
     angle_coeffs: Dict[int, Tuple[float, float]],
-    qm_params_dir: Path,
+    qm_params_dir: Optional[Path],
+    qm_params_file: Optional[str] = None,
     cfg: Dict[str, Any],
     n_mm: int,
     charged_params: Optional[Dict[str, float]] = None,
@@ -235,6 +238,7 @@ def generate_lammps_input(
         species_db=species_db,
         qm_params_dir=qm_params_dir,
         config_bjdisp=cfg.get("bjdisp"),
+        qm_params_file=qm_params_file,
     )
     # Layer-file params override any generic qm_params entries with the same label.
     if extra_qm_bjdisp:

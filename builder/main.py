@@ -262,19 +262,28 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # type registry
     t0 = time.perf_counter()
 
-    # ── slab.bjparams_layer_file (optional) ──────────────────────────────────
-    # When provided, every slab atom is auto-labelled from a per-layer table
-    # (bjparams_layer_avg.dat): one type_label per (element, z-layer).
-    # This replaces hand-written type_label_overrides for systems whose QM
-    # atoms have z-dependent bjdisp parameters.
-    # Overrides still apply on top, so a layer-assigned label can be changed
-    # for specific primitive indices.
+    # ── slab.bjparams_source + slab.bjparams_layer_file ─────────────────────
+    # bjparams_source controls which database is used for QM slab BJ parameters:
+    #   "yaml"       (default) — load from species_db/qm_params/*.yaml
+    #   "layer_file"           — load from slab.bjparams_layer_file (.dat);
+    #                            requires bjparams_layer_file to be set
     _slab_cfg = cfg.get("slab", {}) or {}
+    _bjparams_source = str(_slab_cfg.get("bjparams_source", "yaml")).lower()
+    if _bjparams_source not in ("yaml", "layer_file"):
+        raise ValueError(
+            f"slab.bjparams_source must be 'yaml' or 'layer_file', got '{_bjparams_source}'"
+        )
+
     _layer_file = _slab_cfg.get("bjparams_layer_file")
+    _qm_params_file: Optional[str] = None
     _layer_db: Dict[str, BjdispParams] = {}
     _layer_label_by_sc_idx: Dict[int, str] = {}
     _layer_label_to_element: Dict[str, str] = {}
-    if _layer_file:
+    if _bjparams_source == "layer_file":
+        if not _layer_file:
+            raise ValueError(
+                "slab.bjparams_source is 'layer_file' but slab.bjparams_layer_file is not set"
+            )
         _layer_path = Path(_layer_file)
         if not _layer_path.is_absolute():
             _layer_path = (workdir / _layer_path).resolve()
@@ -300,6 +309,12 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         print(f"[layer file] {_layer_path.name}: z_tol={_z_tol} Å, "
               f"{len(_layer_entries)} layer(s) → {len(_layer_labels_sc)} slab atoms "
               f"labelled into {_n_unique_layers} unique type_label(s)")
+    else:
+        _qm_params_file = _slab_cfg.get("qm_params_file")
+        if _qm_params_file:
+            print(f"[bjparams] source=yaml — loading from species_db/qm_params/{Path(_qm_params_file).stem}.yaml")
+        else:
+            print(f"[bjparams] source=yaml — loading all files from species_db/qm_params/")
 
     # ── slab.type_label_overrides ────────────────────────────────────────────
     # config: slab.type_label_overrides: {<1-based primitive index>: <type_label>}
@@ -447,7 +462,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # Generate base.in.lammps (CES2 QM/MM LAMMPS input)
     t0 = time.perf_counter()
-    qm_params_dir = species_db_path / "qm_params"
+    qm_params_dir = species_db_path / "qm_params" if _bjparams_source == "yaml" else None
     generate_lammps_input(
         export_dir=export_dir,
         type_id_by_label=type_id_by_label,
@@ -458,6 +473,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         bond_coeffs=bond_coeffs,
         angle_coeffs=angle_coeffs,
         qm_params_dir=qm_params_dir,
+        qm_params_file=_qm_params_file if _bjparams_source == "yaml" else None,
         cfg=cfg,
         n_mm=n_mm,
         charged_params=charged_params,
@@ -564,4 +580,6 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     print(f"[TIMING] total: {timings['total']:.3f} s")
     (export_dir/"timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     summary["timings_sec"] = timings
+
+    summary["export_dir"] = str(export_dir.resolve())
     return summary

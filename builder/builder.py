@@ -31,6 +31,7 @@ ATOMIC_MASS = {
     "I": 126.90447,
     "Cs": 132.905,
     "Ir": 192.217,
+    "Au": 196.967,
 }
 
 def write_species_xyz(path: Path, sp: Species) -> None:
@@ -266,9 +267,9 @@ def compute_charged_system_params(
     top_z_mean = float(np.mean(zpos[zpos >= z_cutoff]))
     mpc_layer = top_z_mean * ANG_TO_BOHR
 
-    # Plate position: midpoint of slab as fraction of box z
+    # Plate position: midpoint of slab in bohr
     slab_mid_z = 0.5 * (z_min + z_max)
-    plate_pos = slab_mid_z / box_z_total if box_z_total > 0 else 0.0
+    plate_pos = slab_mid_z * ANG_TO_BOHR
 
     # QE tot_charge: per unit cell
     tot_chg = float(q_electrode) / float(sc_factor) if sc_factor else 0.0
@@ -305,9 +306,22 @@ def masses_by_type_from_labels(label_by_type_id: Dict[int,str],
 
     out: Dict[int,float] = {}
     for tid, lbl in label_by_type_id.items():
-        el = lbl if lbl in ATOMIC_MASS else label_to_element.get(lbl, None)
-        if el is None:
-            raise ValueError(f"Cannot infer atomic mass for type_label '{lbl}'. "
-                             f"Add it to species_db or to slab.type_label_overrides in config.")
+        if lbl in ATOMIC_MASS:
+            el = lbl
+        else:
+            el = label_to_element.get(lbl)
+            if el is None:
+                raise ValueError(
+                    f"Cannot infer atomic mass for type_label '{lbl}'. "
+                    f"If '{lbl}' is an element symbol missing from the table, add it to "
+                    f"ATOMIC_MASS in builder/builder.py:\n"
+                    f'    "{lbl}": <mass>,    # g/mol'
+                )
+            if el not in ATOMIC_MASS:
+                raise ValueError(
+                    f"Element '{el}' (from type_label '{lbl}') is not in ATOMIC_MASS. "
+                    f"Add it to builder/builder.py:\n"
+                    f'    "{el}": <mass>,    # g/mol'
+                )
         out[tid] = float(ATOMIC_MASS.get(el, 0.0))
     return out

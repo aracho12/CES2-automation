@@ -52,10 +52,13 @@ class BjdispParams:
 # Loader: qm_params/*.yaml
 # ---------------------------------------------------------------------------
 
-def load_qm_params_db(qm_params_dir: Path) -> Dict[str, BjdispParams]:
+def load_qm_params_db(qm_params_dir: Path, filename: Optional[str] = None) -> Dict[str, BjdispParams]:
     """
-    Load all *.yaml files under qm_params_dir.
+    Load QM BJ-dispersion parameters from qm_params_dir.
     Returns dict: type_label -> BjdispParams.
+
+    If filename is given (e.g. "IrO2" or "IrO2.yaml"), only that file is loaded.
+    Otherwise all *.yaml files in the directory are loaded.
 
     Each YAML has structure:
       system: IrO2
@@ -71,7 +74,20 @@ def load_qm_params_db(qm_params_dir: Path) -> Dict[str, BjdispParams]:
     if not qm_params_dir.exists():
         return db
 
-    for yaml_file in sorted(qm_params_dir.glob("*.yaml")):
+    if filename is not None:
+        stem = Path(filename).stem
+        target = qm_params_dir / f"{stem}.yaml"
+        if not target.exists():
+            available = [f.name for f in sorted(qm_params_dir.glob("*.yaml"))]
+            raise FileNotFoundError(
+                f"slab.qm_params_file: '{target.name}' not found in {qm_params_dir}. "
+                f"Available: {available}"
+            )
+        yaml_files = [target]
+    else:
+        yaml_files = sorted(qm_params_dir.glob("*.yaml"))
+
+    for yaml_file in yaml_files:
         with yaml_file.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
@@ -457,8 +473,9 @@ def layer_label_to_element(entries: Sequence[LayerEntry]) -> Dict[str, str]:
 
 def load_all(
     species_db: Dict[str, Any],
-    qm_params_dir: Path,
+    qm_params_dir: Optional[Path],
     config_bjdisp: Optional[Dict] = None,
+    qm_params_file: Optional[str] = None,
 ) -> tuple[Dict[str, BjdispParams], Dict[str, BjdispParams], Dict[str, BjdispParams]]:
     """
     Load MM db, QM db, and config db in one call.
@@ -466,11 +483,12 @@ def load_all(
     Returns:
         (mm_db, qm_db, config_db)
 
-    Usage:
-        mm_db, qm_db, cfg_db = load_all(species_db, qm_params_dir, cfg.get("bjdisp"))
-        params = get_bjdisp("Ir", mm_db, qm_db, cfg_db)
+    Pass qm_params_dir=None to skip loading the qm_params YAML database
+    (e.g. when slab.bjparams_source is "layer_file").
+    Pass qm_params_file to load only that file (e.g. "IrO2" or "IrO2.yaml");
+    if omitted, all *.yaml files in qm_params_dir are loaded.
     """
     mm_db = extract_mm_bjdisp_from_species(species_db)
-    qm_db = load_qm_params_db(qm_params_dir)
+    qm_db = load_qm_params_db(qm_params_dir, filename=qm_params_file) if qm_params_dir is not None else {}
     cfg_db = _parse_config_bjdisp(config_bjdisp)
     return mm_db, qm_db, cfg_db

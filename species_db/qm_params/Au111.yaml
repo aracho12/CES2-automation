@@ -1,0 +1,16 @@
+system: Au111
+
+types:
+
+  Au:
+    element: Au
+    alpha_iso: 28.85525        # a.u. — inner layers (layers 2–4)
+    C6: 4370.789903               # kcal/mol·Å^6
+    s: 1.40
+
+  Au_surf:
+    element: Au
+    alpha_iso: 39.6458125        # a.u. — top layer (layer 1)
+    C6: 4370.789903               # kcal/mol·Å^6
+    s: 1.40
+    note: "top-layer Au; assigned via type_label_overrides"
