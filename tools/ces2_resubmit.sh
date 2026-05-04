@@ -22,12 +22,18 @@
 #                                          # kill auto-resubmits the chain
 #   ces2_resubmit.sh --continue --max=N    # cap chain retries (default 5)
 #   ces2_resubmit.sh --no-continue         # remove the trap (stop the chain)
+#   ces2_resubmit.sh --patch-only          # detect+patch only; NO qsub, NO trap.
+#                                          # Used by submit_ces2.sh's depend=
+#                                          # afterany self-chain at job startup.
+#                                          # Writes .ces2_chain_done if all
+#                                          # QMMM steps are complete.
 
 set -euo pipefail
 
 DRYRUN=0
 CONTINUE=0
 NO_CONTINUE=0
+PATCH_ONLY=0
 MAX_RESUBMIT=5
 
 while [[ $# -gt 0 ]]; do
@@ -35,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)         DRYRUN=1; shift ;;
     --continue)        CONTINUE=1; shift ;;
     --no-continue)     NO_CONTINUE=1; shift ;;
+    --patch-only)      PATCH_ONLY=1; shift ;;
     --max=*)           MAX_RESUBMIT="${1#--max=}"; shift ;;
     --max)             MAX_RESUBMIT="${2:?--max needs an integer}"; shift 2 ;;
     -h|--help)
@@ -47,6 +54,10 @@ done
 
 if (( CONTINUE == 1 && NO_CONTINUE == 1 )); then
   echo "ERROR: --continue and --no-continue are mutually exclusive." >&2
+  exit 2
+fi
+if (( PATCH_ONLY == 1 )) && (( CONTINUE == 1 || NO_CONTINUE == 1 || DRYRUN == 1 )); then
+  echo "ERROR: --patch-only cannot be combined with --continue/--no-continue/--dry-run." >&2
   exit 2
 fi
 if ! [[ "$MAX_RESUBMIT" =~ ^[1-9][0-9]*$ ]]; then
@@ -158,6 +169,20 @@ fi
 echo "   → $reason"
 echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm"
 
+# ---------- 3.6 Completion detection ----------
+# Read QMMMFINSTEP from qmmm script. If the next step to run is past the final
+# step, the simulation is done — write a marker so submit_ces2.sh's chain step
+# can stop the depend=afterany chain.
+qmmmfin=$(grep -E "^[[:space:]]*QMMMFINSTEP=" "$QMMM" | head -1 \
+          | sed -E 's/^[[:space:]]*QMMMFINSTEP=([0-9]+).*/\1/' || true)
+is_complete=0
+if [ -n "$qmmmfin" ] && (( qmmmini > qmmmfin )); then
+  is_complete=1
+  echo "   → All QMMM steps complete (next would be qm_$qmmmini > QMMMFINSTEP=$qmmmfin)."
+  : > .ces2_chain_done
+  echo "   → Wrote .ces2_chain_done marker."
+fi
+
 # Also sanity-check we have the cube inputs needed for qm_(qmmmini) when qmmmini>0.
 # The script at line ~245 copies mm_$((qmmmini-1))/{MOBILE_final,empty,repA}.cube
 if (( qmmmini > 0 )); then
@@ -210,16 +235,37 @@ else
   echo "   $SUB  (no relax lines found — left as-is)"
 fi
 
+# ---------- 5.4 Patch-only short-circuit ----------
+# In --patch-only mode (used by submit_ces2.sh's depend=afterany self-chain),
+# we stop here: NO trap injection, NO qsub. The caller decides what to do
+# next based on the .ces2_chain_done marker (if any) and its own counter.
+if (( PATCH_ONLY == 1 )); then
+  echo
+  echo "==[ Patch-only mode: skipping trap injection and qsub ]=="
+  if (( is_complete == 1 )); then
+    echo "   .ces2_chain_done present — caller should stop the chain."
+  fi
+  exit 0
+fi
+
 # ---------- 5.5 Auto-resubmit chain (--continue / --no-continue) ----------
-# When --continue is given, inject a SIGTERM trap into submit_ces2.sh that
-# fires when PBS sends SIGTERM (typically on walltime exceeded) and re-runs
-# this script with --continue, perpetuating the chain. A counter file caps
-# total retries; on clean script exit the counter is reset.
+# When --continue is given, inject a depend=afterany self-chain block into
+# submit_ces2.sh. Each chain step:
+#   1) calls ces2_resubmit.sh --patch-only  (state detect + sed patch, no qsub)
+#   2) if .ces2_chain_done marker exists → exits cleanly (chain end)
+#   3) pre-queues the NEXT submit_ces2.sh as a held job (depend=afterany on
+#      $PBS_JOBID) — runs after THIS job ends, no matter how (clean exit,
+#      walltime SIGTERM, crash). qsub of the next step happens BEFORE qmmm
+#      starts, so PBS's kill_delay can never interrupt the chaining itself.
+#   4) runs qmmm
+# A counter file (.resubmit_count) caps consecutive chain steps as a safety net;
+# the marker file is the normal stopping condition.
 TRAP_BEGIN='# >>> CES2_AUTORESUBMIT >>> (managed by ces2_resubmit.sh, do not edit by hand)'
 TRAP_END='# <<< CES2_AUTORESUBMIT <<<'
 
 remove_trap_block() {
-  # Strip any existing trap block from $SUB (idempotent).
+  # Strip any existing CES2_AUTORESUBMIT block from $SUB (idempotent).
+  # Handles both legacy SIGTERM-trap blocks and the current depend-chain blocks.
   if grep -qF "$TRAP_BEGIN" "$SUB"; then
     sed -i.tmp "\|^${TRAP_BEGIN}\$|,\|^${TRAP_END}\$|d" "$SUB"
     rm -f "${SUB}.tmp"
@@ -232,37 +278,60 @@ inject_trap_block() {
   # Always strip first so re-injection picks up new --max etc.
   remove_trap_block || true
 
-  # Build the block in a temp file. Single-quoted heredoc keeps $vars literal
-  # in the output; the path/max are substituted via printf afterwards.
+  # Build the block in a temp file. Unquoted heredoc → ${SELF_ABS} and
+  # ${MAX_RESUBMIT} get substituted now; \$foo stays literal for runtime.
   local tmpf
   tmpf="$(mktemp)"
   cat >"$tmpf" <<EOF
 ${TRAP_BEGIN}
+# depend=afterany self-chain. See ces2_resubmit.sh §5.5 for design notes.
 __CES2_RESUBMIT_SCRIPT="${SELF_ABS}"
 __CES2_MAX_RESUBMIT=${MAX_RESUBMIT}
 __CES2_COUNT_FILE=".resubmit_count"
-__cesresub_via_term=0
-__cesresub_term_handler() {
-    __cesresub_via_term=1
-    local count
-    count=\$(cat "\$__CES2_COUNT_FILE" 2>/dev/null || echo 0)
-    if [ "\$count" -lt "\$__CES2_MAX_RESUBMIT" ]; then
-        echo "[\$(date)] SIGTERM (likely walltime) — auto-resubmit \$((count+1))/\$__CES2_MAX_RESUBMIT" >&2
-        echo \$((count+1)) > "\$__CES2_COUNT_FILE"
-        bash "\$__CES2_RESUBMIT_SCRIPT" --continue --max="\$__CES2_MAX_RESUBMIT" \\
-            >> resubmit_chain.log 2>&1 || true
-    else
-        echo "[\$(date)] Hit MAX_RESUBMIT=\$__CES2_MAX_RESUBMIT — chain stopped." >&2
-    fi
-    exit 143
-}
-__cesresub_exit_handler() {
-    if [ "\$__cesresub_via_term" -eq 0 ]; then
+__CES2_DONE_MARKER=".ces2_chain_done"
+__CES2_LOG="resubmit_chain.log"
+__CES2_THIS_SCRIPT="\${curr_dir}/submit_ces2.sh"
+
+__ces_ts()  { date '+%Y-%m-%d %H:%M:%S'; }
+__ces_log() { echo "[\$(__ces_ts)] [job=\${PBS_JOBID:-?}] \$*" >> "\$__CES2_LOG"; }
+
+__ces_log "Chain step start (count=\$(cat "\$__CES2_COUNT_FILE" 2>/dev/null || echo 0)/\${__CES2_MAX_RESUBMIT})"
+
+# (1) Patch state in place (sed only, no qsub).
+if [ -x "\$__CES2_RESUBMIT_SCRIPT" ]; then
+    if ! bash "\$__CES2_RESUBMIT_SCRIPT" --patch-only >> "\$__CES2_LOG" 2>&1; then
+        __ces_log "ERROR: ces2_resubmit.sh --patch-only failed — chain stopped."
         rm -f "\$__CES2_COUNT_FILE"
+        exit 1
     fi
-}
-trap __cesresub_term_handler TERM
-trap __cesresub_exit_handler EXIT
+else
+    __ces_log "WARN: \$__CES2_RESUBMIT_SCRIPT not found — running without state patch"
+fi
+
+# (2) Done?  Stop the chain.
+if [ -f "\$__CES2_DONE_MARKER" ]; then
+    __ces_log "Simulation complete (marker present) — chain stopped."
+    rm -f "\$__CES2_COUNT_FILE"
+    exit 0
+fi
+
+# (3) Counter cap, then pre-queue the next step.
+__ces_count=\$(cat "\$__CES2_COUNT_FILE" 2>/dev/null || echo 0)
+if [ "\$__ces_count" -ge "\$__CES2_MAX_RESUBMIT" ]; then
+    __ces_log "Hit MAX_RESUBMIT=\${__CES2_MAX_RESUBMIT} — chain stopped."
+    rm -f "\$__CES2_COUNT_FILE"
+elif [ -n "\$PBS_JOBID" ]; then
+    __ces_next=\$((__ces_count + 1))
+    __ces_next_jid=\$(qsub -W depend=afterany:\${PBS_JOBID} "\$__CES2_THIS_SCRIPT" 2>>"\$__CES2_LOG")
+    if [ \$? -eq 0 ] && [ -n "\$__ces_next_jid" ]; then
+        echo "\$__ces_next" > "\$__CES2_COUNT_FILE"
+        __ces_log "Pre-queued next chain step \${__ces_next}/\${__CES2_MAX_RESUBMIT} → \${__ces_next_jid}"
+    else
+        __ces_log "WARN: failed to pre-queue next chain step"
+    fi
+else
+    __ces_log "WARN: PBS_JOBID empty — skipping pre-queue"
+fi
 ${TRAP_END}
 EOF
 
@@ -270,7 +339,7 @@ EOF
   local anchor_line
   anchor_line=$(grep -nE '^[[:space:]]*cd[[:space:]]+(\$curr_dir|\$\{?PBS_O_WORKDIR\}?)[[:space:]]*$' "$SUB" | head -1 | cut -d: -f1)
   if [ -z "$anchor_line" ]; then
-    echo "ERROR: could not find 'cd \$curr_dir' anchor in $SUB — trap NOT injected." >&2
+    echo "ERROR: could not find 'cd \$curr_dir' anchor in $SUB — chain block NOT injected." >&2
     rm -f "$tmpf"
     return 1
   fi
@@ -281,27 +350,28 @@ EOF
 
 if (( CONTINUE == 1 )); then
   echo
-  echo "==[ Auto-resubmit chain: ON (--continue) ]=="
-  if [ -z "${sub_patched_for_chain:-}" ]; then
-    cp -p "$SUB" "${SUB}.bak.chain.${ts}" 2>/dev/null || true
-  fi
+  echo "==[ Auto-resubmit chain: ON (--continue, depend=afterany) ]=="
+  cp -p "$SUB" "${SUB}.bak.chain.${ts}" 2>/dev/null || true
   if inject_trap_block; then
-    echo "   trap injected into $SUB  (max retries: $MAX_RESUBMIT)"
-    echo "   counter file: .resubmit_count  (auto-reset on clean exit)"
+    echo "   chain block injected into $SUB  (max retries: $MAX_RESUBMIT)"
+    echo "   marker file:  .ces2_chain_done  (written by --patch-only when complete)"
+    echo "   counter file: .resubmit_count   (safety cap on consecutive steps)"
     echo "   chain log:    resubmit_chain.log"
+    # Fresh chain → reset counter and stale marker so the new run starts clean.
+    rm -f .resubmit_count .ces2_chain_done
   else
-    echo "   trap NOT injected (see error above)."
+    echo "   chain block NOT injected (see error above)."
     exit 1
   fi
 elif (( NO_CONTINUE == 1 )); then
   echo
   echo "==[ Auto-resubmit chain: OFF (--no-continue) ]=="
   if remove_trap_block; then
-    echo "   trap removed from $SUB."
+    echo "   chain block removed from $SUB."
   else
-    echo "   no trap was present in $SUB."
+    echo "   no chain block was present in $SUB."
   fi
-  rm -f .resubmit_count
+  rm -f .resubmit_count .ces2_chain_done
 fi
 
 # ---------- 6. Submit ----------
