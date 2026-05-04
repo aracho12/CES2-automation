@@ -21,13 +21,12 @@ Usage
 
   # default: run_dir = current directory
   # If pot.z.avg is missing in run_dir, the script automatically planar-
-  # averages a Gaussian cube of V_H+V_bare (solute.pot_ortho.cube or
-  # solute.pot.cube) along z and writes pot.z.avg.  Use --cube to point
-  # at a specific cube file.
+  # averages a Gaussian cube of V_H+V_bare (total_pot_ortho.cube) along z
+  # and writes pot.z.avg.  Use --cube to point at a specific cube file.
 
   # from repo root:
   python tools/workfunction.py test/04_Cs/run
-  python tools/workfunction.py test/04_Cs/run --cube solute.pot_ortho.cube
+  python tools/workfunction.py test/04_Cs/run --cube total_pot_ortho.cube
 """
 
 import sys
@@ -91,7 +90,7 @@ def parse_args(argv):
 
 # Cube files containing raw V_H+V_bare from pp.x (no V_saw added).
 # These are what workfunction.py needs for the planar average.
-CUBE_CANDIDATES = ("solute.pot_ortho.cube", "solute.pot.cube")
+CUBE_CANDIDATES = ("total_pot_ortho.cube",)
 
 
 def load_cube(path):
