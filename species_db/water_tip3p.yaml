@@ -1,11 +1,15 @@
 id: water_tip3p
-name: Water (TIP3P-like)
+name: Water (TIP3P)
 net_charge: 0.0
 charge_scheme: explicit_or_zero
+# Source: Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
+# Geometry: d(OH)=0.9572 Å, angle(HOH)=104.52°
+# Charges:  q(O)=-0.834, q(H)=+0.417
+# LJ (O):   ε=0.1521 kcal/mol, σ=3.1507 Å (defined in lammps_input_writer.py)
 atoms:
   - element: O
     type_label: Ow
-    charge: -0.8476
+    charge: -0.834
     xyz: [0.000000, 0.000000, 0.000000]
     bjdisp:
       alpha_iso: 4.7595   # isotropic polarizability, a.u.  [Excel row 24: water O]
@@ -14,7 +18,7 @@ atoms:
 
   - element: H
     type_label: Hw
-    charge: 0.4238
+    charge: 0.417
     xyz: [0.957200, 0.000000, 0.000000]
     bjdisp:
       alpha_iso: 1.693    # a.u.  [Excel row 23: water H]
@@ -23,7 +27,7 @@ atoms:
 
   - element: H
     type_label: Hw
-    charge: 0.4238
+    charge: 0.417
     xyz: [-0.239987, 0.927297, 0.000000]
     bjdisp:
       alpha_iso: 1.693

@@ -1,0 +1,46 @@
+id: water_tip3p_ew
+name: Water (TIP3P-Ew)
+net_charge: 0.0
+charge_scheme: explicit_or_zero
+# Source: Price & Brooks, J. Chem. Phys. 121, 10096 (2004)
+# Geometry: d(OH)=0.9572 Å, angle(HOH)=104.52° (same as TIP3P)
+# Charges:  q(O)=-0.830, q(H)=+0.415
+# LJ (O):   ε=0.102 kcal/mol, σ=3.188 Å (defined in lammps_input_writer.py)
+atoms:
+  - element: O
+    type_label: Ow_tip3pew
+    charge: -0.830
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 4.7595
+      C6: 143.305
+      s: 1.40
+
+  - element: H
+    type_label: Hw_tip3pew
+    charge: 0.415
+    xyz: [0.957200, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693
+      C6: 42.716
+      s: 0.53
+
+  - element: H
+    type_label: Hw_tip3pew
+    charge: 0.415
+    xyz: [-0.239987, 0.927297, 0.000000]
+    bjdisp:
+      alpha_iso: 1.693
+      C6: 42.716
+      s: 0.53
+connectivity:
+  bonds:
+    - [1, 1, 2]
+    - [1, 1, 3]
+  angles:
+    - [1, 2, 1, 3]
+coeffs:
+  bond_coeffs:
+    1: [450.0, 0.9572]
+  angle_coeffs:
+    1: [55.0, 104.52]

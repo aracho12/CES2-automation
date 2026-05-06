@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Tuple
+from pathlib import Path
+from typing import Optional, Tuple
 import numpy as np
 from ase import Atoms
 from ase.io import read, write
@@ -8,8 +9,33 @@ def is_orthogonal_cell(cell: np.ndarray, tol: float = 1e-8) -> bool:
     a, b, c = cell[0], cell[1], cell[2]
     return (abs(np.dot(a,b)) < tol) and (abs(np.dot(a,c)) < tol) and (abs(np.dot(b,c)) < tol)
 
+
+def _detect_format(path: str) -> Optional[str]:
+    """Return an ASE format hint based on filename, or None for auto-detect."""
+    name = Path(path).name.lower()
+    if name.endswith((".in", ".pwi")) or name.startswith("pw."):
+        return "espresso-in"
+    if name.endswith((".out", ".pwo")) or name.endswith(".pw.out"):
+        return "espresso-out"
+    return None  # ASE auto-detects VASP CONTCAR/POSCAR by filename
+
+
+def read_structure(path: str, fmt: Optional[str] = None) -> Atoms:
+    """
+    Read a slab structure file. Supports VASP (CONTCAR/POSCAR) and
+    Quantum ESPRESSO (pw.x input/output) via ASE. The format is auto-
+    detected from the filename; pass `fmt` to override.
+    """
+    if fmt is None:
+        fmt = _detect_format(path)
+    if fmt is None:
+        return read(path)
+    return read(path, format=fmt)
+
+
 def read_vasp(path: str) -> Atoms:
-    return read(path)
+    """Backwards-compatible alias for read_structure."""
+    return read_structure(path)
 
 def write_vasp(path: str, atoms: Atoms) -> None:
     write(path, atoms, vasp5=True, direct=True)

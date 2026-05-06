@@ -5,7 +5,18 @@ project:
 species_db: "species_db"
 
 input:
+  # Slab structure file. ASE-supported formats are auto-detected from filename:
+  #   CONTCAR, POSCAR, *.vasp        → VASP
+  #   *.in, *.pwi, pw.*              → Quantum ESPRESSO pw.x input
+  #   *.out, *.pwo, *.pw.out         → Quantum ESPRESSO pw.x output
+  #
+  # Use either key — `structure_file` (preferred) or `vasp_file` (legacy alias):
   vasp_file: "CONTCAR"
+  # structure_file: "scf.pw.in"      # equivalent
+  #
+  # Optional: explicit format override when auto-detection fails
+  # (e.g. unusual filename). Any ASE format string is accepted.
+  # format: "espresso-in"
 
 cell:
   require_orthogonal: true 
@@ -43,8 +54,10 @@ charge_control:
 electrolyte_recipe:
   # Water count defines approximate volume.
   # species_id is OPTIONAL — auto-derived from ces2.water_model when omitted:
-  #   TIP4P  →  water_tip4p   (recommended)
-  #   TIP3P  →  water_tip3p
+  #   TIP4P    →  water_tip4p   (recommended)
+  #   TIP3P    →  water_tip3p
+  #   SPCE     →  water_spce
+  #   TIP3PEW  →  water_tip3p_ew
   # Only set species_id explicitly if you need a custom water species.
   water:
     # species_id: "water_tip4p"   # optional: auto-derived from ces2.water_model
@@ -135,8 +148,21 @@ slab:
 
 # ---- CES2 QM/MM LAMMPS input generation ----
 ces2:
-  # Water model: TIP4P (default, TIP4P-EW recommended for CES2) or TIP3P
+  # Water model — selects default species_id, charges, LJ defaults, and pair_style:
+  #   TIP4P    (default) — 4-site TIP4P-Ew (lj/cut/tip4p/long/opt)
+  #   TIP3P              — 3-site TIP3P
+  #   SPCE               — 3-site SPC/E
+  #   TIP3PEW            — 3-site TIP3P-Ew (Price & Brooks 2004)
   water_model: TIP4P
+
+  # ---- Pair style for TIP3P (ignored when water_model: TIP4P) ----
+  # TIP4P always uses lj/cut/tip4p/long/opt.
+  # For TIP3P, choose one of:
+  #   "lj/charmm/coul/long/opt" (default) — CHARMM-style switching, OMP accelerated
+  #   "lj/charmm/coul/long"               — CHARMM-style switching, no /opt
+  #   "lj/cut/coul/long"                  — plain cutoff LJ + long-range coul
+  # pair_style_tip3p: "lj/charmm/coul/long/opt"
+  # charmm_inner_cutoff: 13.0   # used only for lj/charmm/* styles (default: lj_cutoff - 2)
 
   # Pair-style cutoffs
   lj_cutoff:        15.0   # Angstrom - real-space LJ cutoff
