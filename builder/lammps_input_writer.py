@@ -306,7 +306,7 @@ def generate_lammps_input(
     shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
     shake_iter    = int(  md_cfg.get("shake_iter",   20))
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
-    _wall_buffer     = float(md_cfg.get("wall_buffer",      10.0))
+    _wall_buffer     = float(md_cfg.get("wall_buffer",       5.0))
     z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
 
     # Cap the upper wall safely below QE's dipole-correction (emaxpos) zone.
@@ -317,7 +317,7 @@ def generate_lammps_input(
     # easily land *inside* the dipole region (e.g. emaxpos=0.8 with a thin
     # vacuum_z), making the wall protect nothing.
     qe_cfg              = cfg.get("qe", {})
-    emaxpos             = float(qe_cfg.get("emaxpos", 0.8))
+    emaxpos             = float(qe_cfg.get("emaxpos", 0.9))
     emaxpos_safety      = float(md_cfg.get("emaxpos_safety_margin", 5.0))
     _box_z_total = getattr(box, "box_z_total", None)
     _box_zlo     = getattr(box, "box_zlo",     None)
@@ -351,11 +351,12 @@ def generate_lammps_input(
             )
 
     # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
-    # Max wall force is 2*K*wall_cutoff. K=10 (old default) bent under TIP4P
-    # impact + ~10 kcal/mol/Å upward grid forces near the water/vacuum interface,
-    # letting tail atoms punch through and trip "Particle on or inside fix wall
-    # surface". K=50 gives ~5× more headroom and held in stress tests.
-    wall_K           = float(md_cfg.get("wall_K",          50.0))
+    # Max wall force is 2*K*wall_cutoff. K=1 (soft) is the historical default,
+    # restored on the assumption that proper slab–solvent interactions during
+    # CES2 production keep solvent on the slab; the wall just catches outliers.
+    # If "Particle on or inside fix wall surface" crashes appear, bump K (e.g.
+    # 50) or add an active push to the CES2 input.
+    wall_K           = float(md_cfg.get("wall_K",           1.0))
     wall_sigma       = float(md_cfg.get("wall_sigma",       1.0))
     wall_cutoff      = float(md_cfg.get("wall_cutoff",      5.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))

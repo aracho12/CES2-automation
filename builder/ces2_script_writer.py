@@ -355,7 +355,7 @@ def generate_ces2_scripts(
 
     # ── dipole correction (from qe: section) ──────────────────────────────
     dipole_dir     = str(qe_cfg.get("edir",   3))
-    dipole_pos     = str(qe_cfg.get("emaxpos", 0.80))
+    dipole_pos     = str(qe_cfg.get("emaxpos", 0.90))
 
     # ── supercell ─────────────────────────────────────────────────────────
     rep       = list(cell_cfg.get("supercell", [1, 1, 1]))

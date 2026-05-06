@@ -232,7 +232,7 @@ def parse_dipole_info(run_dir):
 def parse_cell_info(run_dir):
     """Get cell z-length (Bohr) and emaxpos from pw.in or build_summary."""
     cell_z = None
-    emaxpos = 0.8  # default
+    emaxpos = 0.9  # default (matches cesbuild qe_writer default)
 
     # Try build_summary.json
     bsf = os.path.join(run_dir, "build_summary.json")

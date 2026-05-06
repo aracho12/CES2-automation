@@ -24,11 +24,11 @@ cell:
 
 electrolyte_box:
   z_gap: 0.0
-  # thickness/vacuum_z must satisfy: 0.8·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
+  # thickness/vacuum_z must satisfy: 0.9·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
   # ≥ z_top_slab + thickness + 5.  Otherwise the SOLVENT upper wall gets clamped
   # below z_el_hi (water column compressed) to keep solvent out of QE's
-  # dipole-correction zone (emaxpos·c).  Recommended (thickness, vacuum_z) =
-  # (50, 23) gives ~1 Å margin (minimum safe with default emaxpos=0.8,
+  # dipole-correction zone (emaxpos·c).  Default emaxpos=0.9 with vacuum_z=23
+  # gives generous margin (~10+ Å between water top and z_emaxpos).
   # emaxpos_safety=5).  PPPM accuracy is unaffected — `kspace_modify slab 3.0`
   # adds ~2·Lz of virtual vacuum for 2D Ewald correction regardless of
   # physical vacuum_z.  Bump vacuum_z if z_top_slab > ~13 Å (thicker slabs).
@@ -216,8 +216,8 @@ ces2:
     shake_maxiter: 500     # SHAKE absolute max iterations
     # ── SOLVENT upper-wall during QM/MM production ──────────────────────────
     # Defaults below match what the writer applies if omitted.
-    # wall_buffer:           10.0   # [Å] requested z_wall = z_el_hi + buffer
-    # wall_K:                50.0   # [kcal/mol/Å²] harmonic spring (was 10, bumped to hold under TIP4P+ion impact)
+    # wall_buffer:            5.0   # [Å] requested z_wall = z_el_hi + buffer
+    # wall_K:                 1.0   # [kcal/mol/Å²] soft default; bump to 50 if solvent escapes
     # emaxpos_safety_margin:  5.0   # [Å] hard cap: z_wall ≤ z_emaxpos − margin
                                     # (prevents wall from sitting inside QE dipole zone)
 
@@ -232,7 +232,7 @@ qe:
   smearing:    "mv"          # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
   degauss:     0.0147          # Ry - smearing width
   k_points:    [2, 4, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
-  emaxpos:     0.8           # dipole correction position (fraction of cell z)
+  emaxpos:     0.9           # dipole correction position (fraction of cell z)
   edir:        3             # dipole/electric field direction (3 = z)
   conv_thr:         1e-06   # SCF convergence threshold (Ry)
   electron_maxstep: 400    # max SCF iterations
@@ -343,7 +343,7 @@ md_relax:
   # Defaults below match what the writer applies if omitted.
   # relax_wall_buffer:      5.0   # [Å] requested z_wall = z_el_hi + buffer
   # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
-  # relax_wall_K:          50.0   # [kcal/mol/Å²] harmonic spring (was 10)
+  # relax_wall_K:           1.0   # [kcal/mol/Å²] soft default; bump if relax_press_atm=0
   # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone
   # ── Atmospheric-pressure compression on solvent (heat & equil only) ─────
   # Active downward fix addforce that pushes solvent onto the slab so it

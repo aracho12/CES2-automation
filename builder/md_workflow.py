@@ -572,9 +572,12 @@ def generate_md_bundle(
             pass
 
     # ── Wall spring parameters (configurable for tighter confinement) ────
-    # K bumped 10→50: at 10 kcal/mol/Å² walls bend under TIP4P + ion impact and
-    # let stray waters drift past z_wall into QE's dipole-correction region.
-    relax_wall_K       = float(md_cfg.get("relax_wall_K",       50.0))
+    # K=1 (soft) is the historical default. With relax_press_atm > 0 (default
+    # 100 atm) actively pushing solvent down, a soft wall is sufficient — the
+    # active drive prevents tail atoms from drifting past z_wall.
+    # If pressure is disabled (relax_press_atm = 0), bump K to 50 to keep
+    # solvent inside the QE dipole-correction zone (force = 2*K*wall_cutoff).
+    relax_wall_K       = float(md_cfg.get("relax_wall_K",        1.0))
     relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
     relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
 
@@ -589,7 +592,7 @@ def generate_md_bundle(
     # atom that crosses into that region experiences a singular gridforce/net force
     # and the run dies.  Force the wall to sit at least `emaxpos_safety_margin` Å
     # below it (default 5 Å).
-    emaxpos        = float((qe_cfg or {}).get("emaxpos", 0.8))
+    emaxpos        = float((qe_cfg or {}).get("emaxpos", 0.9))
     emaxpos_safety = float(md_cfg.get("emaxpos_safety_margin", 5.0))
     if z_wall is not None and box_zlo is not None and box_z_total is not None:
         z_emaxpos      = box_zlo + emaxpos * box_z_total

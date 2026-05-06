@@ -37,7 +37,7 @@ Pseudopotential config (config.yaml)
     smearing:    "mv"                # Methfessel-Paxton
     degauss:     0.02                # Ry
     k_points:    [1, 1, 1, 0, 0, 0] # Monkhorst-Pack grid + offsets
-    emaxpos:     0.8                 # dipole correction (fraction of unit cell)
+    emaxpos:     0.9                 # dipole correction (fraction of unit cell)
     edir:        3                   # z-direction dipole correction
     conv_thr:    1.0e-8              # SCF convergence (Ry)
     mixing_beta: 0.3
@@ -148,7 +148,7 @@ def generate_qe_input(
     occupations = str(  qe_cfg.get("occupations", "smearing"))
     smearing    = str(  qe_cfg.get("smearing",    "mv"))
     degauss     = float(qe_cfg.get("degauss",     0.02))
-    emaxpos     = float(qe_cfg.get("emaxpos",     0.8))
+    emaxpos     = float(qe_cfg.get("emaxpos",     0.9))
     edir        = int(  qe_cfg.get("edir",        3))
     conv_thr         = float(qe_cfg.get("conv_thr",          1.0e-8))
     mixing_beta      = float(qe_cfg.get("mixing_beta",       0.3))
