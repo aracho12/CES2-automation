@@ -481,6 +481,10 @@ def generate_ces2_scripts(
     L(f'CHGPLATE="{chgplate_bin}"')
     L(f'PLATEPOS="{plate_pos}" # somewhere in between bottom and the top layer of the electrode, bohr unit')
     L(f'TOTCHG="{tot_chg}" # (-): put more electrons in QM system, 0 for PZC')
+    # For charged systems, reading wfc/pot files generated under a different
+    # charge state can trigger Cholesky decomposition errors during diag.
+    # Use atomic-orbital initial wavefunctions/potential when TOTCHG != 0.
+    L('if [ "$(echo "$TOTCHG != 0" | bc)" -eq 1 ]; then STARTINGWFC="atomic"; STARTINGPOT="atomic"; else STARTINGWFC="file"; STARTINGPOT="file"; fi')
     L(f"initialqm={initial_qm} #1, when the initial qm has been done.")
     L(f"skipequil={skip_equil} #1, skip equil on first MM step (resume from averaging)")
     L("firstrun=1 # Should be 1 for all the time")
@@ -710,8 +714,8 @@ def generate_ces2_scripts(
     L("    sed -i \"s/.*\\&CONTROL.*/&\\ndft_ces = .true./\" pw.in")
     L("    sed -i \"s/.*\\&CONTROL.*/&\\nrho_ces = '.\\/MOBILE_final.cube'/\" pw.in")
     L("    sed -i \"s/.*\\&CONTROL.*/&\\npauli_rep_ces = '.\\/repA.cube'/\" pw.in")
-    L("    sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingwfc = 'file'/\" pw.in")
-    L("    sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingpot = 'file'/\" pw.in")
+    L("    sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingwfc = '$STARTINGWFC'/\" pw.in")
+    L("    sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingpot = '$STARTINGPOT'/\" pw.in")
     L("    sed -i \"s/.*\\&SYSTEM.*/&\\ntot_charge = $TOTCHG/\" pw.in")
     L("  fi")
     L("  if [ $qmmmstep -gt 0 -a \"$QMTYPE\" == \"opt\" ]; then # relax geometry")
@@ -843,8 +847,8 @@ def generate_ces2_scripts(
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\ndft_ces = .true./\" pw.nonortho.in")
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\nrho_ces = '.\\/MOBILE_final.cube'/\" pw.nonortho.in")
     L("\tsed -i \"s/.*\\&CONTROL.*/&\\npauli_rep_ces = '.\\/empty.cube'/\" pw.nonortho.in")
-    L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingwfc = 'file'/\" pw.nonortho.in")
-    L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingpot = 'file'/\" pw.nonortho.in")
+    L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingwfc = '$STARTINGWFC'/\" pw.nonortho.in")
+    L("        sed -i \"s/.*\\&ELECTRONS.*/&\\nstartingpot = '$STARTINGPOT'/\" pw.nonortho.in")
     L("        sed -i \"s/.*\\&SYSTEM.*/&\\ntot_charge = $TOTCHG/\" pw.nonortho.in")
     L("\tmpirun -np $NP $QEPW $QEPW_FLAGS < pw.nonortho.in > pw.nonortho.out")
     L("\tcp v_saw.cube v_saw_pw_nonortho.cube")
