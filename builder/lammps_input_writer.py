@@ -44,24 +44,45 @@ from .species import Species
 
 # ---------------------------------------------------------------------------
 # Built-in LJ defaults: type_label → (epsilon [kcal/mol], sigma [Å])
-# TIP4P-EW water (used when water_model = TIP4P, default):
-#   Ow: Horn et al. 2004 — 0.16275, 3.16435
-#   Hw: 0.0, 0.0  (H has no LJ in TIP4P)
-# Ions - JC for TIP4P-EW from J. Phys. Chem. B 112, 9020–9041 (2008).
-# TIP3P water (used when water_model = TIP3P):
-#   Ow: Jorgensen 1983 — 0.1521, 3.1507
-# Override per type_label in config.yaml [ces2][lj_params].
+#
+# Water LJ is per-model; the matching Joung-Cheatham 2008 ion column is
+# selected automatically based on ces2.water_model (TIP4P → JC TIP4P-Ew,
+# SPCE → JC SPC/E, TIP3P / TIP3PEW → JC TIP3P).  Override any entry per
+# type_label via ces2.lj_params in config.yaml.
 # ---------------------------------------------------------------------------
-_DEFAULT_LJ_TIP4P: Dict[str, Tuple[float, float]] = {
-    # TIP4P-EW water
-    # Source: Horn et al., J. Chem. Phys. 120, 9665 (2004)
-    "Ow":    (0.16275000,  3.16435),
-    "Hw":    (0.0000,      1.0000),   # eps=0; sigma set to 1 to avoid /0
-    # Hydroxide (approximate — override in config for accurate work)
-    "O_oh":  (0.16275000,  3.16435),
-    "H_oh":  (0.0000,      1.0000),
-    # Joung & Cheatham (2008) J. Phys. Chem. B 112, 9020 — TIP4P-Ew column
-    # sigma = 2*(Rmin/2) / 2^(1/6)  (converted from Table 5)
+
+# ─── Water-O / water-H LJ (per model, type_label distinct per species file) ─
+_LJ_WATER_TIP4P_EW: Dict[str, Tuple[float, float]] = {
+    # Horn et al., J. Chem. Phys. 120, 9665 (2004)
+    "Ow":   (0.16275000, 3.16435),
+    "Hw":   (0.0000,     1.0000),    # eps=0; sigma=1 to avoid /0
+}
+_LJ_WATER_TIP3P: Dict[str, Tuple[float, float]] = {
+    # Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
+    "Ow":   (0.1521,     3.1507),
+    "Hw":   (0.0000,     1.0000),
+}
+_LJ_WATER_SPCE: Dict[str, Tuple[float, float]] = {
+    # Berendsen, Grigera & Straatsma, J. Phys. Chem. 91, 6269 (1987)
+    "Ow_spce":  (0.1553, 3.166),
+    "Hw_spce":  (0.0000, 1.0000),
+}
+_LJ_WATER_TIP3P_EW: Dict[str, Tuple[float, float]] = {
+    # Price & Brooks, J. Chem. Phys. 121, 10096 (2004)
+    "Ow_tip3pew":  (0.102, 3.188),
+    "Hw_tip3pew":  (0.0000, 1.0000),
+}
+
+# Hydroxide LJ — borrows the active water-O LJ as approximation.
+# Override per type_label in ces2.lj_params for accurate work.
+def _oh_from_water(water_lj: Dict[str, Tuple[float, float]]) -> Dict[str, Tuple[float, float]]:
+    o_eps_sig = water_lj.get("Ow") or next(iter(water_lj.values()))
+    return {"O_oh": o_eps_sig, "H_oh": (0.0, 1.0)}
+
+# ─── Joung-Cheatham 2008 ion LJ (one column per matching water model) ──────
+# Reference: Joung & Cheatham, J. Phys. Chem. B 112, 9020 (2008)
+# sigma = 2 * (Rmin/2) / 2^(1/6)  — converted from Table 5
+_LJ_IONS_JC_TIP4P_EW: Dict[str, Tuple[float, float]] = {
     "Li":    (0.10398840,  1.43969),
     "Na":    (0.16843750,  2.18448),
     "K":     (0.27946510,  2.83306),
@@ -72,34 +93,58 @@ _DEFAULT_LJ_TIP4P: Dict[str, Tuple[float, float]] = {
     "Br":    (0.03037730,  4.93202),
     "I":     (0.04170820,  5.25987),
 }
-
-_DEFAULT_LJ_TIP3P: Dict[str, Tuple[float, float]] = {
-    # TIP3P water
-    # Source: Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
-    "Ow":    (0.1521,      3.1507),
-    "Hw":    (0.0000,      1.0000),
-    "O_oh":  (0.1521,      3.1507),
-    "H_oh":  (0.0000,      1.0000),
-    # Joung-Cheatham ions (TIP3P-compatible)
-    # Source: Joung & Cheatham, J. Phys. Chem. B 112, 9020 (2008) — TIP3P column
+_LJ_IONS_JC_TIP3P: Dict[str, Tuple[float, float]] = {
+    "Li":    (0.0279,      1.8250),
     "Na":    (0.3526418,   2.1600),
     "K":     (0.4184,      3.3330),
-    "Li":    (0.0279,      1.8250),
     "Rb":    (0.4748,      3.6560),
     "Cs":    (0.5000,      4.1430),
+    "F":     (0.7530,      3.1180),
     "Cl":    (0.7200,      4.4170),
     "Br":    (0.7150,      4.8370),
-    "F":     (0.7530,      3.1180),
     "I":     (0.6130,      5.4000),
 }
+_LJ_IONS_JC_SPCE: Dict[str, Tuple[float, float]] = {
+    "Li":    (0.3367050,   1.40880),
+    "Na":    (0.3526418,   2.15952),
+    "K":     (0.4297054,   2.83840),
+    "Rb":    (0.4451081,   3.04509),
+    "Cs":    (0.0898565,   3.83159),
+    "F":     (0.0074005,   4.10219),
+    "Cl":    (0.0127850,   4.83045),
+    "Br":    (0.0269586,   4.90412),
+    "I":     (0.0427845,   5.20892),
+}
 
-# Additional common non-water/ion types (same for both models)
+# Additional common non-water/ion atoms (same regardless of water model)
 _DEFAULT_LJ_COMMON: Dict[str, Tuple[float, float]] = {
     "C":  (0.0860, 3.3997),
     "N":  (0.1700, 3.2500),
     "P":  (0.2000, 3.7400),
     "S":  (0.2500, 3.5640),
 }
+
+
+def _build_lj_defaults(water_model: str) -> Dict[str, Tuple[float, float]]:
+    """Pick water LJ + JC ion params consistent with the chosen water_model.
+
+    TIP3P-Ew has no published JC ion set, so JC TIP3P is used as the
+    closest fallback (note this in production work).
+    """
+    wm = water_model.upper()
+    if wm == "TIP4P":
+        water = _LJ_WATER_TIP4P_EW
+        ions  = _LJ_IONS_JC_TIP4P_EW
+    elif wm == "SPCE":
+        water = _LJ_WATER_SPCE
+        ions  = _LJ_IONS_JC_SPCE
+    elif wm == "TIP3PEW":
+        water = _LJ_WATER_TIP3P_EW
+        ions  = _LJ_IONS_JC_TIP3P    # no separate JC TIP3P-Ew set; closest match
+    else:  # TIP3P (default fallback)
+        water = _LJ_WATER_TIP3P
+        ions  = _LJ_IONS_JC_TIP3P
+    return {**water, **_oh_from_water(water), **ions, **_DEFAULT_LJ_COMMON}
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +213,9 @@ def generate_lammps_input(
 
     # ------------------------------------------------------------------ #
     #  LJ parameter DB  (built-in defaults + user overrides)
+    #  water LJ + matching JC ion column auto-selected from water_model.
     # ------------------------------------------------------------------ #
-    lj_db: Dict[str, Tuple[float, float]] = dict(
-        _DEFAULT_LJ_TIP4P if use_tip4p else _DEFAULT_LJ_TIP3P
-    )
-    lj_db.update(_DEFAULT_LJ_COMMON)
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
@@ -201,7 +244,12 @@ def generate_lammps_input(
     #  species_id is optional in config — auto-derived from water_model
     #  when not explicitly set.  Mapping: TIP4P→water_tip4p, TIP3P→water_tip3p
     # ------------------------------------------------------------------ #
-    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    _WATER_MODEL_TO_SID = {
+        "TIP4P":   "water_tip4p",
+        "TIP3P":   "water_tip3p",
+        "SPCE":    "water_spce",
+        "TIP3PEW": "water_tip3p_ew",
+    }
     _default_water_sid  = _WATER_MODEL_TO_SID.get(water_model, "water_tip4p")
     water_sid    = recipe_cfg.get("water", {}).get("species_id") or _default_water_sid
     water_O_lbl: Optional[str] = None
@@ -392,8 +440,29 @@ def generate_lammps_input(
         L(f"pair_style      hybrid/overlay lj/cut/tip4p/long/opt {O_tid} {H_tid} {bt} {at}"
           f" {tip4p_msite} {lj_cut:.1f} bjdisp {bjd_cutoff:.0f}")
         L(f"kspace_style    pppm/tip4p {kspace_acc:.1e}")
+        tip3p_substyle = None
     else:
-        L(f"pair_style      hybrid/overlay lj/cut/long {lj_cut:.1f} bjdisp {bjd_cutoff:.0f}")
+        # TIP3P: user-selectable pair_style (default: lj/charmm/coul/long/opt)
+        tip3p_substyle = str(ces2_cfg.get("pair_style_tip3p", "lj/charmm/coul/long/opt"))
+        _valid_tip3p = {
+            "lj/charmm/coul/long/opt",
+            "lj/charmm/coul/long",
+            "lj/cut/coul/long",
+        }
+        if tip3p_substyle not in _valid_tip3p:
+            raise ValueError(
+                f"ces2.pair_style_tip3p must be one of {sorted(_valid_tip3p)}, "
+                f"got '{tip3p_substyle}'"
+            )
+        if tip3p_substyle.startswith("lj/charmm"):
+            inner = float(ces2_cfg.get("charmm_inner_cutoff", lj_cut - 2.0))
+            L(f"# TIP3P: pair_style={tip3p_substyle} inner={inner:.1f} outer={lj_cut:.1f}")
+            L(f"pair_style      hybrid/overlay {tip3p_substyle} {inner:.1f} {lj_cut:.1f}"
+              f" bjdisp {bjd_cutoff:.0f}")
+        else:
+            L(f"# TIP3P: pair_style={tip3p_substyle} cutoff={lj_cut:.1f}")
+            L(f"pair_style      hybrid/overlay {tip3p_substyle} {lj_cut:.1f}"
+              f" bjdisp {bjd_cutoff:.0f}")
         L(f"kspace_style    pppm {kspace_acc:.1e}")
 
     L(f"kspace_modify   slab {kspace_slab:.1f}   # 2D periodic slab correction")
@@ -534,7 +603,7 @@ def generate_lammps_input(
     # ── Section 4: LJ pair_coeff ─────────────────────────────────────────
     section("4. LJ pair coefficients")
     L()
-    lj_substyle = "lj/cut/tip4p/long/opt" if use_tip4p else "lj/cut/long"
+    lj_substyle = "lj/cut/tip4p/long/opt" if use_tip4p else tip3p_substyle
     L(f"# Lorentz-Berthelot mixing; QM-involved pairs: epsilon=0")
     L()
 
@@ -808,11 +877,8 @@ def collect_relax_ff_params(
     use_tip4p   = (water_model == "TIP4P")
     tip4p_msite = float(ces2_cfg.get("tip4p_msite", 0.125))
 
-    # ---- LJ database ----
-    lj_db: Dict[str, Tuple[float, float]] = dict(
-        _DEFAULT_LJ_TIP4P if use_tip4p else _DEFAULT_LJ_TIP3P
-    )
-    lj_db.update(_DEFAULT_LJ_COMMON)
+    # ---- LJ database (water + matching JC ions auto-picked from water_model) ----
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
@@ -826,7 +892,12 @@ def collect_relax_ff_params(
 
     # ---- Water type IDs and charges ----
     # species_id is optional — auto-derived from water_model when not set.
-    _WATER_MODEL_TO_SID = {"TIP4P": "water_tip4p", "TIP3P": "water_tip3p"}
+    _WATER_MODEL_TO_SID = {
+        "TIP4P":   "water_tip4p",
+        "TIP3P":   "water_tip3p",
+        "SPCE":    "water_spce",
+        "TIP3PEW": "water_tip3p_ew",
+    }
     _default_water_sid  = _WATER_MODEL_TO_SID.get(water_model, "water_tip4p")
     water_sid      = recipe_cfg.get("water", {}).get("species_id") or _default_water_sid
     water_O_tid:   Optional[int] = None
@@ -924,9 +995,8 @@ def collect_relax_ff_params(
 # Debug helper
 # ---------------------------------------------------------------------------
 def print_lj_db(water_model: str = "TIP4P") -> None:
-    db = _DEFAULT_LJ_TIP4P if water_model.upper() == "TIP4P" else _DEFAULT_LJ_TIP3P
-    db = {**db, **_DEFAULT_LJ_COMMON}
-    print(f"{'Label':<10}  {'epsilon':>10}  {'sigma':>8}  (water_model={water_model})")
+    db = _build_lj_defaults(water_model)
+    print(f"{'Label':<12}  {'epsilon':>10}  {'sigma':>8}  (water_model={water_model})")
     print("-" * 55)
     for lbl, (eps, sig) in sorted(db.items()):
-        print(f"{lbl:<10}  {eps:10.7f}  {sig:8.5f}")
+        print(f"{lbl:<12}  {eps:10.7f}  {sig:8.5f}")

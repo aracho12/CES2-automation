@@ -20,8 +20,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None,
                     help="Path to config YAML (default: auto-detect config*.yaml in cwd)")
-    ap.add_argument("--input", "-i", default="CONTCAR",
-                    help="Path to CONTCAR (overrides input.vasp_file in config)")
+    ap.add_argument("--input", "-i", default=None,
+                    help="Path to slab structure file (overrides input.structure_file / "
+                         "input.vasp_file in config). If neither is set, defaults to CONTCAR.")
     args = ap.parse_args()
 
     config_path = Path(args.config) if args.config else _find_config_yaml()
