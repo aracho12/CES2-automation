@@ -569,6 +569,35 @@ def generate_ces2_scripts(
     L("}")
     L()
 
+    # ── Preflight check: verify external paths before launching the loop ───
+    # Prevents silent failures like the historical CHG2POT typo, which broke
+    # total_pot_*.cube and solute.ind.cube without aborting the run.
+    L("preflight_check (){")
+    L("  local missing=()")
+    L("  local d x f")
+    L("  for d in DFT_CES2_PATH; do")
+    L("    if [ ! -d \"${!d}\" ]; then missing+=(\"DIR  $d=${!d}\"); fi")
+    L("  done")
+    L("  for x in LAMMPS QEPW QEPP CUBEADD CUBEMULTI CUBESUB BLUR MDDIPOLE CHG2POT MDIPC CHGPLATE; do")
+    L("    if [ ! -x \"${!x}\" ]; then missing+=(\"EXE  $x=${!x}\"); fi")
+    L("  done")
+    L("  for f in LAMMPSIN QMIN QMIN2; do")
+    L("    if [ ! -f \"${!f}\" ]; then missing+=(\"FILE $f=${!f}\"); fi")
+    L("  done")
+    L("  if [ ! -f \"$LAMMPSRESTART\" ] && [ ! -f \"$LAMMPSDATA\" ]; then")
+    L("    missing+=(\"FILE neither LAMMPSRESTART=$LAMMPSRESTART nor LAMMPSDATA=$LAMMPSDATA exists\")")
+    L("  fi")
+    L("  if [ ${#missing[@]} -gt 0 ]; then")
+    L("    echo \"### preflight_check FAILED — missing/inaccessible paths:\" >&2")
+    L("    printf '  - %s\\n' \"${missing[@]}\" >&2")
+    L("    echo \"### Aborting before main loop.\" >&2")
+    L("    exit 1")
+    L("  fi")
+    L("  echo \"### preflight_check OK — all paths exist.\"")
+    L("}")
+    L("preflight_check")
+    L()
+
     # ── Main QM/MM loop (verbatim from production) ─────────────────────────
     L("# main loop")
     L("for ((qmmmstep=$QMMMINISTEP; qmmmstep<=$QMMMFINSTEP; qmmmstep++));do")

@@ -259,7 +259,7 @@ ces2_script:
   qe_binary:     "/home01/x3246a09/ces_share/qe_test/bin/pw.x"
   pp_binary:     "/home01/x3246a09/ces_share/qe_test/bin/pp.x"
   lmp_binary:    "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
-  chg2pot_binary:  "/home01/x3246a09/ces_sharechg2pot"
+  chg2pot_binary:  "/home01/x3246a09/ces_share/chg2pot"
   mdipc_binary:    "/home01/x3246a09/ces_share/mdipc"
   chgplate_binary: "/home01/x3246a09/ces_share/make_rho_mino"
   np:            256             # MPI tasks (= select × mpiprocs)
