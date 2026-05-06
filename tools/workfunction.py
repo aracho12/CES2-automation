@@ -21,8 +21,10 @@ Usage
 
   # default: run_dir = current directory
   # If pot.z.avg is missing in run_dir, the script automatically planar-
-  # averages a Gaussian cube of V_H+V_bare (total_pot_ortho.cube) along z
-  # and writes pot.z.avg.  Use --cube to point at a specific cube file.
+  # averages total_pot_ortho.cube — the total electrostatic potential
+  # (QM solute V_H+V_bare + V_saw dipole correction + MM mobile-charge
+  # potential, in Ry / electron convention) — along z and writes
+  # pot.z.avg.  Use --cube to point at a specific cube file.
 
   # from repo root:
   python tools/workfunction.py test/04_Cs/run
@@ -88,8 +90,11 @@ def parse_args(argv):
     return os.path.abspath(run_dir), (os.path.abspath(cube) if cube else None)
 
 
-# Cube files containing raw V_H+V_bare from pp.x (no V_saw added).
-# These are what workfunction.py needs for the planar average.
+# total_pot_ortho.cube = QM solute V_H+V_bare (ortho SCF, with MM Pauli
+# repulsion via repA.cube) + V_saw (dipole correction) + (-2)·pot(MOBILE_final)
+# (MM mobile-charge potential, Hartree→Ry and electron-sign converted).
+# This is the full electrostatic potential an electron sees; its vacuum
+# plateau is the correct V_vac for the work function.
 CUBE_CANDIDATES = ("total_pot_ortho.cube",)
 
 
@@ -150,8 +155,8 @@ def cube_to_pot_z_avg(cube_path, out_path):
 
 def load_pot_z_avg(run_dir, cube_override=None):
     """Load pot.z.avg → arrays z_bohr, z_ang, v_ry, v_ev.
-    If pot.z.avg is missing, planar-average a cube (solute.pot_ortho.cube
-    or solute.pot.cube — or --cube PATH) and write pot.z.avg in run_dir.
+    If pot.z.avg is missing, planar-average total_pot_ortho.cube (or
+    --cube PATH) and write pot.z.avg in run_dir.
     """
     fpath = os.path.join(run_dir, "pot.z.avg")
     if not os.path.isfile(fpath):
@@ -339,7 +344,8 @@ def plot_potential(z_bohr, z_ang, v_ry, v_ev, regions, v_vac_ry,
         figsize=(_FW * 2.8, _FH * 1.8),
         gridspec_kw={"width_ratios": [2, 1]},
     )
-    fig.suptitle("Planar-Averaged Electrostatic Potential  (V$_H$ + V$_{bare}$)",
+    fig.suptitle("Planar-Averaged Total Electrostatic Potential  "
+                 "(QM V$_H$+V$_{bare}$ + V$_{saw}$ + V$_{MM}$, ortho)",
                  fontsize=_FS, fontweight="bold", y=1.01)
 
     # ── Left panel: full z range ────────────────────────────────────────────
@@ -558,7 +564,8 @@ def write_summary_table(run_dir, fermi_data, regions, v_vac_ry, v_vac_std_ry,
         row("U vs SHE  [ref 4.28 V, Trasatti]",f"{u_she_tras:+.4f}", "V_SHE"),
         sep,
         "",
-        "Note: pot.z.avg contains V_H + V_bare (no V_saw).",
+        "Note: pot.z.avg = planar average of total_pot_ortho.cube",
+        "      = QM V_H+V_bare (ortho SCF) + V_saw + MM mobile-charge potential.",
         "      V_vac is taken from the flat plateau after emaxpos.",
         "      SHE reference: Li et al. PCCP 17, 4647 (2015)  / Trasatti 1986.",
         "",
