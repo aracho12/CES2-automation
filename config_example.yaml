@@ -345,4 +345,8 @@ md_relax:
   # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
   # relax_wall_K:          50.0   # [kcal/mol/Å²] harmonic spring (was 10)
   # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone
+  # ── Atmospheric-pressure compression on solvent (heat & equil only) ─────
+  # Active downward fix addforce that pushes solvent onto the slab so it
+  # doesn't drift up into the vacuum gap. Walls only confine; this drives.
+  # relax_press_atm:      100.0   # [atm] 0 disables; typical 50–500 atm
 

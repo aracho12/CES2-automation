@@ -200,6 +200,7 @@ def _nvt_common_header(
     wall_K: float = 1.0,
     wall_sigma: float = 1.0,
     wall_cutoff: float = 5.0,
+    press_atm: float = 0.0,
 ) -> dict:
     """Build common text blocks for NVT scripts (heat & equil)."""
 
@@ -232,6 +233,21 @@ def _nvt_common_header(
         wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
+    # ── Atmospheric-pressure compression on solvent ──────────────────────
+    # Push solvent down onto the slab so it doesn't drift up into the vacuum
+    # gap during pre-relaxation. F_per_atom = -P*A_xy/N_solvent.
+    # 1 atm = 1.4583e-5 kcal/mol/Å³ in LAMMPS real units (nktv2p^-1).
+    press_fix   = ""
+    unfix_press = ""
+    if press_atm and press_atm > 0.0:
+        press_fix = (
+            f"# Atmospheric-pressure compression: {press_atm:g} atm on {nvt_group}\n"
+            f"variable        Pkcal_press equal {press_atm:g}*1.4583e-5\n"
+            f"variable        Fdown_press equal -v_Pkcal_press*lx*ly/count({nvt_group})\n"
+            f"fix             PRESS {nvt_group} addforce 0.0 0.0 v_Fdown_press\n"
+        )
+        unfix_press = "unfix           PRESS\n"
+
     # ── SHAKE block ──────────────────────────────────────────────────────
     if ff.water_bond_type and ff.water_angle_type:
         shake_fix = (
@@ -261,6 +277,7 @@ def _nvt_common_header(
         group_block=group_block, vel_group=vel_group, nvt_group=nvt_group,
         wall_group=wall_group, unfix_freeze=unfix_freeze,
         wall_fix=wall_fix, unfix_wall=unfix_wall,
+        press_fix=press_fix, unfix_press=unfix_press,
         shake_fix=shake_fix, unfix_shake=unfix_shake,
         charge_block=charge_block,
         pc_block=pc_block, bc_block=bc_block, ac_block=ac_block,
@@ -287,6 +304,8 @@ def write_in_relax_heat(
     wall_K:              float = 1.0,
     wall_sigma:          float = 1.0,
     wall_cutoff:         float = 5.0,
+    # ── Atmospheric-pressure compression on solvent (atm; 0 disables) ────
+    press_atm:           float = 0.0,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -306,7 +325,8 @@ def write_in_relax_heat(
     ff = relax_ff
     heat_ps = heat_steps * timestep_fs / 1000.0
     c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
-                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff)
+                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff,
+                           press_atm=press_atm)
 
     txt = f"""\
 # in.relax_heat — Part 2: NVT heating  {t_start:.0f} K → {t_target:.0f} K
@@ -346,7 +366,7 @@ reset_timestep  0
 read_dump       {minimized_dump} 0 x y z box no
 
 {c['group_block']}
-{c['wall_fix']}neighbor        2.0 bin
+{c['wall_fix']}{c['press_fix']}neighbor        2.0 bin
 neigh_modify    delay 0 every 1 check yes
 
 # ======================================================================
@@ -366,7 +386,7 @@ fix             NVT1 {c['nvt_group']} nvt temp {t_start:.1f} {t_target:.1f} {tda
 run             {heat_steps}
 unfix           NVT1
 
-{c['unfix_shake']}{c['unfix_wall']}{c['unfix_freeze']}undump          D1
+{c['unfix_shake']}{c['unfix_press']}{c['unfix_wall']}{c['unfix_freeze']}undump          D1
 # write_dump does NOT call init() → no PPPM reinit → no FFTW crash
 reset_timestep  0
 write_dump      all custom heated.dump id type x y z vx vy vz modify sort id
@@ -398,6 +418,8 @@ def write_in_relax_equil(
     wall_K:              float = 1.0,
     wall_sigma:          float = 1.0,
     wall_cutoff:         float = 5.0,
+    # ── Atmospheric-pressure compression on solvent (atm; 0 disables) ────
+    press_atm:           float = 0.0,
     # ── QM (slab) atom ID range — freeze during relax ────────────────────
     qm_lo:               Optional[int] = None,
     qm_hi:               Optional[int] = None,
@@ -419,7 +441,8 @@ def write_in_relax_equil(
     ff = relax_ff
     equil_ps = equil_steps * timestep_fs / 1000.0
     c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
-                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff)
+                           wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff,
+                           press_atm=press_atm)
 
     txt = f"""\
 # in.relax_equil — Part 3: NVT equilibration at {t_target:.0f} K
@@ -459,7 +482,7 @@ reset_timestep  0
 read_dump       {heated_dump} 0 x y z vx vy vz box no
 
 {c['group_block']}
-{c['wall_fix']}neighbor        2.0 bin
+{c['wall_fix']}{c['press_fix']}neighbor        2.0 bin
 neigh_modify    delay 0 every 1 check yes
 
 # ======================================================================
@@ -476,7 +499,7 @@ fix             NVT2 {c['nvt_group']} nvt temp {t_target:.1f} {t_target:.1f} {td
 run             {equil_steps}
 unfix           NVT2
 
-{c['unfix_shake']}{c['unfix_wall']}{c['unfix_freeze']}undump          D1
+{c['unfix_shake']}{c['unfix_press']}{c['unfix_wall']}{c['unfix_freeze']}undump          D1
 # write_dump: safe (no PPPM reinit)
 write_dump      all custom equilibrated.dump id type x y z vx vy vz modify sort id
 # write_data: may crash on macOS (PPPM reinit in destructor), but run is already done
@@ -555,6 +578,11 @@ def generate_md_bundle(
     relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
     relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
 
+    # ── Atmospheric-pressure compression on solvent (heat & equil) ───────
+    # Pushes solvent down onto the slab so it doesn't float up into the
+    # vacuum gap during pre-relax. 0 disables the addforce.
+    relax_press_atm    = float(md_cfg.get("relax_press_atm",   100.0))
+
     # ── Cap upper wall safely below QE dipole-correction (emaxpos) zone ──
     # The QM cube's potential becomes discontinuous starting at QE z = emaxpos·c,
     # which in LAMMPS box coords is  box_zlo + emaxpos·box_z_total.  Any solvent
@@ -594,6 +622,7 @@ def generate_md_bundle(
         wall_K=relax_wall_K,
         wall_sigma=relax_wall_sigma,
         wall_cutoff=relax_wall_cutoff,
+        press_atm=relax_press_atm,
         qm_lo=qm_lo,
         qm_hi=qm_hi,
     )
