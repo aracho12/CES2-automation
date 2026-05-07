@@ -191,13 +191,10 @@ qe:
   pseudo_set: "sssp"
 
   # Per-element overrides (optional): takes priority over pseudo_set.
-  # Uncomment and add entries to override specific elements or use a custom set.
-  # pseudopotentials:
-  #   Ir: "Ir_custom.UPF"   # use a non-SSSP file for Ir
-  #   O:  "O_custom.UPF"
-    # Add more elements as needed:
-    # H:  "H.pbe-kjpaw_psl.0.1.UPF"
-    # K:  "K.pbe-spn-kjpaw_psl.0.2.UPF"
+  pseudopotentials:
+    Ir: "Ir.pbe-n-kjpaw_psl.0.2.3.UPF"
+    O:  "O.pbe-n-kjpaw_psl.1.0.0.UPF"
+    H:  "H.pbe-kjpaw_psl.1.0.0.UPF"
 
 # ---- CES2 QM/MM run script generation ----
 ces2_script:
