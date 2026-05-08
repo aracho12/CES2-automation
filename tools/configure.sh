@@ -452,6 +452,7 @@ else
     JOB_DEFAULT="$CUR_JOB"
 fi
 JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$JOB_DEFAULT")"
+fi
 
 # ---- 7. (optional, --box) electrolyte box geometry ----
 if [[ "$DO_BOX" == "1" ]]; then
