@@ -270,10 +270,19 @@ The builder auto-replicates each primitive index across all supercell copies (AS
 
 ```yaml
 slab:
+  bjparams_source: layer_file
   bjparams_layer_file: "bjparams_layer_avg.dat"   # z-dependent BJ parameters
 ```
 
 Reads a DFTD3-style layer file and assigns a unique `type_label` per (element, z-layer). This replaces hand-written overrides for systems whose QM atoms have z-dependent parameters. Requires `supercell[2] == 1` (no z-tiling).
+
+Layer files are resolved from an absolute path, the project workdir, `species_db/qm_params/`, or `species_db/qm_params/layer_files/`. Bare names may omit `.dat`, so a DB file such as `species_db/qm_params/layer_files/IrO2_2OH_2O_bjparams_layer_avg.dat` can be referenced as:
+
+```yaml
+slab:
+  bjparams_source: layer_file
+  bjparams_layer_file: "IrO2_2OH_2O_bjparams_layer_avg"
+```
 
 **Priority order:** `type_label_overrides` > layer-file label > element symbol.
 
@@ -523,7 +532,9 @@ types:
     s: 1.40
 ```
 
-Then reference these labels in your config via `slab.type_label_overrides` or `slab.bjparams_layer_file`.
+Then reference these labels in your config via `slab.type_label_overrides`.
+
+For z-dependent per-layer parameters, store the `.dat` file in `species_db/qm_params/layer_files/` and reference it with `slab.bjparams_source: layer_file` plus `slab.bjparams_layer_file`.
 
 ---
 

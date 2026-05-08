@@ -26,6 +26,39 @@ from .bjdisp_db import (
     parse_layer_file, assign_layer_labels, layer_label_to_element, BjdispParams,
 )
 
+
+def _resolve_bjparams_layer_file(layer_file: str | Path, workdir: Path, species_db_path: Path) -> Path:
+    """
+    Resolve a per-layer BJ params file from either the project workdir or the
+    bundled species DB. Bare names may omit the .dat suffix.
+    """
+    raw = Path(layer_file)
+    names = [raw]
+    if raw.suffix == "":
+        names.append(raw.with_suffix(".dat"))
+
+    if raw.is_absolute():
+        candidates = names
+    else:
+        candidates = []
+        for base in (
+            workdir,
+            species_db_path / "qm_params",
+            species_db_path / "qm_params" / "layer_files",
+        ):
+            candidates.extend(base / name for name in names)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+
+    tried = "\n  ".join(str(p.resolve()) for p in candidates)
+    raise FileNotFoundError(
+        f"slab.bjparams_layer_file: '{layer_file}' not found. Tried:\n  {tried}"
+    )
+
+
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
     timings: Dict[str, float] = {}
@@ -298,13 +331,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
             raise ValueError(
                 "slab.bjparams_source is 'layer_file' but slab.bjparams_layer_file is not set"
             )
-        _layer_path = Path(_layer_file)
-        if not _layer_path.is_absolute():
-            _layer_path = (workdir / _layer_path).resolve()
-        if not _layer_path.exists():
-            raise FileNotFoundError(
-                f"slab.bjparams_layer_file: {_layer_path} not found"
-            )
+        _layer_path = _resolve_bjparams_layer_file(_layer_file, workdir, species_db_path)
         if int(rep[2]) != 1:
             raise ValueError(
                 f"slab.bjparams_layer_file requires supercell rep[2]==1 "

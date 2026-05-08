@@ -137,6 +137,11 @@ slab:
   #
   # bjparams_source: layer_file
   # bjparams_layer_file: bjparams_layer_avg.dat
+  #
+  # The layer file can live in the project workdir, species_db/qm_params/,
+  # or species_db/qm_params/layer_files/. Bare names may omit ".dat".
+  # Example DB entry:
+  # bjparams_layer_file: IrO2_2OH_2O_bjparams_layer_avg
 
   # ---- type_label overrides (optional, works with both sources) ----
   # Assign custom type_labels to specific atoms in the primitive cell.
@@ -349,4 +354,3 @@ md_relax:
   # Active downward fix addforce that pushes solvent onto the slab so it
   # doesn't drift up into the vacuum gap. Walls only confine; this drives.
   # relax_press_atm:      100.0   # [atm] 0 disables; typical 50–500 atm
-
