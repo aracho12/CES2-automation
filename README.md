@@ -96,6 +96,11 @@ python run_builder.py --config config.yaml
 python run_builder.py --config config.yaml --input /path/to/CONTCAR
 ```
 
+At startup, the builder prints `[path check] WARNING` lines for missing or
+locally unverifiable paths in the config, including the slab input file,
+`species_db`, BJ parameter files, PACKMOL, pseudopotential directory, and
+CES2/QE/LAMMPS script binaries.
+
 ### Master/Variant Config Workflow
 
 For repeated calculations on the same slab setup, first create a master config
