@@ -333,7 +333,7 @@ def parse_layer_file(
 
     File format:
         # BJ dispersion parameters — layer-averaged (z_tol = 0.20 Ang)
-        # Element      N    z_avg(Ang)    ALPHAscs_avg     C6_D3_avg
+        # Element      N    z_avg(Ang)    ALPHAscs_avg(au)  C6_D3_avg(au)
         # ----------------------------------------------------------
           O            4      0.000000          4.6230       10.5000
           Ir           8      1.226200         30.3319      305.5000

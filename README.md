@@ -96,6 +96,34 @@ python run_builder.py --config config.yaml
 python run_builder.py --config config.yaml --input /path/to/CONTCAR
 ```
 
+At startup, the builder prints `[path check] WARNING` lines for missing or
+locally unverifiable paths in the config, including the slab input file,
+`species_db`, BJ parameter files, PACKMOL, pseudopotential directory, and
+CES2/QE/LAMMPS script binaries.
+
+### Master/Variant Config Workflow
+
+For repeated calculations on the same slab setup, first create a master config
+for structural and physical choices, then derive run variants that change only
+electrolyte composition, concentration, charge, and output names.
+
+```bash
+# 1. Reusable setup: bjparams, water model, box size, adsorbate count, relax defaults
+tools/configure.sh --master \
+  --out configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml \
+  config_example.yaml
+# Tip: type '?' at the qm_params_file or bjparams_layer_file prompt to list DB entries.
+# Master mode also offers optional QE and LAMMPS/QM-MM setup reviews.
+
+# 2. Run condition: salt, concentration, electrode charge, job/output names
+tools/configure.sh --variant \
+  --out configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml \
+  configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml
+
+# Optional: check bjparams file, water model, and basic box settings
+tools/configure.sh --validate configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml
+```
+
 ---
 
 ## Project Structure
@@ -270,10 +298,19 @@ The builder auto-replicates each primitive index across all supercell copies (AS
 
 ```yaml
 slab:
+  bjparams_source: layer_file
   bjparams_layer_file: "bjparams_layer_avg.dat"   # z-dependent BJ parameters
 ```
 
 Reads a DFTD3-style layer file and assigns a unique `type_label` per (element, z-layer). This replaces hand-written overrides for systems whose QM atoms have z-dependent parameters. Requires `supercell[2] == 1` (no z-tiling).
+
+Layer files are resolved from an absolute path, the project workdir, `species_db/qm_params/`, or `species_db/qm_params/layer_files/`. Bare names may omit `.dat`, so a DB file such as `species_db/qm_params/layer_files/IrO2_2OH_2O_bjparams_layer_avg.dat` can be referenced as:
+
+```yaml
+slab:
+  bjparams_source: layer_file
+  bjparams_layer_file: "IrO2_2OH_2O_bjparams_layer_avg"
+```
 
 **Priority order:** `type_label_overrides` > layer-file label > element symbol.
 
@@ -523,7 +560,9 @@ types:
     s: 1.40
 ```
 
-Then reference these labels in your config via `slab.type_label_overrides` or `slab.bjparams_layer_file`.
+Then reference these labels in your config via `slab.type_label_overrides`.
+
+For z-dependent per-layer parameters, store the `.dat` file in `species_db/qm_params/layer_files/` and reference it with `slab.bjparams_source: layer_file` plus `slab.bjparams_layer_file`.
 
 ---
 

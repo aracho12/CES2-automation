@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 import numpy as np
@@ -26,12 +27,151 @@ from .bjdisp_db import (
     parse_layer_file, assign_layer_labels, layer_label_to_element, BjdispParams,
 )
 
+
+def _resolve_bjparams_layer_file(layer_file: str | Path, workdir: Path, species_db_path: Path) -> Path:
+    """
+    Resolve a per-layer BJ params file from either the project workdir or the
+    bundled species DB. Bare names may omit the .dat suffix.
+    """
+    raw = Path(layer_file)
+    names = [raw]
+    if raw.suffix == "":
+        names.append(raw.with_suffix(".dat"))
+
+    if raw.is_absolute():
+        candidates = names
+    else:
+        candidates = []
+        for base in (
+            workdir,
+            species_db_path / "qm_params",
+            species_db_path / "qm_params" / "layer_files",
+        ):
+            candidates.extend(base / name for name in names)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+
+    tried = "\n  ".join(str(p.resolve()) for p in candidates)
+    raise FileNotFoundError(
+        f"slab.bjparams_layer_file: '{layer_file}' not found. Tried:\n  {tried}"
+    )
+
+
+def _has_unexpanded_shell_var(value: str) -> bool:
+    return "$" in value or "~" in value
+
+
+def _warn_if_missing_path(label: str, path: Path, expected: str) -> None:
+    if expected == "dir":
+        ok = path.is_dir()
+    elif expected == "file":
+        ok = path.is_file()
+    else:
+        ok = path.exists()
+    if not ok:
+        print(f"[path check] WARNING: {label} not found: {path}")
+
+
+def _warn_if_missing_executable(label: str, value: str) -> None:
+    if not value:
+        return
+    if _has_unexpanded_shell_var(value):
+        print(f"[path check] WARNING: {label} contains shell variables; local check skipped: {value}")
+        return
+    if "/" in value:
+        path = Path(value).expanduser()
+        if not path.exists():
+            print(f"[path check] WARNING: {label} not found: {path}")
+        elif not path.is_file():
+            print(f"[path check] WARNING: {label} is not a file: {path}")
+        elif (path.stat().st_mode & 0o111) == 0:
+            print(f"[path check] WARNING: {label} exists but is not executable: {path}")
+        return
+    if shutil.which(value) is None:
+        print(f"[path check] WARNING: {label} command not found on PATH: {value}")
+
+
+def _emit_config_path_warnings(
+    cfg: Dict,
+    workdir: Path,
+    species_db_path: Path,
+    input_path: Path | None = None,
+) -> None:
+    """Best-effort preflight for paths named in config.yaml."""
+    _warn_if_missing_path("project.workdir", workdir, "dir")
+    _warn_if_missing_path("species_db", species_db_path, "dir")
+
+    if input_path is not None:
+        _warn_if_missing_path("input.structure_file/input.vasp_file", input_path, "file")
+
+    slab_cfg = cfg.get("slab", {}) or {}
+    bj_source = str(slab_cfg.get("bjparams_source", "yaml")).lower()
+    qm_params_dir = species_db_path / "qm_params"
+    if bj_source == "yaml":
+        qm_file = slab_cfg.get("qm_params_file")
+        if qm_file:
+            _warn_if_missing_path(
+                "slab.qm_params_file",
+                qm_params_dir / f"{Path(str(qm_file)).stem}.yaml",
+                "file",
+            )
+        else:
+            _warn_if_missing_path("species_db/qm_params", qm_params_dir, "dir")
+    elif bj_source == "layer_file":
+        layer_file = slab_cfg.get("bjparams_layer_file")
+        if not layer_file:
+            print("[path check] WARNING: slab.bjparams_source is layer_file but bjparams_layer_file is not set")
+        else:
+            try:
+                _resolve_bjparams_layer_file(layer_file, workdir, species_db_path)
+            except FileNotFoundError as exc:
+                print(f"[path check] WARNING: {exc}")
+
+    packmol_cfg = cfg.get("packmol", {}) or {}
+    _warn_if_missing_executable("packmol.binary", str(packmol_cfg.get("binary", "packmol")))
+
+    qe_cfg = cfg.get("qe", {}) or {}
+    pseudo_dir = qe_cfg.get("pseudo_dir")
+    if pseudo_dir:
+        if not _has_unexpanded_shell_var(str(pseudo_dir)):
+            pseudo_path = Path(str(pseudo_dir)).expanduser()
+            if not pseudo_path.is_absolute():
+                pseudo_path = workdir / pseudo_path
+            _warn_if_missing_path("qe.pseudo_dir", pseudo_path, "dir")
+
+    script_cfg = cfg.get("ces2_script", {}) or {}
+    for key in (
+        "dft_ces2_path",
+        "qe_binary",
+        "pp_binary",
+        "lmp_binary",
+        "chg2pot_binary",
+        "mdipc_binary",
+        "chgplate_binary",
+    ):
+        value = script_cfg.get(key)
+        if not value:
+            continue
+        if key.endswith("_path"):
+            raw = str(value)
+            if _has_unexpanded_shell_var(raw):
+                print(f"[path check] WARNING: ces2_script.{key} contains shell variables; local check skipped: {raw}")
+            else:
+                _warn_if_missing_path(f"ces2_script.{key}", Path(raw).expanduser(), "dir")
+        else:
+            _warn_if_missing_executable(f"ces2_script.{key}", str(value))
+
+
 def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     start_time = time.perf_counter()
     timings: Dict[str, float] = {}
 
     cfg = load_config(config_path).raw
     workdir = Path(cfg.get("project", {}).get("workdir","./")).resolve()
+    workdir_exists_before = workdir.exists()
     seed = int(cfg.get("project", {}).get("seed", 1234))
     np.random.seed(seed)
 
@@ -39,6 +179,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     export_dir = workdir / cfg.get("output", {}).get("export_dir","export")
     build_dir.mkdir(parents=True, exist_ok=True)
     export_dir.mkdir(parents=True, exist_ok=True)
+    if not workdir_exists_before:
+        print(f"[path check] WARNING: project.workdir did not exist and was created: {workdir}")
 
     timings["config_and_dirs"] = time.perf_counter() - start_time
     print(f"[TIMING] config_and_dirs: {timings['config_and_dirs']:.3f} s")
@@ -58,6 +200,15 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
                 species_db_path = candidate
             else:
                 species_db_path = _package_dir / species_db_path
+
+    _input_cfg = cfg.get("input", {})
+    if vasp_file is not None:
+        _vasp_path = Path(vasp_file).resolve()
+    else:
+        _file = _input_cfg.get("structure_file") or _input_cfg.get("vasp_file") or "CONTCAR"
+        _vasp_path = (workdir / _file).resolve()
+    _emit_config_path_warnings(cfg, workdir, species_db_path, input_path=_vasp_path)
+
     species_db = load_species_db(species_db_path)
     timings["species_db_load"] = time.perf_counter() - t0
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
@@ -67,13 +218,6 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # input.structure_file). Format is auto-detected from filename, or set
     # explicitly via input.format ("vasp", "espresso-in", "espresso-out", ...).
     t0 = time.perf_counter()
-    _input_cfg = cfg.get("input", {})
-    if vasp_file is not None:
-        _vasp_path = Path(vasp_file).resolve()
-    else:
-        # Priority: structure_file > vasp_file > "CONTCAR" (default)
-        _file = _input_cfg.get("structure_file") or _input_cfg.get("vasp_file") or "CONTCAR"
-        _vasp_path = (workdir / _file).resolve()
     _input_fmt = _input_cfg.get("format")
     slab = read_structure(_vasp_path.as_posix(), fmt=_input_fmt)
     print(f"[input] read {_vasp_path.name} ({len(slab)} atoms)"
@@ -298,13 +442,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
             raise ValueError(
                 "slab.bjparams_source is 'layer_file' but slab.bjparams_layer_file is not set"
             )
-        _layer_path = Path(_layer_file)
-        if not _layer_path.is_absolute():
-            _layer_path = (workdir / _layer_path).resolve()
-        if not _layer_path.exists():
-            raise FileNotFoundError(
-                f"slab.bjparams_layer_file: {_layer_path} not found"
-            )
+        _layer_path = _resolve_bjparams_layer_file(_layer_file, workdir, species_db_path)
         if int(rep[2]) != 1:
             raise ValueError(
                 f"slab.bjparams_layer_file requires supercell rep[2]==1 "

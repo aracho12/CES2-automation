@@ -338,7 +338,7 @@ def write_layer_averaged_table(atoms, alphascs_list, c6_list,
     with open(filepath, 'w') as f:
         f.write(f"# BJ dispersion parameters — layer-averaged (z_tol = {z_tol:.2f} Ang)\n")
         f.write(f"# {'Element':<8s}  {'N':>4s}  {'z_avg(Ang)':>12s}  "
-                f"{'ALPHAscs_avg':>14s}  {'C6_D3_avg':>12s}\n")
+                f"{'ALPHAscs_avg(au)':>16s}  {'C6_D3_avg(au)':>13s}\n")
         f.write("#" + "-" * 60 + "\n")
         for L in layers:
             a_str = f"{L['alpha_avg']:>14.4f}" if L['alpha_avg'] is not None else f"{'N/A':>14s}"
