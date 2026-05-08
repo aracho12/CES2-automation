@@ -25,6 +25,13 @@ Usage
 
   # View directly with ASE GUI after conversion
   python tools/lammpstrj_to_traj.py test/ces2.emd.lammpstrj --view
+
+  # Extract average trajectories from the last 2 QM/MM steps
+  python tools/lammpstrj_to_traj.py --qmmm-average /path/to/qmmm_run_dir
+
+  # Extract last 3 steps, with stride and custom output
+  python tools/lammpstrj_to_traj.py --qmmm-average /path/to/run_dir \\
+      --last-steps 3 --stride 5 -o analysis/average_last3.traj
 """
 
 import argparse
@@ -399,14 +406,189 @@ def convert(
     return written
 
 
+def find_mm_dirs(run_dir: Path) -> List[Path]:
+    """
+    Find mm_N directories in a QM/MM run directory, sorted by step index.
+    Returns list of (step_index, mm_dir_path) sorted ascending.
+    """
+    mm_dirs = []
+    for d in run_dir.iterdir():
+        if d.is_dir() and re.match(r"^mm_(\d+)$", d.name):
+            step = int(d.name.split("_")[1])
+            mm_dirs.append((step, d))
+    mm_dirs.sort(key=lambda x: x[0])
+    return mm_dirs
+
+
+def find_lammpstrj_in_dir(d: Path) -> Optional[Path]:
+    """Find the *.emd.lammpstrj (or any *.lammpstrj) in a directory."""
+    # Prefer *.emd.lammpstrj (the standard CES2 trajectory dump)
+    emd_files = list(d.glob("*.emd.lammpstrj"))
+    if emd_files:
+        return emd_files[0]
+    # Fallback: any .lammpstrj
+    all_files = list(d.glob("*.lammpstrj"))
+    if all_files:
+        return all_files[0]
+    return None
+
+
+def convert_qmmm_average(
+    run_dir: Path,
+    output: Path,
+    type_map: Dict[int, str],
+    last_steps: int = 2,
+    stride: int = 1,
+    wrap: bool = True,
+    verbose: bool = True,
+) -> int:
+    """
+    Extract average trajectories from the last N QM/MM steps and write to a
+    single .traj file.
+
+    In CES2 QM/MM, each step's mm_{N}/ directory contains *.lammpstrj from the
+    averaging LAMMPS run (the equil trajectory is overwritten by the average run
+    since LAMMPS opens dump files fresh).  This function concatenates trajectories
+    from the last `last_steps` mm directories into one .traj.
+
+    Parameters
+    ----------
+    run_dir    : QM/MM run directory containing mm_0/, mm_1/, ... subdirectories
+    output     : output .traj file path
+    type_map   : LAMMPS type → element mapping
+    last_steps : number of last QM/MM steps to include (default: 2)
+    stride     : write every Nth frame (default: 1)
+    wrap       : apply molecule-aware wrapping (default: True)
+    verbose    : print progress info
+
+    Returns
+    -------
+    Total number of frames written.
+    """
+    mm_dirs = find_mm_dirs(run_dir)
+    if not mm_dirs:
+        print(f"ERROR: No mm_N/ directories found in {run_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    total_steps = len(mm_dirs)
+    if last_steps > total_steps:
+        print(f"WARNING: Requested last {last_steps} steps but only {total_steps} "
+              f"mm_N/ directories found. Using all {total_steps} steps.")
+        last_steps = total_steps
+
+    selected = mm_dirs[-last_steps:]
+    step_indices = [s[0] for s in selected]
+    step_dirs = [s[1] for s in selected]
+
+    if verbose:
+        print(f"QM/MM run directory: {run_dir}")
+        print(f"  Total mm_N/ directories found: {total_steps}")
+        print(f"  Selecting last {last_steps} steps: {step_indices}")
+        print()
+
+    # Locate lammpstrj files in each selected mm dir
+    trj_files: List[Path] = []
+    for step_idx, mm_dir in selected:
+        trj = find_lammpstrj_in_dir(mm_dir)
+        if trj is None:
+            print(f"  WARNING: No .lammpstrj found in {mm_dir}, skipping step {step_idx}")
+            continue
+        n_frames = count_frames(trj)
+        if verbose:
+            print(f"  mm_{step_idx}: {trj.name} ({n_frames:,} frames)")
+        trj_files.append(trj)
+
+    if not trj_files:
+        print("ERROR: No .lammpstrj files found in any selected mm_N/ directory.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Convert all selected trajectories into one .traj
+    if verbose:
+        print(f"\nConverting to {output}")
+        if wrap:
+            print("  Molecule-aware wrapping: ON")
+        print(f"  Stride: every {stride} frame(s)")
+        print()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    traj = Trajectory(str(output), mode="w")
+    total_written = 0
+    t_start = time.perf_counter()
+
+    for trj_file in trj_files:
+        frame_idx = 0
+        step_name = trj_file.parent.name
+        for frame in iter_frames(trj_file):
+            if frame_idx % stride == 0:
+                atoms = frame_to_atoms(frame, type_map)
+                # Tag QM/MM step in atoms.info for downstream analysis
+                atoms.info["qmmm_step"] = step_name
+                if wrap:
+                    atoms = wrap_molecules(atoms)
+                traj.write(atoms)
+                total_written += 1
+                if verbose and total_written % 100 == 0:
+                    elapsed = time.perf_counter() - t_start
+                    fps = total_written / elapsed if elapsed > 0 else 0
+                    print(f"  Written {total_written} frames "
+                          f"({step_name}, timestep {frame['timestep']}) "
+                          f"[{elapsed:.1f}s, {fps:.1f} fr/s]")
+            frame_idx += 1
+
+    traj.close()
+    elapsed = time.perf_counter() - t_start
+
+    if verbose:
+        print(f"\nDone. Wrote {total_written:,} frames → {output}")
+        print(f"  Steps included: {step_indices}")
+        print(f"  Elapsed: {elapsed:.1f} s")
+        if total_written > 0:
+            print(f"  Per frame: {1000*elapsed/total_written:.2f} ms/frame")
+        print(f"View with:  ase gui {output}")
+
+    return total_written
+
+
+def _resolve_type_map(args, search_dir: Path) -> Dict[int, str]:
+    """Resolve type→element mapping from args, searching in search_dir as fallback."""
+    if args.type_map:
+        type_map = parse_type_map_str(args.type_map)
+        print(f"Using manual type map: {type_map}")
+        return type_map
+
+    if args.lammps_input:
+        type_map = auto_detect_type_map(args.lammps_input)
+        print(f"Auto-detected type map from {args.lammps_input}: {type_map}")
+        return type_map
+
+    # Auto-search for in.lammps or base.in.lammps
+    candidates = [
+        search_dir / "base.in.lammps",
+        search_dir / "in.lammps",
+        search_dir / "export" / "base.in.lammps",
+    ]
+    for c in candidates:
+        if c.exists():
+            type_map = auto_detect_type_map(c)
+            print(f"Auto-detected type map from {c}: {type_map}")
+            return type_map
+
+    print(f"Using default CES2 type map: {DEFAULT_TYPE_MAP}")
+    return dict(DEFAULT_TYPE_MAP)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert a LAMMPS .lammpstrj dump to an ASE .traj file."
     )
-    parser.add_argument("lammpstrj", type=Path, help="Input LAMMPS dump file")
+    parser.add_argument(
+        "lammpstrj", type=Path, nargs="?", default=None,
+        help="Input LAMMPS dump file (not needed when using --qmmm-average)"
+    )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
-        help="Output .traj file (default: same name as input with .traj extension)"
+        help="Output .traj file (default: auto-generated from input name)"
     )
     parser.add_argument(
         "--lammps-input", type=Path, default=None,
@@ -441,7 +623,65 @@ def main():
         help="Open ASE GUI after conversion"
     )
 
+    # ── QM/MM average trajectory extraction ──────────────────────────────
+    parser.add_argument(
+        "--qmmm-average", type=Path, default=None, metavar="RUN_DIR",
+        help=(
+            "Extract only the averaging-phase LAMMPS trajectories from the last N "
+            "QM/MM steps.  RUN_DIR is the QM/MM run directory containing mm_0/, "
+            "mm_1/, ... subdirectories.  Each mm_N/ holds the *.lammpstrj from the "
+            "averaging run (equil trajectory is overwritten).  Combine with "
+            "--last-steps to control how many steps to include."
+        )
+    )
+    parser.add_argument(
+        "--last-steps", type=int, default=2,
+        help="Number of last QM/MM steps to include (default: 2, used with --qmmm-average)"
+    )
+
     args = parser.parse_args()
+    do_wrap = args.wrap and not args.no_wrap
+
+    # =================================================================
+    # Mode 1: --qmmm-average  (extract average trajectories from QM/MM)
+    # =================================================================
+    if args.qmmm_average is not None:
+        run_dir = args.qmmm_average
+        if not run_dir.is_dir():
+            print(f"ERROR: not a directory: {run_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        type_map = _resolve_type_map(args, search_dir=run_dir)
+
+        if args.output:
+            output = args.output
+        else:
+            output = run_dir / f"average_last{args.last_steps}.traj"
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        written = convert_qmmm_average(
+            run_dir=run_dir,
+            output=output,
+            type_map=type_map,
+            last_steps=args.last_steps,
+            stride=args.stride,
+            wrap=do_wrap,
+        )
+
+        if args.view and written > 0:
+            from ase.visualize import view as ase_view
+            from ase.io import read as ase_read
+            print("Opening ASE GUI ...")
+            images = ase_read(str(output), index=":")
+            ase_view(images)
+
+        return
+
+    # =================================================================
+    # Mode 2: Single file conversion (original behavior)
+    # =================================================================
+    if args.lammpstrj is None:
+        parser.error("a lammpstrj file is required (or use --qmmm-average)")
 
     lammpstrj = args.lammpstrj
     if not lammpstrj.exists():
@@ -457,29 +697,7 @@ def main():
         return
 
     # --- Determine type map ---
-    if args.type_map:
-        type_map = parse_type_map_str(args.type_map)
-        print(f"Using manual type map: {type_map}")
-    elif args.lammps_input:
-        type_map = auto_detect_type_map(args.lammps_input)
-        print(f"Auto-detected type map from {args.lammps_input}: {type_map}")
-    else:
-        # Try to find in.lammps in the same or parent directory
-        candidates = [
-            lammpstrj.parent / "in.lammps",
-            lammpstrj.parent.parent / "in.lammps",
-        ]
-        found = None
-        for c in candidates:
-            if c.exists():
-                found = c
-                break
-        if found:
-            type_map = auto_detect_type_map(found)
-            print(f"Auto-detected type map from {found}: {type_map}")
-        else:
-            type_map = DEFAULT_TYPE_MAP
-            print(f"Using default CES2 type map: {type_map}")
+    type_map = _resolve_type_map(args, search_dir=lammpstrj.parent)
 
     # --- Output path ---
     if args.output:
@@ -494,7 +712,6 @@ def main():
     print(f"  Stride: every {args.stride} frame(s) → ~{expected:,} frames to write")
     print()
 
-    do_wrap = args.wrap and not args.no_wrap
     if do_wrap:
         print("  Molecule-aware wrapping: ON (O-H cutoff 1.3 Å, wrapping x/y only)")
     else:
