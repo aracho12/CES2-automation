@@ -96,6 +96,27 @@ python run_builder.py --config config.yaml
 python run_builder.py --config config.yaml --input /path/to/CONTCAR
 ```
 
+### Master/Variant Config Workflow
+
+For repeated calculations on the same slab setup, first create a master config
+for structural and physical choices, then derive run variants that change only
+electrolyte composition, concentration, charge, and output names.
+
+```bash
+# 1. Reusable setup: bjparams, water model, box size, adsorbate count, relax defaults
+tools/configure.sh --master \
+  --out configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml \
+  config_example.yaml
+
+# 2. Run condition: salt, concentration, electrode charge, job/output names
+tools/configure.sh --variant \
+  --out configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml \
+  configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml
+
+# Optional: check bjparams file, water model, and basic box settings
+tools/configure.sh --validate configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml
+```
+
 ---
 
 ## Project Structure

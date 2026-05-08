@@ -4,14 +4,32 @@
 # Usage:
 #   tools/configure.sh [OPTIONS] [path/to/config.yaml]
 #
-# Without options, prompts for: salt, concentration, electrode charge,
-# adsorbate count, job name (and only edits those keys).
+# Without options, runs variant mode and prompts for: salt, concentration,
+# electrode charge, job name, output dirs (and only edits those run-variant keys).
+#
+# Recommended workflow:
+#   1) Make a reusable structural/physical master setup:
+#        tools/configure.sh --master --out configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml config_example.yaml
+#   2) Derive run variants from that master by changing only electrolyte/charge:
+#        tools/configure.sh --variant --out configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml
+#
+# Main modes:
+#   --master        Structural/physical setup: bjparams source/file,
+#                   water model, electrolyte box, water.count, adsorbate count,
+#                   and optional pre-relaxation/parallel settings.
+#   --variant       Run-condition setup: salt, concentration, electrode charge,
+#                   job name, output dirs, and optional QMMM length.
+#                   This is the default mode for backward compatibility.
+#   --out PATH      Copy input config to PATH before editing. This is the
+#                   recommended way to create master/variant config files.
+#   --validate      Validate the selected config and exit without editing.
 #
 # Optional section flags — each opens an extra interactive prompt block that
 # shows the current YAML value as the default, so hitting <Enter> keeps it.
 # Sections that aren't requested are NOT touched at all:
 #
-#   --box           Box geometry: electrolyte_box.thickness, vacuum_z [Å].
+#   --box           Expert override: prompt for electrolyte_box.thickness,
+#                   vacuum_z [Å] outside --master.
 #                   Always shows the current water.count and the auto count
 #                   that would be computed for the (new) thickness, and lets
 #                   you keep, switch to auto, or enter an explicit integer.
@@ -28,7 +46,8 @@
 #   -h, --help      Show this help and exit.
 #
 # Combine freely:
-#   tools/configure.sh --box --prerelax --parallel --qmmm myconfig.yaml
+#   tools/configure.sh --master --parallel --out configs/masters/base.yaml config_example.yaml
+#   tools/configure.sh --variant --qmmm --out configs/variants/LiOH_1M_qm1.yaml configs/masters/base.yaml
 #
 # Backup: writes .<basename>.bak alongside the original before editing.
 set -euo pipefail
@@ -44,10 +63,17 @@ DO_BOX=0        # 1 => prompt for electrolyte_box.{thickness, vacuum_z}
 DO_PRERELAX=0   # 1 => prompt for md_relax.enabled (and sync ces2.initial_dump)
 DO_PARALLEL=0   # 1 => prompt for ces2_script.{npool, ntg, ndiag}
 DO_QMMM=0       # 1 => prompt for QMMMFINSTEP (and sync ces2_script.n_qmmm_steps)
+MODE="variant"  # variant (default) or master
+DO_VALIDATE=0
+OUT_CONFIG=""
 CONFIG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --master)           MODE="master"; DO_BOX=1; shift ;;
+        --variant)          MODE="variant"; shift ;;
+        --out)              OUT_CONFIG="${2:-}"; if [[ -z "$OUT_CONFIG" ]]; then echo "ERROR: --out requires a path" >&2; exit 2; fi; shift 2 ;;
+        --validate)         DO_VALIDATE=1; shift ;;
         --box)              DO_BOX=1; shift ;;
         --prerelax)         DO_PRERELAX=1; shift ;;
         --parallel)         DO_PARALLEL=1; shift ;;
@@ -71,6 +97,12 @@ NPOOL=""
 NTG=""
 NDIAG=""
 QMMMFINSTEP=""
+BJ_SOURCE=""
+QM_PARAMS_FILE=""
+BJ_LAYER_FILE=""
+WATER_MODEL=""
+OUTPUT_BUILD_DIR=""
+OUTPUT_EXPORT_DIR=""
 
 # Path to the qmmm script in the current working directory (if any).
 QMMM_SCRIPT_PATH="./qmmm_dftces2_charging_pts.sh"
@@ -78,6 +110,14 @@ QMMM_SCRIPT_PATH="./qmmm_dftces2_charging_pts.sh"
 if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
     exit 1
+fi
+
+if [[ -n "$OUT_CONFIG" ]]; then
+    OUT_DIR="$(dirname -- "$OUT_CONFIG")"
+    mkdir -p -- "$OUT_DIR"
+    cp -p -- "$CONFIG" "$OUT_CONFIG"
+    CONFIG="$OUT_CONFIG"
+    echo "copied base config -> $CONFIG"
 fi
 
 # ---- ensure ruamel.yaml is importable ----
@@ -125,6 +165,12 @@ cur_npool   = g("ces2_script", "npool", default="")
 cur_ntg     = g("ces2_script", "ntg",   default="")
 cur_ndiag   = g("ces2_script", "ndiag", default="")
 cur_nsteps  = g("ces2_script", "n_qmmm_steps", default="")
+cur_bjsrc   = g("slab", "bjparams_source", default="yaml")
+cur_qmfile  = g("slab", "qm_params_file", default="")
+cur_layer   = g("slab", "bjparams_layer_file", default="")
+cur_wmodel  = g("ces2", "water_model", default="TIP4P")
+cur_build   = g("output", "build_dir", default="build")
+cur_export  = g("output", "export_dir", default="export")
 # water block (used by --box water.count helper)
 cur_wcount    = g("electrolyte_recipe", "water", "count",            default="auto")
 cur_wrho      = g("electrolyte_recipe", "water", "density_g_per_ml", default=1.0)
@@ -158,11 +204,11 @@ try:
 except Exception:
     pass
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}|{cur_wcount}|{cur_wrho}|{cur_wuf}|{slab_lx}|{slab_ly}")
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}|{cur_bjsrc}|{cur_qmfile}|{cur_layer}|{cur_wmodel}|{cur_build}|{cur_export}|{cur_wcount}|{cur_wrho}|{cur_wuf}|{slab_lx}|{slab_ly}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS CUR_WCOUNT CUR_WRHO CUR_WUF SLAB_LX SLAB_LY <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS CUR_BJSRC CUR_QMFILE CUR_LAYER CUR_WMODEL CUR_BUILD CUR_EXPORT CUR_WCOUNT CUR_WRHO CUR_WUF SLAB_LX SLAB_LY <<<"$(read_defaults)"
 
 # Try to read QMMMFINSTEP from the qmmm script in CWD (if present).
 CUR_QMMMFINSTEP=""
@@ -178,14 +224,153 @@ ask() {
     echo "${reply:-$default}"
 }
 
+validate_config() {
+    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
+import os
+from pathlib import Path
+from ruamel.yaml import YAML
+
+yaml = YAML()
+path = Path(os.environ["CONFIG"]).resolve()
+repo = Path(os.environ["REPO_ROOT"]).resolve()
+with path.open() as f:
+    d = yaml.load(f) or {}
+
+def g(*keys, default=None):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+errors = []
+warnings = []
+
+workdir = Path(g("project", "workdir", default="./") or "./")
+if not workdir.is_absolute():
+    workdir = (path.parent / workdir).resolve()
+
+species_db = Path(g("species_db", default="species_db") or "species_db")
+if not species_db.is_absolute():
+    if (workdir / species_db).exists():
+        species_db = (workdir / species_db).resolve()
+    else:
+        species_db = (repo / species_db).resolve()
+
+water_model = str(g("ces2", "water_model", default="TIP4P") or "TIP4P").upper()
+allowed_water = {"TIP4P", "TIP3P", "SPCE", "TIP3PEW"}
+if water_model not in allowed_water:
+    errors.append(f"ces2.water_model must be one of {sorted(allowed_water)}, got {water_model!r}")
+
+bjsrc = str(g("slab", "bjparams_source", default="yaml") or "yaml").lower()
+if bjsrc == "yaml":
+    qmfile = g("slab", "qm_params_file", default=None)
+    if qmfile:
+        target = species_db / "qm_params" / f"{Path(str(qmfile)).stem}.yaml"
+        if not target.exists():
+            errors.append(f"slab.qm_params_file not found: {target}")
+elif bjsrc == "layer_file":
+    layer = g("slab", "bjparams_layer_file", default=None)
+    if not layer:
+        errors.append("slab.bjparams_source is layer_file but slab.bjparams_layer_file is not set")
+    else:
+        raw = Path(str(layer))
+        names = [raw] if raw.suffix else [raw, raw.with_suffix(".dat")]
+        bases = [workdir, species_db / "qm_params", species_db / "qm_params" / "layer_files"]
+        candidates = names if raw.is_absolute() else [base / name for base in bases for name in names]
+        if not any(c.resolve().exists() for c in candidates):
+            errors.append("slab.bjparams_layer_file not found; tried: " + ", ".join(str(c.resolve()) for c in candidates))
+else:
+    errors.append(f"slab.bjparams_source must be 'yaml' or 'layer_file', got {bjsrc!r}")
+
+ebox = g("electrolyte_box", default={}) or {}
+for key in ("thickness", "vacuum_z"):
+    try:
+        if float(ebox.get(key, 0)) <= 0:
+            errors.append(f"electrolyte_box.{key} must be positive")
+    except Exception:
+        errors.append(f"electrolyte_box.{key} must be numeric")
+
+water_count = g("electrolyte_recipe", "water", "count", default="auto")
+if not (str(water_count).lower() == "auto" or (isinstance(water_count, int) and water_count > 0)):
+    warnings.append(f"electrolyte_recipe.water.count is unusual: {water_count!r}")
+
+if errors:
+    print("Validation failed:")
+    for err in errors:
+        print(f"  ERROR: {err}")
+    for warn in warnings:
+        print(f"  WARN : {warn}")
+    raise SystemExit(1)
+
+print(f"Validation OK: {path}")
+print(f"  bjparams_source : {bjsrc}")
+print(f"  water_model     : {water_model}")
+print(f"  species_db      : {species_db}")
+for warn in warnings:
+    print(f"  WARN: {warn}")
+PY
+}
+
+if [[ "$DO_VALIDATE" == "1" ]]; then
+    validate_config
+    exit 0
+fi
+
 echo
 echo "=========================================="
 echo "  CES2 build config wizard"
+echo "  mode  : $MODE"
 echo "  target: $CONFIG"
 echo "=========================================="
 echo
 
+if [[ "$MODE" == "master" ]]; then
+    echo "Master setup: structural/physical choices that should stay fixed across variants."
+    echo
+    echo "BJ parameter source:"
+    echo "  1) yaml       (species_db/qm_params/<System>.yaml)"
+    echo "  2) layer_file (species_db/qm_params/layer_files/<name>.dat or project file)"
+    bj_default="$CUR_BJSRC"
+    bj_choice="$(ask "Choose bjparams_source (number or name)" "$bj_default")"
+    case "$(printf '%s' "$bj_choice" | tr '[:upper:]' '[:lower:]')" in
+        1|yaml) BJ_SOURCE="yaml" ;;
+        2|layer|layer_file) BJ_SOURCE="layer_file" ;;
+        *) echo "ERROR: bjparams_source must be yaml or layer_file, got '$bj_choice'" >&2; exit 2 ;;
+    esac
+    if [[ "$BJ_SOURCE" == "yaml" ]]; then
+        QM_PARAMS_FILE="$(ask "  qm_params_file (species_db/qm_params/<name>.yaml)" "${CUR_QMFILE:-IrO2}")"
+        BJ_LAYER_FILE=""
+    else
+        BJ_LAYER_FILE="$(ask "  bjparams_layer_file (.dat optional)" "${CUR_LAYER:-IrO2_2OH_2O_bjparams_layer_avg}")"
+        QM_PARAMS_FILE=""
+    fi
+
+    echo
+    echo "Water model:"
+    echo "  1) TIP4P    (recommended default)"
+    echo "  2) TIP3P"
+    echo "  3) SPCE"
+    echo "  4) TIP3PEW"
+    wm_choice="$(ask "Choose water_model (number or name)" "$CUR_WMODEL")"
+    case "$(printf '%s' "$wm_choice" | tr '[:lower:]' '[:upper:]')" in
+        1|TIP4P)   WATER_MODEL="TIP4P" ;;
+        2|TIP3P)   WATER_MODEL="TIP3P" ;;
+        3|SPCE)    WATER_MODEL="SPCE" ;;
+        4|TIP3PEW) WATER_MODEL="TIP3PEW" ;;
+        *) echo "ERROR: water_model must be TIP4P, TIP3P, SPCE, or TIP3PEW, got '$wm_choice'" >&2; exit 2 ;;
+    esac
+
+    echo
+    ADSORB="$(ask "Adsorbate atom count (last N atoms in POSCAR; 0 = none)" "$CUR_ADSORB")"
+
+    # In master mode, pre-relaxation is part of the reusable setup by default.
+    DO_PRERELAX=1
+fi
+
 # ---- 1. salt preset ----
+if [[ "$MODE" == "variant" ]]; then
 echo "Salt presets:"
 echo "  1) water    (no salt)"
 echo "  2) LiOH"
@@ -258,12 +443,12 @@ if [[ "$SALT" == "water" ]]; then
     fi
 fi
 
-# ---- 5. adsorbate atom count ----
-echo
-ADSORB="$(ask "Adsorbate atom count (last N atoms in POSCAR; 0 = none)" "$CUR_ADSORB")"
-
-# ---- 6. job name ----
+# ---- 5. job name ----
 JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$CUR_JOB")"
+
+OUTPUT_BUILD_DIR="$(ask "Build dir (output.build_dir)" "$CUR_BUILD")"
+OUTPUT_EXPORT_DIR="$(ask "Export dir (output.export_dir)" "$CUR_EXPORT")"
+fi
 
 # ---- 7. (optional, --box) electrolyte box geometry ----
 if [[ "$DO_BOX" == "1" ]]; then
@@ -411,13 +596,27 @@ fi
 echo
 echo "------------------------------------------"
 echo "Summary:"
-echo "  salt           : $SALT"
-echo "  concentration  : $CONC M"
-echo "  cation in pool : $CATION"
-echo "  anion  in pool : $ANION"
-echo "  electrode q    : $QCHARGE e"
-echo "  adsorbate N    : $ADSORB"
-echo "  job name       : $JOBNAME"
+echo "  mode           : $MODE"
+if [[ "$MODE" == "master" ]]; then
+    echo "  bjparams_source: $BJ_SOURCE"
+    if [[ "$BJ_SOURCE" == "yaml" ]]; then
+        echo "  qm_params_file : $QM_PARAMS_FILE"
+    else
+        echo "  layer file     : $BJ_LAYER_FILE"
+    fi
+    echo "  water_model    : $WATER_MODEL"
+    echo "  adsorbate N    : $ADSORB"
+fi
+if [[ "$MODE" == "variant" ]]; then
+    echo "  salt           : $SALT"
+    echo "  concentration  : $CONC M"
+    echo "  cation in pool : $CATION"
+    echo "  anion  in pool : $ANION"
+    echo "  electrode q    : $QCHARGE e"
+    echo "  job name       : $JOBNAME"
+    echo "  build dir      : $OUTPUT_BUILD_DIR"
+    echo "  export dir     : $OUTPUT_EXPORT_DIR"
+fi
 if [[ "$DO_BOX" == "1" ]]; then
     echo "  thickness      : $THICKNESS Å         (was $CUR_THICK)"
     echo "  vacuum_z       : $VACUUM_Z Å         (was $CUR_VACZ)"
@@ -458,7 +657,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z WATER_COUNT PRERELAX NPOOL NTG NDIAG QMMMFINSTEP
+export CONFIG MODE SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z WATER_COUNT PRERELAX NPOOL NTG NDIAG QMMMFINSTEP BJ_SOURCE QM_PARAMS_FILE BJ_LAYER_FILE WATER_MODEL OUTPUT_BUILD_DIR OUTPUT_EXPORT_DIR
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -473,48 +672,87 @@ path = os.environ["CONFIG"]
 with open(path) as f:
     d = yaml.load(f)
 
-salt    = os.environ["SALT"]
-conc    = float(os.environ["CONC"])
-cation  = os.environ["CATION"]
-anion   = os.environ["ANION"]
-qcharge = float(os.environ["QCHARGE"])
-adsorb  = os.environ["ADSORB"]
-jobname = os.environ["JOBNAME"]
+mode = os.environ.get("MODE", "variant")
 
-# --- electrolyte_recipe.salts ---
 recipe = d.setdefault("electrolyte_recipe", CommentedMap())
-if salt == "water":
-    recipe["salts"] = []
-else:
-    entry = CommentedMap()
-    entry["name"] = salt
-    entry["concentration_M"] = conc
-    stoich = CommentedMap()
-    stoich[cation] = 1
-    stoich[anion]  = 1
-    stoich.fa.set_flow_style()     # keep {a: 1, b: 1} style
-    entry["stoich"] = stoich
-    seq = CommentedSeq()
-    seq.append(entry)
-    recipe["salts"] = seq
-
-# --- counterion_pool ---
-pool = CommentedSeq()
-pool.append(cation)
-pool.append(anion)
-pool.fa.set_flow_style()            # keep ["a", "b"] style
-recipe["counterion_pool"] = pool
-
-# --- charge_control.q_electrode_user_value ---
-cc = d.setdefault("charge_control", CommentedMap())
-cc["q_electrode_user_value"] = qcharge
-
-# --- ces2_script.adsorbate / jobname / pbs.job_name ---
 cs = d.setdefault("ces2_script", CommentedMap())
-cs["adsorbate"] = str(adsorb)
-cs["jobname"]   = jobname
-if "pbs" in cs and isinstance(cs["pbs"], dict):
-    cs["pbs"]["job_name"] = jobname
+
+if mode == "variant":
+    salt    = os.environ["SALT"]
+    conc    = float(os.environ["CONC"])
+    cation  = os.environ["CATION"]
+    anion   = os.environ["ANION"]
+    qcharge = float(os.environ["QCHARGE"])
+    jobname = os.environ["JOBNAME"]
+
+    # --- electrolyte_recipe.salts ---
+    if salt == "water":
+        recipe["salts"] = []
+    else:
+        entry = CommentedMap()
+        entry["name"] = salt
+        entry["concentration_M"] = conc
+        stoich = CommentedMap()
+        stoich[cation] = 1
+        stoich[anion]  = 1
+        stoich.fa.set_flow_style()     # keep {a: 1, b: 1} style
+        entry["stoich"] = stoich
+        seq = CommentedSeq()
+        seq.append(entry)
+        recipe["salts"] = seq
+
+    # --- counterion_pool ---
+    pool = CommentedSeq()
+    pool.append(cation)
+    pool.append(anion)
+    pool.fa.set_flow_style()            # keep ["a", "b"] style
+    recipe["counterion_pool"] = pool
+
+    # --- charge_control.q_electrode_user_value ---
+    cc = d.setdefault("charge_control", CommentedMap())
+    cc["q_electrode_user_value"] = qcharge
+
+    # --- ces2_script.jobname / pbs.job_name ---
+    cs["jobname"] = jobname
+    if "pbs" in cs and isinstance(cs["pbs"], dict):
+        cs["pbs"]["job_name"] = jobname
+
+    out = d.setdefault("output", CommentedMap())
+    build_dir = os.environ.get("OUTPUT_BUILD_DIR", "").strip()
+    export_dir = os.environ.get("OUTPUT_EXPORT_DIR", "").strip()
+    if build_dir:
+        out["build_dir"] = build_dir
+    if export_dir:
+        out["export_dir"] = export_dir
+
+if mode == "master":
+    slab = d.setdefault("slab", CommentedMap())
+    bj_source = os.environ.get("BJ_SOURCE", "").strip()
+    if bj_source:
+        slab["bjparams_source"] = bj_source
+        if bj_source == "yaml":
+            qm_file = os.environ.get("QM_PARAMS_FILE", "").strip()
+            if qm_file:
+                slab["qm_params_file"] = qm_file
+            slab.pop("bjparams_layer_file", None)
+        elif bj_source == "layer_file":
+            layer_file = os.environ.get("BJ_LAYER_FILE", "").strip()
+            if layer_file:
+                slab["bjparams_layer_file"] = layer_file
+            slab.pop("qm_params_file", None)
+
+    water_model = os.environ.get("WATER_MODEL", "").strip()
+    if water_model:
+        ces2_blk = d.setdefault("ces2", CommentedMap())
+        ces2_blk["water_model"] = water_model
+        # Let builder derive the matching species from ces2.water_model unless
+        # the user later opts into a custom species_id.
+        water_blk = recipe.setdefault("water", CommentedMap())
+        water_blk.pop("species_id", None)
+
+    adsorb = os.environ.get("ADSORB", "").strip()
+    if adsorb:
+        cs["adsorbate"] = str(adsorb)
 
 # --- (optional, --box) electrolyte_box geometry ----------------------------
 # Empty env var means the section flag wasn't given; preserve current YAML.
@@ -579,6 +817,8 @@ with open(path, "w") as f:
 
 print(f"updated -> {path}")
 PY
+
+validate_config
 
 # ---- (optional, --qmmm) patch QMMMFINSTEP in qmmm_dftces2_charging_pts.sh ----
 # The YAML side was already synced inside the Python block above. Now also
