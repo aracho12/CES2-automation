@@ -162,6 +162,26 @@ if ! python3 -c "import ruamel.yaml" 2>/dev/null; then
     fi
 fi
 
+validate_config() {
+    CONFIG="$CONFIG" python3 <<'PY'
+import os
+from ruamel.yaml import YAML
+
+yaml = YAML()
+with open(os.environ["CONFIG"]) as f:
+    cfg = yaml.load(f)
+if not isinstance(cfg, dict):
+    raise SystemExit("ERROR: config root must be a YAML mapping")
+
+print(f"validated -> {os.environ['CONFIG']}")
+PY
+}
+
+if [[ "$DO_VALIDATE" == "1" ]]; then
+    validate_config
+    exit 0
+fi
+
 # ---- read current values for default-prompts ----
 read_defaults() {
     CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
