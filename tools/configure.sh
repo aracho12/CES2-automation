@@ -60,6 +60,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 CONFIG="${CONFIG:-${REPO_ROOT}/config_example.yaml}"
+CURRENT_DIR="$(pwd)"
 
 # These get populated by interactive prompts only when their section flag is set.
 # Empty value at python-apply time means "do not touch".
@@ -79,6 +80,10 @@ if [[ ! -f "$CONFIG" ]]; then
     echo "ERROR: config not found: $CONFIG" >&2
     exit 1
 fi
+
+echo
+echo "Current working directory:"
+echo "  $CURRENT_DIR"
 
 # ---- ensure ruamel.yaml is importable ----
 if ! python3 -c "import ruamel.yaml" 2>/dev/null; then
@@ -178,10 +183,48 @@ ask() {
     echo "${reply:-$default}"
 }
 
+sanitize_jobname_part() {
+    printf '%s' "$1" | sed -E 's/[^A-Za-z0-9._+-]+/_/g; s/^_+//; s/_+$//'
+}
+
+suggest_jobname_from_pwd() {
+    local dir="$1" trimmed part count last n start i suggestion sep sanitized
+    trimmed="${dir%/}"
+    [[ -n "$trimmed" ]] || return 0
+
+    IFS='/' read -r -a part <<< "$trimmed"
+    count="${#part[@]}"
+    [[ "$count" -gt 0 ]] || return 0
+
+    last="${part[$((count - 1))]}"
+    if [[ "$last" == "water" ]]; then
+        n=3
+    elif [[ "$last" =~ ^[0-9]+([.][0-9]+)?[Mm]$ ]]; then
+        n=4
+    else
+        n=4
+    fi
+    (( count < n )) && n="$count"
+    start=$((count - n))
+
+    suggestion=""
+    sep=""
+    for ((i=start; i<count; i++)); do
+        sanitized="$(sanitize_jobname_part "${part[$i]}")"
+        [[ -n "$sanitized" ]] || continue
+        suggestion="${suggestion}${sep}${sanitized}"
+        sep="_"
+    done
+    printf '%s' "$suggestion"
+}
+
+SUGGESTED_JOB="$(suggest_jobname_from_pwd "$CURRENT_DIR")"
+
 echo
 echo "=========================================="
 echo "  CES2 build config wizard"
 echo "  target: $CONFIG"
+echo "  pwd   : $CURRENT_DIR"
 echo "=========================================="
 echo
 
@@ -263,7 +306,15 @@ echo
 ADSORB="$(ask "Adsorbate atom count (last N atoms in POSCAR; 0 = none)" "$CUR_ADSORB")"
 
 # ---- 6. job name ----
-JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$CUR_JOB")"
+if [[ -n "$SUGGESTED_JOB" ]]; then
+    echo
+    echo "Suggested job name from pwd: $SUGGESTED_JOB"
+    echo "  current YAML job name   : $CUR_JOB"
+    JOB_DEFAULT="$SUGGESTED_JOB"
+else
+    JOB_DEFAULT="$CUR_JOB"
+fi
+JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$JOB_DEFAULT")"
 
 # ---- 7. (optional, --box) electrolyte box geometry ----
 if [[ "$DO_BOX" == "1" ]]; then
