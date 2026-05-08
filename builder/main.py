@@ -94,6 +94,28 @@ def _warn_if_missing_executable(label: str, value: str) -> None:
         print(f"[path check] WARNING: {label} command not found on PATH: {value}")
 
 
+def _as_bool(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
+def _path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def _emit_config_path_warnings(
     cfg: Dict,
     workdir: Path,
@@ -175,8 +197,10 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     seed = int(cfg.get("project", {}).get("seed", 1234))
     np.random.seed(seed)
 
-    build_dir = workdir / cfg.get("output", {}).get("build_dir","build")
-    export_dir = workdir / cfg.get("output", {}).get("export_dir","export")
+    output_cfg = cfg.get("output", {})
+    build_dir = workdir / output_cfg.get("build_dir","build")
+    export_dir = workdir / output_cfg.get("export_dir","export")
+    keep_build = _as_bool(output_cfg.get("keep_build"), default=True)
     build_dir.mkdir(parents=True, exist_ok=True)
     export_dir.mkdir(parents=True, exist_ok=True)
     if not workdir_exists_before:
@@ -732,6 +756,23 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     print(f"[TIMING] total: {timings['total']:.3f} s")
     (export_dir/"timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
     summary["timings_sec"] = timings
+
+    if not keep_build:
+        build_resolved = build_dir.resolve()
+        workdir_resolved = workdir.resolve()
+        export_resolved = export_dir.resolve()
+        protected_dirs = {workdir_resolved, export_resolved, Path("/")}
+        if build_resolved in protected_dirs:
+            print(f"[cleanup] WARNING: refusing to remove protected build_dir: {build_resolved}")
+        elif _path_contains(build_resolved, export_resolved) or _path_contains(build_resolved, workdir_resolved):
+            print(f"[cleanup] WARNING: refusing to remove build_dir that contains protected output: {build_resolved}")
+        elif build_dir.exists():
+            try:
+                shutil.rmtree(build_dir)
+            except OSError as exc:
+                print(f"[cleanup] WARNING: failed to remove build_dir {build_resolved}: {exc}")
+            else:
+                print(f"[cleanup] removed build intermediates: {build_resolved}")
 
     summary["export_dir"] = str(export_dir.resolve())
     return summary
