@@ -17,6 +17,8 @@
 #   --master        Structural/physical setup: bjparams source/file,
 #                   water model, electrolyte box, water.count, adsorbate count,
 #                   and optional pre-relaxation/parallel settings.
+#                   At the qm_params/layer-file prompt, type '?' to list
+#                   available DB entries that can be copied into the answer.
 #   --variant       Run-condition setup: salt, concentration, electrode charge,
 #                   job name, output dirs, and optional QMMM length.
 #                   This is the default mode for backward compatibility.
@@ -224,6 +226,108 @@ ask() {
     echo "${reply:-$default}"
 }
 
+list_qm_params_yaml() {
+    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
+import os
+from pathlib import Path
+from ruamel.yaml import YAML
+
+yaml = YAML()
+with open(os.environ["CONFIG"]) as f:
+    d = yaml.load(f) or {}
+
+repo = Path(os.environ["REPO_ROOT"]).resolve()
+workdir = Path((d.get("project") or {}).get("workdir", "./") or "./")
+if not workdir.is_absolute():
+    workdir = (Path(os.environ["CONFIG"]).resolve().parent / workdir).resolve()
+species_db = Path(d.get("species_db", "species_db") or "species_db")
+if not species_db.is_absolute():
+    candidate = workdir / species_db
+    species_db = candidate.resolve() if candidate.exists() else (repo / species_db).resolve()
+
+files = sorted((species_db / "qm_params").glob("*.yaml"))
+if not files:
+    print(f"  (no *.yaml files found in {species_db / 'qm_params'})")
+else:
+    for f in files:
+        print(f"  {f.stem}")
+PY
+}
+
+list_qm_layer_files() {
+    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
+import os
+from pathlib import Path
+from ruamel.yaml import YAML
+
+yaml = YAML()
+with open(os.environ["CONFIG"]) as f:
+    d = yaml.load(f) or {}
+
+repo = Path(os.environ["REPO_ROOT"]).resolve()
+workdir = Path((d.get("project") or {}).get("workdir", "./") or "./")
+if not workdir.is_absolute():
+    workdir = (Path(os.environ["CONFIG"]).resolve().parent / workdir).resolve()
+species_db = Path(d.get("species_db", "species_db") or "species_db")
+if not species_db.is_absolute():
+    candidate = workdir / species_db
+    species_db = candidate.resolve() if candidate.exists() else (repo / species_db).resolve()
+
+dirs = [workdir, species_db / "qm_params", species_db / "qm_params" / "layer_files"]
+seen = set()
+rows = []
+for base in dirs:
+    for f in sorted(base.glob("*.dat")) if base.is_dir() else []:
+        key = f.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((f.stem, f))
+
+if not rows:
+    print("  (no *.dat layer files found in workdir, species_db/qm_params, or species_db/qm_params/layer_files)")
+else:
+    for stem, path in rows:
+        print(f"  {stem}    # {path}")
+PY
+}
+
+ask_qm_params_file() {
+    local default="$1" reply
+    while :; do
+        read -r -p "  qm_params_file (type '?' to list) [$default]: " reply
+        reply="${reply:-$default}"
+        case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
+            "?"|list|ls)
+                echo "  Available qm_params YAML files:" >&2
+                list_qm_params_yaml >&2
+                ;;
+            *)
+                echo "$reply"
+                return
+                ;;
+        esac
+    done
+}
+
+ask_qm_layer_file() {
+    local default="$1" reply
+    while :; do
+        read -r -p "  bjparams_layer_file (type '?' to list; .dat optional) [$default]: " reply
+        reply="${reply:-$default}"
+        case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
+            "?"|list|ls)
+                echo "  Available layer .dat files:" >&2
+                list_qm_layer_files >&2
+                ;;
+            *)
+                echo "$reply"
+                return
+                ;;
+        esac
+    done
+}
+
 validate_config() {
     CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
 import os
@@ -340,10 +444,10 @@ if [[ "$MODE" == "master" ]]; then
         *) echo "ERROR: bjparams_source must be yaml or layer_file, got '$bj_choice'" >&2; exit 2 ;;
     esac
     if [[ "$BJ_SOURCE" == "yaml" ]]; then
-        QM_PARAMS_FILE="$(ask "  qm_params_file (species_db/qm_params/<name>.yaml)" "${CUR_QMFILE:-IrO2}")"
+        QM_PARAMS_FILE="$(ask_qm_params_file "${CUR_QMFILE:-IrO2}")"
         BJ_LAYER_FILE=""
     else
-        BJ_LAYER_FILE="$(ask "  bjparams_layer_file (.dat optional)" "${CUR_LAYER:-IrO2_2OH_2O_bjparams_layer_avg}")"
+        BJ_LAYER_FILE="$(ask_qm_layer_file "${CUR_LAYER:-IrO2_2OH_2O_bjparams_layer_avg}")"
         QM_PARAMS_FILE=""
     fi
 
