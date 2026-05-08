@@ -113,6 +113,7 @@ tools/configure.sh --master \
   --out configs/masters/IrO2_2OH_2O_TIP4P_50A.yaml \
   config_example.yaml
 # Tip: type '?' at the qm_params_file or bjparams_layer_file prompt to list DB entries.
+# Master mode also offers optional QE and LAMMPS/QM-MM setup reviews.
 
 # 2. Run condition: salt, concentration, electrode charge, job/output names
 tools/configure.sh --variant \

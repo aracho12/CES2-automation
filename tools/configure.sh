@@ -42,6 +42,10 @@
 #                   ces2.initial_dump (auto-set when on, removed when off)
 #   --parallel      QE parallelization flags: ces2_script.{npool, ntg, ndiag}
 #                   (pw.x mpirun options; see config_example.yaml comments)
+#   --qe            Review QE setup: k_points, pseudopotential directory/set,
+#                   cutoffs, smearing, and SCF controls.
+#   --lammps        Review production LAMMPS/QM-MM MD setup: timestep, run
+#                   length, thermo/dump/restart cadence, and temperature.
 #   --qmmm          Edit QMMMFINSTEP in ./qmmm_dftces2_charging_pts.sh (if
 #                   present in CWD) and keep YAML's ces2_script.n_qmmm_steps
 #                   in sync (n_qmmm_steps = QMMMFINSTEP + 1).
@@ -65,20 +69,25 @@ DO_BOX=0        # 1 => prompt for electrolyte_box.{thickness, vacuum_z}
 DO_PRERELAX=0   # 1 => prompt for md_relax.enabled (and sync ces2.initial_dump)
 DO_PARALLEL=0   # 1 => prompt for ces2_script.{npool, ntg, ndiag}
 DO_QMMM=0       # 1 => prompt for QMMMFINSTEP (and sync ces2_script.n_qmmm_steps)
+DO_QE=0         # 1 => prompt for qe setup
+DO_LAMMPS=0     # 1 => prompt for ces2.md setup
 MODE="variant"  # variant (default) or master
+MASTER_MODE_REQUESTED=0
 DO_VALIDATE=0
 OUT_CONFIG=""
 CONFIG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --master)           MODE="master"; DO_BOX=1; shift ;;
+        --master)           MODE="master"; MASTER_MODE_REQUESTED=1; DO_BOX=1; DO_QE=1; DO_LAMMPS=1; shift ;;
         --variant)          MODE="variant"; shift ;;
         --out)              OUT_CONFIG="${2:-}"; if [[ -z "$OUT_CONFIG" ]]; then echo "ERROR: --out requires a path" >&2; exit 2; fi; shift 2 ;;
         --validate)         DO_VALIDATE=1; shift ;;
         --box)              DO_BOX=1; shift ;;
         --prerelax)         DO_PRERELAX=1; shift ;;
         --parallel)         DO_PARALLEL=1; shift ;;
+        --qe)               DO_QE=1; shift ;;
+        --lammps)           DO_LAMMPS=1; shift ;;
         --qmmm)             DO_QMMM=1; shift ;;
         -h|--help)          print_help; exit 0 ;;
         --)                 shift; CONFIG="${1:-}"; break ;;
@@ -105,6 +114,27 @@ BJ_LAYER_FILE=""
 WATER_MODEL=""
 OUTPUT_BUILD_DIR=""
 OUTPUT_EXPORT_DIR=""
+QE_PREFIX=""
+QE_OUTDIR=""
+QE_PSEUDO_DIR=""
+QE_PSEUDO_SET=""
+QE_PSEUDOS=""
+QE_ECUTWFC=""
+QE_ECUTRHO=""
+QE_KPOINTS=""
+QE_OCCUPATIONS=""
+QE_SMEARING=""
+QE_DEGAUSS=""
+QE_CONV_THR=""
+QE_ELECTRON_MAXSTEP=""
+QE_MIXING_BETA=""
+QE_DIAGONALIZATION=""
+LMP_TIMESTEP=""
+LMP_N_STEPS=""
+LMP_THERMO_EVERY=""
+LMP_DUMP_EVERY=""
+LMP_TEMPERATURE=""
+LMP_RESTART_EVERY=""
 
 # Path to the qmmm script in the current working directory (if any).
 QMMM_SCRIPT_PATH="./qmmm_dftces2_charging_pts.sh"
@@ -173,6 +203,28 @@ cur_layer   = g("slab", "bjparams_layer_file", default="")
 cur_wmodel  = g("ces2", "water_model", default="TIP4P")
 cur_build   = g("output", "build_dir", default="build")
 cur_export  = g("output", "export_dir", default="export")
+cur_qe_prefix = g("qe", "prefix", default="solute")
+cur_qe_outdir = g("qe", "outdir", default="./solute")
+cur_qe_pdir   = g("qe", "pseudo_dir", default="./pseudo")
+cur_qe_pset   = g("qe", "pseudo_set", default="sssp")
+cur_qe_pseudos = (d.get("qe") or {}).get("pseudopotentials") or {}
+cur_qe_pseudos_s = ",".join(f"{k}={v}" for k, v in cur_qe_pseudos.items())
+cur_qe_ecutwfc = g("qe", "ecutwfc", default=50.0)
+cur_qe_ecutrho = g("qe", "ecutrho", default=400.0)
+cur_qe_kpts    = " ".join(str(x) for x in (g("qe", "k_points", default=[1,1,1,0,0,0]) or [1,1,1,0,0,0]))
+cur_qe_occ     = g("qe", "occupations", default="smearing")
+cur_qe_smear   = g("qe", "smearing", default="mv")
+cur_qe_degauss = g("qe", "degauss", default=0.02)
+cur_qe_conv    = g("qe", "conv_thr", default=1e-8)
+cur_qe_emax    = g("qe", "electron_maxstep", default=400)
+cur_qe_mix     = g("qe", "mixing_beta", default=0.3)
+cur_qe_diag    = g("qe", "diagonalization", default="cg")
+cur_lmp_timestep = g("ces2", "md", "timestep_fs", default=1.0)
+cur_lmp_nsteps   = g("ces2", "md", "n_steps", default=0)
+cur_lmp_thermo   = g("ces2", "md", "thermo_every", default=100)
+cur_lmp_dump     = g("ces2", "md", "dump_every", default=1000)
+cur_lmp_temp     = g("ces2", "md", "temperature", default=300.0)
+cur_lmp_restart  = g("ces2", "md", "restart_every", default=500000)
 # water block (used by --box water.count helper)
 cur_wcount    = g("electrolyte_recipe", "water", "count",            default="auto")
 cur_wrho      = g("electrolyte_recipe", "water", "density_g_per_ml", default=1.0)
@@ -206,11 +258,11 @@ try:
 except Exception:
     pass
 
-print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}|{cur_bjsrc}|{cur_qmfile}|{cur_layer}|{cur_wmodel}|{cur_build}|{cur_export}|{cur_wcount}|{cur_wrho}|{cur_wuf}|{slab_lx}|{slab_ly}")
+print(f"{salt_name}|{salt_conc}|{qcharge}|{adsorb}|{jobname}|{cur_thick}|{cur_vacz}|{cur_relax}|{cur_initdmp}|{cur_npool}|{cur_ntg}|{cur_ndiag}|{cur_nsteps}|{cur_bjsrc}|{cur_qmfile}|{cur_layer}|{cur_wmodel}|{cur_build}|{cur_export}|{cur_wcount}|{cur_wrho}|{cur_wuf}|{slab_lx}|{slab_ly}|{cur_qe_prefix}|{cur_qe_outdir}|{cur_qe_pdir}|{cur_qe_pset}|{cur_qe_pseudos_s}|{cur_qe_ecutwfc}|{cur_qe_ecutrho}|{cur_qe_kpts}|{cur_qe_occ}|{cur_qe_smear}|{cur_qe_degauss}|{cur_qe_conv}|{cur_qe_emax}|{cur_qe_mix}|{cur_qe_diag}|{cur_lmp_timestep}|{cur_lmp_nsteps}|{cur_lmp_thermo}|{cur_lmp_dump}|{cur_lmp_temp}|{cur_lmp_restart}")
 PY
 }
 
-IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS CUR_BJSRC CUR_QMFILE CUR_LAYER CUR_WMODEL CUR_BUILD CUR_EXPORT CUR_WCOUNT CUR_WRHO CUR_WUF SLAB_LX SLAB_LY <<<"$(read_defaults)"
+IFS='|' read -r CUR_SALT CUR_CONC CUR_CHARGE CUR_ADSORB CUR_JOB CUR_THICK CUR_VACZ CUR_RELAX CUR_INITDMP CUR_NPOOL CUR_NTG CUR_NDIAG CUR_NSTEPS CUR_BJSRC CUR_QMFILE CUR_LAYER CUR_WMODEL CUR_BUILD CUR_EXPORT CUR_WCOUNT CUR_WRHO CUR_WUF SLAB_LX SLAB_LY CUR_QE_PREFIX CUR_QE_OUTDIR CUR_QE_PDIR CUR_QE_PSET CUR_QE_PSEUDOS CUR_QE_ECUTWFC CUR_QE_ECUTRHO CUR_QE_KPTS CUR_QE_OCC CUR_QE_SMEAR CUR_QE_DEGAUSS CUR_QE_CONV CUR_QE_EMAX CUR_QE_MIX CUR_QE_DIAG CUR_LMP_TIMESTEP CUR_LMP_NSTEPS CUR_LMP_THERMO CUR_LMP_DUMP CUR_LMP_TEMP CUR_LMP_RESTART <<<"$(read_defaults)"
 
 # Try to read QMMMFINSTEP from the qmmm script in CWD (if present).
 CUR_QMMMFINSTEP=""
@@ -626,6 +678,93 @@ if [[ "$DO_BOX" == "1" ]]; then
     done
 fi
 
+# ---- 8. (optional/master, --qe) QE setup review ----------------------------
+if [[ "$DO_QE" == "1" ]]; then
+    echo
+    if [[ "$MASTER_MODE_REQUESTED" == "1" ]]; then
+        review_qe="$(ask "Review QE setup now? (Y/n)" "Y")"
+        if [[ "$review_qe" =~ ^[Nn] ]]; then
+            DO_QE=0
+        fi
+    fi
+fi
+if [[ "$DO_QE" == "1" ]]; then
+    echo
+    echo "QE setup  (fresh-start review; Enter keeps current values)"
+    echo "  k_points format: n1 n2 n3 s1 s2 s3"
+    QE_PREFIX="$(ask "  qe.prefix" "$CUR_QE_PREFIX")"
+    QE_OUTDIR="$(ask "  qe.outdir" "$CUR_QE_OUTDIR")"
+    QE_PSEUDO_DIR="$(ask "  qe.pseudo_dir" "$CUR_QE_PDIR")"
+    QE_PSEUDO_SET="$(ask "  qe.pseudo_set" "$CUR_QE_PSET")"
+    QE_PSEUDOS="$(ask "  qe.pseudopotentials overrides (El=file,El=file; blank = keep)" "$CUR_QE_PSEUDOS")"
+    QE_ECUTWFC="$(ask "  qe.ecutwfc [Ry]" "$CUR_QE_ECUTWFC")"
+    QE_ECUTRHO="$(ask "  qe.ecutrho [Ry]" "$CUR_QE_ECUTRHO")"
+    QE_KPOINTS="$(ask "  qe.k_points" "$CUR_QE_KPTS")"
+    QE_OCCUPATIONS="$(ask "  qe.occupations" "$CUR_QE_OCC")"
+    QE_SMEARING="$(ask "  qe.smearing" "$CUR_QE_SMEAR")"
+    QE_DEGAUSS="$(ask "  qe.degauss [Ry]" "$CUR_QE_DEGAUSS")"
+    QE_CONV_THR="$(ask "  qe.conv_thr" "$CUR_QE_CONV")"
+    QE_ELECTRON_MAXSTEP="$(ask "  qe.electron_maxstep" "$CUR_QE_EMAX")"
+    QE_MIXING_BETA="$(ask "  qe.mixing_beta" "$CUR_QE_MIX")"
+    QE_DIAGONALIZATION="$(ask "  qe.diagonalization" "$CUR_QE_DIAG")"
+
+    for pair in \
+        "QE_ECUTWFC:$QE_ECUTWFC" "QE_ECUTRHO:$QE_ECUTRHO" "QE_DEGAUSS:$QE_DEGAUSS" \
+        "QE_CONV_THR:$QE_CONV_THR" "QE_MIXING_BETA:$QE_MIXING_BETA"; do
+        name="${pair%%:*}"; val="${pair#*:}"
+        if ! [[ "$val" =~ ^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+            echo "ERROR: $name must be numeric, got '$val'" >&2; exit 2
+        fi
+    done
+    if ! [[ "$QE_ELECTRON_MAXSTEP" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: QE_ELECTRON_MAXSTEP must be a positive integer, got '$QE_ELECTRON_MAXSTEP'" >&2; exit 2
+    fi
+    if [[ "$(wc -w <<<"$QE_KPOINTS" | tr -d ' ')" != "6" ]]; then
+        echo "ERROR: qe.k_points must have 6 integers, got '$QE_KPOINTS'" >&2; exit 2
+    fi
+    for k in $QE_KPOINTS; do
+        if ! [[ "$k" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: qe.k_points must contain integers only, got '$QE_KPOINTS'" >&2; exit 2
+        fi
+    done
+fi
+
+# ---- 9. (optional/master, --lammps) production LAMMPS setup review ---------
+if [[ "$DO_LAMMPS" == "1" ]]; then
+    echo
+    if [[ "$MASTER_MODE_REQUESTED" == "1" ]]; then
+        review_lmp="$(ask "Review LAMMPS/QM-MM production setup now? (Y/n)" "Y")"
+        if [[ "$review_lmp" =~ ^[Nn] ]]; then
+            DO_LAMMPS=0
+        fi
+    fi
+fi
+if [[ "$DO_LAMMPS" == "1" ]]; then
+    echo
+    echo "LAMMPS/QM-MM production setup  (ces2.md; Enter keeps current values)"
+    LMP_TIMESTEP="$(ask "  timestep_fs" "$CUR_LMP_TIMESTEP")"
+    LMP_N_STEPS="$(ask "  n_steps (0 = single-point)" "$CUR_LMP_NSTEPS")"
+    LMP_THERMO_EVERY="$(ask "  thermo_every" "$CUR_LMP_THERMO")"
+    LMP_DUMP_EVERY="$(ask "  dump_every" "$CUR_LMP_DUMP")"
+    LMP_TEMPERATURE="$(ask "  temperature [K]" "$CUR_LMP_TEMP")"
+    LMP_RESTART_EVERY="$(ask "  restart_every" "$CUR_LMP_RESTART")"
+
+    if ! [[ "$LMP_TIMESTEP" =~ ^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+        echo "ERROR: timestep_fs must be numeric, got '$LMP_TIMESTEP'" >&2; exit 2
+    fi
+    if ! [[ "$LMP_TEMPERATURE" =~ ^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+        echo "ERROR: temperature must be numeric, got '$LMP_TEMPERATURE'" >&2; exit 2
+    fi
+    for pair in \
+        "n_steps:$LMP_N_STEPS" "thermo_every:$LMP_THERMO_EVERY" \
+        "dump_every:$LMP_DUMP_EVERY" "restart_every:$LMP_RESTART_EVERY"; do
+        name="${pair%%:*}"; val="${pair#*:}"
+        if ! [[ "$val" =~ ^(0|[1-9][0-9]*)$ ]]; then
+            echo "ERROR: $name must be a non-negative integer, got '$val'" >&2; exit 2
+        fi
+    done
+fi
+
 # ---- 8. (optional, --prerelax) pre-relaxation pipeline toggle ----
 if [[ "$DO_PRERELAX" == "1" ]]; then
     echo
@@ -728,6 +867,17 @@ if [[ "$DO_BOX" == "1" ]]; then
         echo "  water.count    : $WATER_COUNT          (was $CUR_WCOUNT)"
     fi
 fi
+if [[ "$DO_QE" == "1" ]]; then
+    echo "  qe.k_points    : $QE_KPOINTS          (was $CUR_QE_KPTS)"
+    echo "  qe.pseudo_dir  : $QE_PSEUDO_DIR"
+    echo "  qe.pseudo_set  : $QE_PSEUDO_SET"
+    echo "  qe.cutoffs     : ecutwfc=$QE_ECUTWFC, ecutrho=$QE_ECUTRHO"
+fi
+if [[ "$DO_LAMMPS" == "1" ]]; then
+    echo "  lammps timestep: $LMP_TIMESTEP fs     (was $CUR_LMP_TIMESTEP)"
+    echo "  lammps run     : n_steps=$LMP_N_STEPS, thermo=$LMP_THERMO_EVERY, dump=$LMP_DUMP_EVERY"
+    echo "  lammps temp    : $LMP_TEMPERATURE K"
+fi
 if [[ "$DO_PRERELAX" == "1" ]]; then
     case "$(printf '%s' "$PRERELAX" | tr '[:upper:]' '[:lower:]')" in
         on|true|1|yes)  PR_VIEW="on  (md_relax.enabled=true,  initial_dump=equilibrated.dump)" ;;
@@ -761,7 +911,7 @@ cp -p -- "$CONFIG" "$BAK"
 echo "backup -> $BAK"
 
 # ---- apply edits with ruamel.yaml ----
-export CONFIG MODE SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z WATER_COUNT PRERELAX NPOOL NTG NDIAG QMMMFINSTEP BJ_SOURCE QM_PARAMS_FILE BJ_LAYER_FILE WATER_MODEL OUTPUT_BUILD_DIR OUTPUT_EXPORT_DIR
+export CONFIG MODE SALT CONC CATION ANION QCHARGE ADSORB JOBNAME THICKNESS VACUUM_Z WATER_COUNT PRERELAX NPOOL NTG NDIAG QMMMFINSTEP BJ_SOURCE QM_PARAMS_FILE BJ_LAYER_FILE WATER_MODEL OUTPUT_BUILD_DIR OUTPUT_EXPORT_DIR QE_PREFIX QE_OUTDIR QE_PSEUDO_DIR QE_PSEUDO_SET QE_PSEUDOS QE_ECUTWFC QE_ECUTRHO QE_KPOINTS QE_OCCUPATIONS QE_SMEARING QE_DEGAUSS QE_CONV_THR QE_ELECTRON_MAXSTEP QE_MIXING_BETA QE_DIAGONALIZATION LMP_TIMESTEP LMP_N_STEPS LMP_THERMO_EVERY LMP_DUMP_EVERY LMP_TEMPERATURE LMP_RESTART_EVERY
 python3 <<'PY'
 import os, sys
 from ruamel.yaml import YAML
@@ -880,6 +1030,55 @@ if water_count_str:
         water_blk["count"] = "auto"
     else:
         water_blk["count"] = int(water_count_str)
+
+# --- (optional/master, --qe) QE setup review -------------------------------
+qe_prefix = os.environ.get("QE_PREFIX", "").strip()
+if qe_prefix:
+    qe = d.setdefault("qe", CommentedMap())
+    qe["prefix"] = qe_prefix
+    qe["outdir"] = os.environ.get("QE_OUTDIR", "").strip()
+    qe["pseudo_dir"] = os.environ.get("QE_PSEUDO_DIR", "").strip()
+    qe["pseudo_set"] = os.environ.get("QE_PSEUDO_SET", "").strip()
+    qe["ecutwfc"] = float(os.environ.get("QE_ECUTWFC", "").strip())
+    qe["ecutrho"] = float(os.environ.get("QE_ECUTRHO", "").strip())
+    kseq = CommentedSeq(int(x) for x in os.environ.get("QE_KPOINTS", "").split())
+    kseq.fa.set_flow_style()
+    qe["k_points"] = kseq
+    qe["occupations"] = os.environ.get("QE_OCCUPATIONS", "").strip()
+    qe["smearing"] = os.environ.get("QE_SMEARING", "").strip()
+    qe["degauss"] = float(os.environ.get("QE_DEGAUSS", "").strip())
+    qe["conv_thr"] = float(os.environ.get("QE_CONV_THR", "").strip())
+    qe["electron_maxstep"] = int(os.environ.get("QE_ELECTRON_MAXSTEP", "").strip())
+    qe["mixing_beta"] = float(os.environ.get("QE_MIXING_BETA", "").strip())
+    qe["diagonalization"] = os.environ.get("QE_DIAGONALIZATION", "").strip()
+
+    pseudos_s = os.environ.get("QE_PSEUDOS", "").strip()
+    if pseudos_s:
+        overrides = CommentedMap()
+        for item in pseudos_s.replace(";", ",").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" not in item:
+                raise SystemExit(f"Invalid qe.pseudopotentials override '{item}'. Use El=file,El=file")
+            el, fname = item.split("=", 1)
+            overrides[el.strip()] = fname.strip()
+        qe["pseudopotentials"] = overrides
+    elif "pseudopotentials" in qe and not pseudos_s:
+        # Empty prompt with no current overrides means no explicit overrides.
+        qe.pop("pseudopotentials", None)
+
+# --- (optional/master, --lammps) production LAMMPS/QM-MM setup -------------
+lmp_timestep = os.environ.get("LMP_TIMESTEP", "").strip()
+if lmp_timestep:
+    ces2_blk = d.setdefault("ces2", CommentedMap())
+    md = ces2_blk.setdefault("md", CommentedMap())
+    md["timestep_fs"] = float(lmp_timestep)
+    md["n_steps"] = int(os.environ.get("LMP_N_STEPS", "").strip())
+    md["thermo_every"] = int(os.environ.get("LMP_THERMO_EVERY", "").strip())
+    md["dump_every"] = int(os.environ.get("LMP_DUMP_EVERY", "").strip())
+    md["temperature"] = float(os.environ.get("LMP_TEMPERATURE", "").strip())
+    md["restart_every"] = int(os.environ.get("LMP_RESTART_EVERY", "").strip())
 
 # --- (optional, --prerelax) pre-relaxation toggle --------------------------
 # on  → md_relax.enabled=true,  ces2.initial_dump="equilibrated.dump"
