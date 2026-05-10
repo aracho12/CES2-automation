@@ -805,6 +805,7 @@ def generate_lammps_input(
           f" {a_str} {b_str}")
         L()
 
+    L("#MINIMIZE_STEP")
     L(f"fix   nvt SOLVENT nvt temp {nvt_temp:.1f} {nvt_temp:.1f} {nvt_tdamp:.1f}")
     L()
 
