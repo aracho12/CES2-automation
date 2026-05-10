@@ -207,12 +207,14 @@ qe:
 | `packmol` | PACKMOL binary path, tolerance, maxit | No (defaults: `packmol`, 2.0, 200) |
 | `charge_control` | Electrode charging and counterion balancing | No (defaults to neutral) |
 | `electrolyte_recipe` | Water count, salts, extras, counterion pool, z-exclusion | **Yes** |
-| `output` | `build_dir`, `export_dir` | No (defaults: `build/`, `export/`) |
+| `output` | `build_dir`, `export_dir`, `keep_build` | No (defaults: `build/`, `export/`, `true`) |
 | `slab` | QM atom type_label overrides, layer-file path | No |
 | `ces2` | LAMMPS QM/MM settings (water model, cutoffs, bjdisp, MD params) | No (has defaults) |
 | `qe` | Quantum ESPRESSO settings (cutoffs, k-points, pseudopotentials) | **Yes** (at least `pseudo_set` or `pseudopotentials`) |
 | `ces2_script` | Script generation (binary paths, SLURM/PBS settings) | No |
 | `md_relax` | Optional MD pre-relaxation (4-stage equilibration) | No (disabled by default) |
+
+Set `output.keep_build: false` to remove `build_dir` after a successful export. Failed builds leave `build_dir` in place so PACKMOL inputs/logs and intermediate files remain available for debugging.
 
 ---
 

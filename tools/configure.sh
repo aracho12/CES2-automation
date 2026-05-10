@@ -97,6 +97,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 CONFIG="${CONFIG:-${REPO_ROOT}/config_example.yaml}"
+CURRENT_DIR="$(pwd)"
 
 # These get populated by interactive prompts only when their section flag is set.
 # Empty value at python-apply time means "do not touch".
@@ -144,13 +145,9 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
-if [[ -n "$OUT_CONFIG" ]]; then
-    OUT_DIR="$(dirname -- "$OUT_CONFIG")"
-    mkdir -p -- "$OUT_DIR"
-    cp -p -- "$CONFIG" "$OUT_CONFIG"
-    CONFIG="$OUT_CONFIG"
-    echo "copied base config -> $CONFIG"
-fi
+echo
+echo "Current working directory:"
+echo "  $CURRENT_DIR"
 
 # ---- ensure ruamel.yaml is importable ----
 if ! python3 -c "import ruamel.yaml" 2>/dev/null; then
@@ -163,6 +160,26 @@ if ! python3 -c "import ruamel.yaml" 2>/dev/null; then
         echo "Aborting." >&2
         exit 1
     fi
+fi
+
+validate_config() {
+    CONFIG="$CONFIG" python3 <<'PY'
+import os
+from ruamel.yaml import YAML
+
+yaml = YAML()
+with open(os.environ["CONFIG"]) as f:
+    cfg = yaml.load(f)
+if not isinstance(cfg, dict):
+    raise SystemExit("ERROR: config root must be a YAML mapping")
+
+print(f"validated -> {os.environ['CONFIG']}")
+PY
+}
+
+if [[ "$DO_VALIDATE" == "1" ]]; then
+    validate_config
+    exit 0
 fi
 
 # ---- read current values for default-prompts ----
@@ -278,207 +295,49 @@ ask() {
     echo "${reply:-$default}"
 }
 
-list_qm_params_yaml() {
-    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
-import os
-from pathlib import Path
-from ruamel.yaml import YAML
-
-yaml = YAML()
-with open(os.environ["CONFIG"]) as f:
-    d = yaml.load(f) or {}
-
-repo = Path(os.environ["REPO_ROOT"]).resolve()
-workdir = Path((d.get("project") or {}).get("workdir", "./") or "./")
-if not workdir.is_absolute():
-    workdir = (Path(os.environ["CONFIG"]).resolve().parent / workdir).resolve()
-species_db = Path(d.get("species_db", "species_db") or "species_db")
-if not species_db.is_absolute():
-    candidate = workdir / species_db
-    species_db = candidate.resolve() if candidate.exists() else (repo / species_db).resolve()
-
-files = sorted((species_db / "qm_params").glob("*.yaml"))
-if not files:
-    print(f"  (no *.yaml files found in {species_db / 'qm_params'})")
-else:
-    for f in files:
-        print(f"  {f.stem}")
-PY
+sanitize_jobname_part() {
+    printf '%s' "$1" | sed -E 's/[^A-Za-z0-9._+-]+/_/g; s/^_+//; s/_+$//'
 }
 
-list_qm_layer_files() {
-    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
-import os
-from pathlib import Path
-from ruamel.yaml import YAML
+suggest_jobname_from_pwd() {
+    local dir="$1" trimmed part count last n start i suggestion sep sanitized
+    trimmed="${dir%/}"
+    [[ -n "$trimmed" ]] || return 0
 
-yaml = YAML()
-with open(os.environ["CONFIG"]) as f:
-    d = yaml.load(f) or {}
+    IFS='/' read -r -a part <<< "$trimmed"
+    count="${#part[@]}"
+    [[ "$count" -gt 0 ]] || return 0
 
-repo = Path(os.environ["REPO_ROOT"]).resolve()
-workdir = Path((d.get("project") or {}).get("workdir", "./") or "./")
-if not workdir.is_absolute():
-    workdir = (Path(os.environ["CONFIG"]).resolve().parent / workdir).resolve()
-species_db = Path(d.get("species_db", "species_db") or "species_db")
-if not species_db.is_absolute():
-    candidate = workdir / species_db
-    species_db = candidate.resolve() if candidate.exists() else (repo / species_db).resolve()
+    last="${part[$((count - 1))]}"
+    if [[ "$last" == "water" ]]; then
+        n=3
+    elif [[ "$last" =~ ^[0-9]+([.][0-9]+)?[Mm]$ ]]; then
+        n=4
+    else
+        n=4
+    fi
+    (( count < n )) && n="$count"
+    start=$((count - n))
 
-dirs = [workdir, species_db / "qm_params", species_db / "qm_params" / "layer_files"]
-seen = set()
-rows = []
-for base in dirs:
-    for f in sorted(base.glob("*.dat")) if base.is_dir() else []:
-        key = f.resolve()
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append((f.stem, f))
-
-if not rows:
-    print("  (no *.dat layer files found in workdir, species_db/qm_params, or species_db/qm_params/layer_files)")
-else:
-    for stem, path in rows:
-        print(f"  {stem}    # {path}")
-PY
-}
-
-ask_qm_params_file() {
-    local default="$1" reply
-    while :; do
-        read -r -p "  qm_params_file (type '?' to list) [$default]: " reply
-        reply="${reply:-$default}"
-        case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
-            "?"|list|ls)
-                echo "  Available qm_params YAML files:" >&2
-                list_qm_params_yaml >&2
-                ;;
-            *)
-                echo "$reply"
-                return
-                ;;
-        esac
+    suggestion=""
+    sep=""
+    for ((i=start; i<count; i++)); do
+        sanitized="$(sanitize_jobname_part "${part[$i]}")"
+        [[ -n "$sanitized" ]] || continue
+        suggestion="${suggestion}${sep}${sanitized}"
+        sep="_"
     done
+    printf '%s' "$suggestion"
 }
 
-ask_qm_layer_file() {
-    local default="$1" reply
-    while :; do
-        read -r -p "  bjparams_layer_file (type '?' to list; .dat optional) [$default]: " reply
-        reply="${reply:-$default}"
-        case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
-            "?"|list|ls)
-                echo "  Available layer .dat files:" >&2
-                list_qm_layer_files >&2
-                ;;
-            *)
-                echo "$reply"
-                return
-                ;;
-        esac
-    done
-}
-
-validate_config() {
-    CONFIG="$CONFIG" REPO_ROOT="$REPO_ROOT" python3 <<'PY'
-import os
-from pathlib import Path
-from ruamel.yaml import YAML
-
-yaml = YAML()
-path = Path(os.environ["CONFIG"]).resolve()
-repo = Path(os.environ["REPO_ROOT"]).resolve()
-with path.open() as f:
-    d = yaml.load(f) or {}
-
-def g(*keys, default=None):
-    cur = d
-    for k in keys:
-        if not isinstance(cur, dict) or k not in cur:
-            return default
-        cur = cur[k]
-    return cur
-
-errors = []
-warnings = []
-
-workdir = Path(g("project", "workdir", default="./") or "./")
-if not workdir.is_absolute():
-    workdir = (path.parent / workdir).resolve()
-
-species_db = Path(g("species_db", default="species_db") or "species_db")
-if not species_db.is_absolute():
-    if (workdir / species_db).exists():
-        species_db = (workdir / species_db).resolve()
-    else:
-        species_db = (repo / species_db).resolve()
-
-water_model = str(g("ces2", "water_model", default="TIP4P") or "TIP4P").upper()
-allowed_water = {"TIP4P", "TIP3P", "SPCE", "TIP3PEW"}
-if water_model not in allowed_water:
-    errors.append(f"ces2.water_model must be one of {sorted(allowed_water)}, got {water_model!r}")
-
-bjsrc = str(g("slab", "bjparams_source", default="yaml") or "yaml").lower()
-if bjsrc == "yaml":
-    qmfile = g("slab", "qm_params_file", default=None)
-    if qmfile:
-        target = species_db / "qm_params" / f"{Path(str(qmfile)).stem}.yaml"
-        if not target.exists():
-            errors.append(f"slab.qm_params_file not found: {target}")
-elif bjsrc == "layer_file":
-    layer = g("slab", "bjparams_layer_file", default=None)
-    if not layer:
-        errors.append("slab.bjparams_source is layer_file but slab.bjparams_layer_file is not set")
-    else:
-        raw = Path(str(layer))
-        names = [raw] if raw.suffix else [raw, raw.with_suffix(".dat")]
-        bases = [workdir, species_db / "qm_params", species_db / "qm_params" / "layer_files"]
-        candidates = names if raw.is_absolute() else [base / name for base in bases for name in names]
-        if not any(c.resolve().exists() for c in candidates):
-            errors.append("slab.bjparams_layer_file not found; tried: " + ", ".join(str(c.resolve()) for c in candidates))
-else:
-    errors.append(f"slab.bjparams_source must be 'yaml' or 'layer_file', got {bjsrc!r}")
-
-ebox = g("electrolyte_box", default={}) or {}
-for key in ("thickness", "vacuum_z"):
-    try:
-        if float(ebox.get(key, 0)) <= 0:
-            errors.append(f"electrolyte_box.{key} must be positive")
-    except Exception:
-        errors.append(f"electrolyte_box.{key} must be numeric")
-
-water_count = g("electrolyte_recipe", "water", "count", default="auto")
-if not (str(water_count).lower() == "auto" or (isinstance(water_count, int) and water_count > 0)):
-    warnings.append(f"electrolyte_recipe.water.count is unusual: {water_count!r}")
-
-if errors:
-    print("Validation failed:")
-    for err in errors:
-        print(f"  ERROR: {err}")
-    for warn in warnings:
-        print(f"  WARN : {warn}")
-    raise SystemExit(1)
-
-print(f"Validation OK: {path}")
-print(f"  bjparams_source : {bjsrc}")
-print(f"  water_model     : {water_model}")
-print(f"  species_db      : {species_db}")
-for warn in warnings:
-    print(f"  WARN: {warn}")
-PY
-}
-
-if [[ "$DO_VALIDATE" == "1" ]]; then
-    validate_config
-    exit 0
-fi
+SUGGESTED_JOB="$(suggest_jobname_from_pwd "$CURRENT_DIR")"
 
 echo
 echo "=========================================="
 echo "  CES2 build config wizard"
 echo "  mode  : $MODE"
 echo "  target: $CONFIG"
+echo "  pwd   : $CURRENT_DIR"
 echo "=========================================="
 echo
 
@@ -599,11 +458,20 @@ if [[ "$SALT" == "water" ]]; then
     fi
 fi
 
-# ---- 5. job name ----
-JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$CUR_JOB")"
+# ---- 5. adsorbate atom count ----
+echo
+ADSORB="$(ask "Adsorbate atom count (last N atoms in POSCAR; 0 = none)" "$CUR_ADSORB")"
 
-OUTPUT_BUILD_DIR="$(ask "Build dir (output.build_dir)" "$CUR_BUILD")"
-OUTPUT_EXPORT_DIR="$(ask "Export dir (output.export_dir)" "$CUR_EXPORT")"
+# ---- 6. job name ----
+if [[ -n "$SUGGESTED_JOB" ]]; then
+    echo
+    echo "Suggested job name from pwd: $SUGGESTED_JOB"
+    echo "  current YAML job name   : $CUR_JOB"
+    JOB_DEFAULT="$SUGGESTED_JOB"
+else
+    JOB_DEFAULT="$CUR_JOB"
+fi
+JOBNAME="$(ask "Job name (sets ces2_script.jobname AND ces2_script.pbs.job_name)" "$JOB_DEFAULT")"
 fi
 
 # ---- 7. (optional, --box) electrolyte box geometry ----

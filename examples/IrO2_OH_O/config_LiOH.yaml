@@ -82,6 +82,9 @@ electrolyte_recipe:
 output:
   build_dir: "build"
   export_dir: "export"
+  # Keep intermediate PACKMOL/build files after a successful build.
+  # Set false to remove build_dir after export is complete; failed builds keep it for debugging.
+  keep_build: true
 
 # ---- Slab atom type_label overrides (optional) ----
 # Use when certain QM slab atoms need different bjdisp parameters than their
