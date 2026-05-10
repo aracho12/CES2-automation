@@ -76,6 +76,11 @@ def _element_cube_name(element: str) -> str:
     return _ELEMENT_FULLNAME.get(element, element.lower()) + ".cube"
 
 
+def _typelabel_cube_name(type_label: str) -> str:
+    """Return cube filename for a non-water type_label. E.g. O_OH → o_oh.cube"""
+    return type_label.lower().replace("-", "_") + ".cube"
+
+
 # ---------------------------------------------------------------------------
 # Build MM arrays from species_order + species_db
 # ---------------------------------------------------------------------------
@@ -89,31 +94,34 @@ def _build_mm_arrays(
     """
     Build MM species arrays needed by the qmmm script.
 
-    The DFT-CES2 framework uses ONE cube per unique element in the MM system
-    (not one per type_label).  All H atoms — whether from water or OH⁻ — share
-    hydrogen.cube (cube index 0), and all O atoms share oxygen.cube (cube index 1).
-    This matches lammps_input_writer.py: cube_idx.get(el, next_cube) re-uses the
-    index already assigned to the same element by water.
+    Non-water atoms whose element matches water (H or O) get their own cube
+    slot per type_label, so their charge density is tracked separately from
+    water.  Atoms with unique elements (Li, Na, Cl …) share one cube per
+    element as before.
 
     Returns
     -------
-    mm_elements    : unique element symbol list (MMrepA bash array), cube-index order
-    mm_charges     : representative partial charge per element (MMpartialCharge)
+    mm_elements    : element symbol list (MMrepA bash array), cube-index order.
+                     Non-water H/O overlap entries still use "H"/"O" so the
+                     Blur_MM ATOMrepA/alpha lookup works correctly.
+    mm_charges     : representative partial charge per cube entry (MMpartialCharge)
     mm_cube_output : cube output file name list (cube_output_MM bash array)
     is_tip4p       : True when TIP4P water is detected
     tip4p_O_idx    : 0-based index of O in mm_elements (TIP4Pinvolved[1])
 
     Cube index ordering (matches lammps_input_writer gridforce convention):
-      idx 0 : H  (from water Hw — all H atoms share this cube)
-      idx 1 : O  (from water Ow — all O atoms, including OH⁻, share this cube)
-      idx 2+: new elements from non-water species, first-appearance order
+      idx 0 : H  (water Hw)
+      idx 1 : O  (water Ow)
+      idx 2+: unique elements from non-water species (e.g. Li, Na …)
+              then per-type_label entries for non-water H/O (e.g. O_OH, H_OH)
     """
     mm_elements:    List[str] = []
     mm_charges_str: List[str] = []
     mm_cube_output: List[str] = []
     is_tip4p = False
     tip4p_O_idx = 0
-    seen_elements: set = set()   # de-dup by element symbol
+    seen_elements: set = set()   # de-dup by element symbol (water + new elements)
+    seen_labels:   set = set()   # de-dup by type_label (non-water H/O overlaps)
 
     # ── Water species: H first (cube idx 0), O second (cube idx 1) ────────
     water_sp = species_db.get(water_sid)
@@ -152,8 +160,12 @@ def _build_mm_arrays(
             mm_cube_output.append("oxygen.cube")
             seen_elements.add("O")
 
-    # ── Non-water species: one entry per NEW element only ─────────────────
-    # Elements already assigned to water H/O are skipped (same cube shared).
+    water_elements = set(seen_elements)  # {H, O} — elements already owned by water
+
+    # ── Non-water species ─────────────────────────────────────────────────
+    # • New element (not in water): one cube per element, named by element.
+    # • Element shared with water (H or O): one cube per type_label, named
+    #   by type_label so the densities stay separate from water.
     for sid, _ in species_order:
         if sid == water_sid:
             continue
@@ -165,13 +177,24 @@ def _build_mm_arrays(
             key=lambda a: type_id_by_label.get(a.type_label, 9999)
         )
         for atom in sorted_atoms:
-            el = atom.element
-            if el in seen_elements:
-                continue   # H or O from OH⁻ already covered by water cubes
-            seen_elements.add(el)
-            mm_elements.append(el)
-            mm_charges_str.append(f"{atom.charge:.4f}")
-            mm_cube_output.append(_element_cube_name(el))
+            el  = atom.element
+            lbl = atom.type_label
+            if el in water_elements:
+                # Shared element: need own cube per type_label
+                if lbl in seen_labels:
+                    continue
+                seen_labels.add(lbl)
+                mm_elements.append(el)          # keep element for ATOMrepA lookup
+                mm_charges_str.append(f"{atom.charge:.4f}")
+                mm_cube_output.append(_typelabel_cube_name(lbl))
+            else:
+                # Unique element: one cube per element (existing behaviour)
+                if el in seen_elements:
+                    continue
+                seen_elements.add(el)
+                mm_elements.append(el)
+                mm_charges_str.append(f"{atom.charge:.4f}")
+                mm_cube_output.append(_element_cube_name(el))
 
     return mm_elements, mm_charges_str, mm_cube_output, is_tip4p, tip4p_O_idx
 
@@ -377,10 +400,11 @@ def generate_ces2_scripts(
         is_tip4p      = True
         tip4p_O_idx   = 1
 
-    # Derive c_rho hat cube names (one per MM element)
+    # Derive c_rho hat cube names from output cube filenames (strips .cube, prepends c_rho_)
+    # e.g. hydrogen.cube → c_rho_hydrogen.cube, o_oh.cube → c_rho_o_oh.cube
     cube_qm_rho_hat = [
-        f"c_rho_{_ELEMENT_FULLNAME.get(el, el.lower())}.cube"
-        for el in mm_elements
+        "c_rho_" + f.removesuffix(".cube") + ".cube"
+        for f in mm_cube_output
     ]
     # TIP4P O gets c_rep_ naming via the special Blur_QM path (standard)
     tip4p_flag   = 1 if is_tip4p else 0

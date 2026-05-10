@@ -368,24 +368,39 @@ def generate_lammps_input(
     #  gridforce/net internally handles pot (cube 0) and ind (cube 1).
     #  The cubeID parameter in the fix command is a *relative* index into
     #  the rho_hat sub-array, NOT the absolute grid index.
-    #  So H→0, O→1, Na→2, etc.  No offset needed.
+    #
+    #  Non-water atoms whose element matches water (H or O) get their own
+    #  cube slot keyed by type_label, so their MM density is tracked
+    #  separately.  The fix still uses the element name for RepX/Polar
+    #  lookup; only the CUBEID differs.
     # ------------------------------------------------------------------ #
-    _cube_offset = 0   # cubeID = relative index within rho_hat cubes
-    cube_idx: Dict[str, int] = {}    # element_symbol → cube index
+    _cube_offset = 0
+    cube_idx: Dict[str, int] = {}    # element or type_label → cube index
+    water_elements: set = set()
     if water_H_lbl:
         cube_idx["H"] = _cube_offset + 0
+        water_elements.add("H")
     if water_O_lbl:
         cube_idx["O"] = _cube_offset + 1
+        water_elements.add("O")
     next_cube = _cube_offset + 2
     for sid, _ in species_order:
         if sid == water_sid:
             continue
         sp = species_db[sid]
         for a in sp.atoms:
-            el = a.element
-            if el not in cube_idx:
-                cube_idx[el] = next_cube
-                next_cube += 1
+            el  = a.element
+            lbl = a.type_label
+            if el in water_elements:
+                # Shared element: assign a separate cube per type_label
+                if lbl not in cube_idx:
+                    cube_idx[lbl] = next_cube
+                    next_cube += 1
+            else:
+                # Unique element: one cube per element
+                if el not in cube_idx:
+                    cube_idx[el] = next_cube
+                    next_cube += 1
 
     # ------------------------------------------------------------------ #
     #  Build file
@@ -719,7 +734,7 @@ def generate_lammps_input(
     # This correctly handles:
     #   - monoatomic ions  (K, Na, Cl …)       → one fix per species
     #   - polyatomic ions  (OH-, CO3-- …)      → one fix per type_label
-    #     e.g. OH-: H_oh → HohGrid (cube 0), O_oh → OohGrid (cube 1)
+    #     e.g. OH⁻: O_OH → OohGrid (own cube), H_OH → HohGrid (own cube)
     L()
     L("# Non-water species gridforce/net fixes (one per type_label)")
     seen_lbl_fix: set = set()
@@ -733,7 +748,8 @@ def generate_lammps_input(
                 continue
             seen_lbl_fix.add(lbl)
             el    = a.element
-            c_idx = cube_idx.get(el, next_cube)
+            # type_label key takes priority (non-water H/O get own cube slot)
+            c_idx = cube_idx.get(lbl, cube_idx.get(el, next_cube))
             grp   = lbl.upper().replace("-", "_").replace(".", "_")[:12]
             # fix name: strip non-alphanum chars, append "Grid"
             fix_tag  = re.sub(r"[^A-Za-z0-9]", "", lbl)[:8]
