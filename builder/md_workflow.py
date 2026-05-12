@@ -614,7 +614,7 @@ def generate_md_bundle(
     # ── Atmospheric-pressure compression on solvent (heat & equil) ───────
     # Pushes solvent down onto the slab so it doesn't float up into the
     # vacuum gap during pre-relax. 0 disables the addforce.
-    relax_press_atm    = float(md_cfg.get("relax_press_atm",   100.0))
+    relax_press_atm    = float(md_cfg.get("relax_press_atm",   1.0))
 
     # ── Cap upper wall safely below QE dipole-correction (emaxpos) zone ──
     # The QM cube's potential becomes discontinuous starting at QE z = emaxpos·c,

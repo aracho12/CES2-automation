@@ -814,6 +814,7 @@ def generate_lammps_input(
     L()
 
     L("#MINIMIZE_STEP")
+    L("#VELOCITY_STEP")
 
     if water_O_tid is not None and water_H_tid is not None:
         b_str = f"b {water_bond_type}"  if water_bond_type  is not None else "b 1"
