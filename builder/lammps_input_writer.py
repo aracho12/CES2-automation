@@ -814,6 +814,7 @@ def generate_lammps_input(
     L()
 
     L("#MINIMIZE_STEP")
+    L("#SHAKE_CORRECT_STEP")
     L("#VELOCITY_STEP")
 
     if water_O_tid is not None and water_H_tid is not None:
