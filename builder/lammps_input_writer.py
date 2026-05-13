@@ -24,11 +24,15 @@ for DFT-CES2.
 
 Gridforce/net cube-index convention
 ------------------------------------
-  The qmmm wrapper builds one LAMMPS cube file per MM "group":
-    idx 0 → hydrogen (water H / H-containing species)
-    idx 1 → oxygen   (water O / O-containing species)
-    idx 2, 3, … → remaining unique elements (K, Na, Cl, Br, F, I, …)
-  in the order they first appear in species_order (water excluded).
+  The qmmm wrapper builds cube_QM_rho_hat in a fixed order:
+    idx 0 → water H
+    idx 1 → water O
+    idx 2+ → non-water species atoms in LAMMPS type-id order.
+
+  Non-water atoms that share an element with water (for example H_oh/O_oh)
+  get separate type_label-keyed cube slots.  The gridforce/net CUBE_IDX is
+  relative to cube_QM_rho_hat, not to the absolute `grid` file list, whose
+  first two entries are solute.pot.cube and solute.ind.cube.
 """
 
 from __future__ import annotations
@@ -279,6 +283,10 @@ def generate_lammps_input(
             water_angle_type = at
             water_HOH_ang = float(wsp.angle_coeffs[at][1])
 
+    def _atoms_in_cube_order(sp: Species) -> List[Any]:
+        """Match ces2_script_writer cube_output_MM/cube_QM_rho_hat ordering."""
+        return sorted(sp.atoms, key=lambda a: type_id_by_label.get(a.type_label, 9999))
+
     # ------------------------------------------------------------------ #
     #  bjdisp DB
     # ------------------------------------------------------------------ #
@@ -388,7 +396,7 @@ def generate_lammps_input(
         if sid == water_sid:
             continue
         sp = species_db[sid]
-        for a in sp.atoms:
+        for a in _atoms_in_cube_order(sp):
             el  = a.element
             lbl = a.type_label
             if el in water_elements:
@@ -734,7 +742,7 @@ def generate_lammps_input(
     # This correctly handles:
     #   - monoatomic ions  (K, Na, Cl …)       → one fix per species
     #   - polyatomic ions  (OH-, CO3-- …)      → one fix per type_label
-    #     e.g. OH⁻: O_OH → OohGrid (own cube), H_OH → HohGrid (own cube)
+    #     e.g. OH⁻: H_OH → HohGrid (own cube), O_OH → OohGrid (own cube)
     L()
     L("# Non-water species gridforce/net fixes (one per type_label)")
     seen_lbl_fix: set = set()
@@ -742,7 +750,7 @@ def generate_lammps_input(
         if sid == water_sid:
             continue
         sp = species_db[sid]
-        for a in sp.atoms:
+        for a in _atoms_in_cube_order(sp):
             lbl = a.type_label
             if lbl in seen_lbl_fix:
                 continue

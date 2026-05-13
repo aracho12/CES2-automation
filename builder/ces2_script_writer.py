@@ -112,8 +112,9 @@ def _build_mm_arrays(
     Cube index ordering (matches lammps_input_writer gridforce convention):
       idx 0 : H  (water Hw)
       idx 1 : O  (water Ow)
-      idx 2+: unique elements from non-water species (e.g. Li, Na …)
-              then per-type_label entries for non-water H/O (e.g. O_OH, H_OH)
+      idx 2+: each non-water species' atoms in LAMMPS type-id order.
+              Unique elements (e.g. Li, Na) are de-duped by element.
+              Non-water H/O entries (e.g. H_OH, O_OH) are de-duped by type_label.
     """
     mm_elements:    List[str] = []
     mm_charges_str: List[str] = []

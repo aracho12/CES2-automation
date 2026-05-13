@@ -499,7 +499,7 @@ Water species is auto-derived from `ces2.water_model` when `electrolyte_recipe.w
 
 ### Gridforce/net convention
 
-The `gridforce/net` LAMMPS fix reads LAMMPS cube files written by `pp.x`. Cube index assignment: index 0 → H (water proton group), index 1 → O (water oxygen group), index 2, 3, … → other elements in appearance order. The `#CUBEPOSITION` marker in `base.in.lammps` is replaced at runtime by the wrapper script.
+The `gridforce/net` LAMMPS fix reads LAMMPS cube files written by `pp.x`. Cube index assignment is relative to the generated `cube_QM_rho_hat` list: index 0 → H (water proton group), index 1 → O (water oxygen group), index 2, 3, … → non-water species atoms in LAMMPS type-id order. Non-water H/O labels such as `H_oh` and `O_oh` get separate type-label cube slots so they do not alias water H/O. The `#CUBEPOSITION` marker in `base.in.lammps` is replaced at runtime by the wrapper script.
 
 ### QE runtime markers
 
