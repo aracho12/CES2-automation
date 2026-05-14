@@ -17,6 +17,7 @@ Usage
 
   # Custom pairs (LAMMPS type IDs)
   python tools/rdf.py test/ces2.emd.lammpstrj --pairs "2-2 1-2 3-2 6-2"
+  python tools/rdf.py test/ces2.emd.wrapped.traj --pairs "O_oh-K"
 
   # Subset of frames & custom output
   python tools/rdf.py test/ces2.emd.lammpstrj --stride 5 --start 100 --end 500 -o output/rdf.png
@@ -48,7 +49,7 @@ from lammpstrj_to_traj import (
 TYPE_LABELS = {
     1: "Hw",
     2: "Ow",
-    3: "Li",
+    3: "K",
     4: "H_oh",
     5: "O_oh",
     6: "Ir",
@@ -118,16 +119,34 @@ def build_pairs(
     ]
 
 
-def parse_pair_types(pair_str: str) -> List[Tuple[int, int]]:
+def parse_pair_types(
+    pair_str: str,
+    type_labels: Optional[Dict[int, str]] = None,
+) -> List[Tuple[int, int]]:
     """
-    Parse a pair string like '2-2 1-2 3-2' into [(2,2), (1,2), (3,2)].
+    Parse pair specs like '2-2 O_oh-K' into [(2,2), (5,3)].
     """
+    label_to_type = {}
+    if type_labels:
+        label_to_type = {label: tid for tid, label in type_labels.items()}
+
+    def _resolve(part: str) -> int:
+        if part.isdigit():
+            return int(part)
+        if part in label_to_type:
+            return int(label_to_type[part])
+        known = ", ".join(sorted(label_to_type)) if label_to_type else "none"
+        raise ValueError(
+            f"Bad pair spec '{part}': expected a LAMMPS type ID or known "
+            f"type_label. Known labels: {known}"
+        )
+
     result = []
     for token in pair_str.split():
         parts = token.split("-")
         if len(parts) != 2:
-            raise ValueError(f"Bad pair spec '{token}': expected 'T1-T2'")
-        t1, t2 = int(parts[0]), int(parts[1])
+            raise ValueError(f"Bad pair spec '{token}': expected 'T1-T2' or 'LABEL1-LABEL2'")
+        t1, t2 = _resolve(parts[0]), _resolve(parts[1])
         result.append((t1, t2))
     return result
 
@@ -161,6 +180,38 @@ def find_lammps_input(traj_path: Path, explicit: Optional[Path] = None) -> Optio
         if c and c.exists():
             return c
     return None
+
+
+def infer_type_labels_from_traj(traj_path: Path) -> Dict[int, str]:
+    """Infer simple type labels from the first ASE .traj frame's symbols."""
+    if traj_path.suffix.lower() != ".traj":
+        return {}
+    try:
+        from ase.io.trajectory import Trajectory as ASETraj
+    except ImportError:
+        return {}
+
+    traj = ASETraj(str(traj_path), mode="r")
+    try:
+        if len(traj) == 0:
+            return {}
+        atoms = traj[0]
+        if "lammps_type" not in atoms.info:
+            return {}
+        inferred: Dict[int, str] = {}
+        symbols = atoms.get_chemical_symbols()
+        types = atoms.info["lammps_type"]
+        for tid, sym in zip(types, symbols):
+            tid = int(tid)
+            if tid not in inferred:
+                inferred[tid] = sym
+        # Preserve known CES2 water/OH/slab labels; use symbols for variable ions.
+        for tid in (1, 2, 4, 5, 6, 7):
+            if tid in TYPE_LABELS:
+                inferred[tid] = TYPE_LABELS[tid]
+        return inferred
+    finally:
+        traj.close()
 
 
 def iter_rdf_frames(traj_path: Path, type_map: Dict[int, str]):
@@ -233,11 +284,19 @@ def compute_rdf(
       g_r       : np.ndarray, shape (bins,)   — g(r) averaged over frames
     """
     try:
-        import freud
+        from freud.density import RDF
+        from freud.box import Box
     except ImportError:
         print(
-            "ERROR: rdf.py requires the 'freud' Python package. "
-            "Install it in this environment before running RDF calculations.",
+            "ERROR: rdf.py requires freud-analysis, imported as 'freud'.\n"
+            "The PyPI package named 'freud' is a different package and does "
+            "not provide freud.density.\n"
+            "Recommended pip fix:\n"
+            "  pip uninstall freud\n"
+            "  pip install freud-analysis\n"
+            "  pip install 'prompt-toolkit>=3.0.30,<3.1.0'\n"
+            "Conda alternative:\n"
+            "  conda install -c conda-forge freud",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -245,7 +304,7 @@ def compute_rdf(
     # Initialise one freud RDF object per pair
     rdf_objs = {}
     for t1, t2, label in pairs:
-        rdf_objs[label] = freud.density.RDF(bins=bins, r_max=r_max)
+        rdf_objs[label] = RDF(bins=bins, r_max=r_max)
 
     frame_count = 0
     used_frames = 0
@@ -268,7 +327,7 @@ def compute_rdf(
         # freud requires positions centred in [-L/2, L/2]
         pos_c = pos - box_arr / 2.0
 
-        fbox = freud.box.Box(Lx=box_arr[0], Ly=box_arr[1], Lz=box_arr[2])
+        fbox = Box(Lx=box_arr[0], Ly=box_arr[1], Lz=box_arr[2])
 
         for t1, t2, label in pairs:
             pts1 = pos_c[types == t1].astype(np.float32)
@@ -372,6 +431,9 @@ def resolve_type_context(
     input_path = find_lammps_input(traj_path, lammps_input)
     type_map = DEFAULT_TYPE_MAP
     type_labels = dict(TYPE_LABELS)
+    inferred_labels = infer_type_labels_from_traj(traj_path)
+    if inferred_labels:
+        type_labels.update(inferred_labels)
     if input_path:
         type_map = auto_detect_type_map(input_path)
         detected_labels = parse_type_label_map(input_path)
@@ -379,12 +441,13 @@ def resolve_type_context(
         print(f"Type map from {input_path}: {type_map}")
         if detected_labels:
             print(f"Type labels from {input_path}: {detected_labels}")
+    elif inferred_labels:
+        print(f"Type labels inferred from {traj_path.name}: {inferred_labels}")
     return type_map, type_labels, input_path
 
 
 def run_single_rdf(
     traj_path: Path,
-    pair_types: List[Tuple[int, int]],
     args,
     output: Optional[Path] = None,
     title_prefix: str = "RDF",
@@ -395,6 +458,10 @@ def run_single_rdf(
         return False
 
     type_map, type_labels, _ = resolve_type_context(traj_path, args.lammps_input)
+    pair_types = (
+        parse_pair_types(args.pairs, type_labels)
+        if args.pairs else DEFAULT_PAIR_TYPES
+    )
     pairs = build_pairs(pair_types, type_labels)
 
     print(f"Trajectory: {traj_path}")
@@ -428,7 +495,7 @@ def run_single_rdf(
     return True
 
 
-def run_mm_rdf(args, pair_types: List[Tuple[int, int]]) -> None:
+def run_mm_rdf(args) -> None:
     """Compute RDF for every mm_N directory under args.mm."""
     run_dir = args.mm.resolve()
     if not run_dir.is_dir():
@@ -460,7 +527,6 @@ def run_mm_rdf(args, pair_types: List[Tuple[int, int]]) -> None:
         output = mm_dir / f"{args.prefix}.png"
         ok = run_single_rdf(
             traj,
-            pair_types,
             args,
             output=output,
             title_prefix=f"RDF mm_{step}",
@@ -491,8 +557,8 @@ def main():
     )
     parser.add_argument(
         "--pairs", type=str, default=None,
-        help="Pairs to compute, e.g. '2-2 1-2 3-2 6-2'. "
-             "Uses LAMMPS type IDs. Default: all CES2 pairs.",
+        help="Pairs to compute, e.g. '2-2 1-2' or 'O_oh-K'. "
+             "Uses LAMMPS type IDs or type_labels. Default: all CES2 pairs.",
     )
     parser.add_argument("--r-max",  type=float, default=10.0, help="Max r in Å (default: 10)")
     parser.add_argument("--bins",   type=int,   default=200,  help="Number of bins (default: 200)")
@@ -514,13 +580,10 @@ def main():
         print("ERROR: provide a trajectory file or --mm RUN_DIR.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Pairs ---
-    pair_types = parse_pair_types(args.pairs) if args.pairs else DEFAULT_PAIR_TYPES
-
     if args.mm is not None:
-        run_mm_rdf(args, pair_types)
+        run_mm_rdf(args)
     else:
-        ok = run_single_rdf(args.traj, pair_types, args, output=args.output)
+        ok = run_single_rdf(args.traj, args, output=args.output)
         if not ok:
             sys.exit(1)
 

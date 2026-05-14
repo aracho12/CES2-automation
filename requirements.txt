@@ -3,3 +3,4 @@ numpy
 pyyaml
 scipy
 matplotlib
+freud-analysis
