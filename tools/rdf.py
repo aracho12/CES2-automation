@@ -22,19 +22,19 @@ Usage
 
   # Adjust r_max and bin count
   python tools/rdf.py test/ces2.emd.lammpstrj --r-max 12 --bins 300
+
+  # Process every mm_N directory under a QM/MM run directory
+  python tools/rdf.py --mm . --pairs "5-2 3-2"
 """
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import freud
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 # ── local import ──────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -47,28 +47,79 @@ from lammpstrj_to_traj import (
 TYPE_LABELS = {
     1: "Hw",
     2: "Ow",
-    3: "K",
+    3: "Li",
     4: "H_oh",
     5: "O_oh",
     6: "Ir",
     7: "O_surf",
 }
 
-# Default pairs to compute (type1, type2, label)
-DEFAULT_PAIRS: List[Tuple[int, int, str]] = [
-    (2, 2, "Ow-Ow"),
-    (1, 2, "Hw-Ow"),
-    (3, 2, "K-Ow"),
-    (6, 2, "Ir-Ow"),
-    (6, 7, "Ir-O_surf"),
-    (5, 2, "O_oh-Ow"),
+# Default pair type IDs to compute
+DEFAULT_PAIR_TYPES: List[Tuple[int, int]] = [
+    (2, 2),
+    (1, 2),
+    (3, 2),
+    (6, 2),
+    (6, 7),
+    (5, 2),
 ]
 
 
-def parse_pairs(pair_str: str) -> List[Tuple[int, int, str]]:
+def parse_type_label_map(lammps_input: Path) -> Dict[int, str]:
+    """Extract LAMMPS type→CES2 type_label mapping from group comments."""
+    if not lammps_input.exists():
+        return {}
+
+    group_pattern = re.compile(
+        r"^\s*group\s+\S+\s+type\s+([\d\s]+)(?:#\s*(.+))?$",
+        re.IGNORECASE,
+    )
+    label_map: Dict[int, str] = {}
+
+    with open(lammps_input) as f:
+        for line in f:
+            m = group_pattern.match(line)
+            if not m:
+                continue
+            type_ids = [int(x) for x in m.group(1).split()]
+            comment = m.group(2) or ""
+            text = comment.split(":", 1)[1] if ":" in comment else comment
+            text = re.sub(r"\([^)]*\)", " ", text)
+            labels = [tok for tok in re.split(r"[\s,]+", text.strip()) if tok]
+            labels = [
+                tok for tok in labels
+                if tok.lower() not in {"all", "water", "qm", "slab", "atoms"}
+            ]
+            if len(labels) >= len(type_ids):
+                for tid, label in zip(type_ids, labels):
+                    label_map[tid] = label
+            elif len(type_ids) == 1 and labels:
+                label_map[type_ids[0]] = labels[0]
+
+    return label_map
+
+
+def label_for_type(type_id: int, type_labels: Optional[Dict[int, str]] = None) -> str:
+    """Return the best display label for a LAMMPS type ID."""
+    if type_labels and type_id in type_labels:
+        return type_labels[type_id]
+    return TYPE_LABELS.get(type_id, str(type_id))
+
+
+def build_pairs(
+    pair_types: List[Tuple[int, int]],
+    type_labels: Optional[Dict[int, str]] = None,
+) -> List[Tuple[int, int, str]]:
+    """Attach display labels to pair type IDs."""
+    return [
+        (t1, t2, f"{label_for_type(t1, type_labels)}-{label_for_type(t2, type_labels)}")
+        for t1, t2 in pair_types
+    ]
+
+
+def parse_pair_types(pair_str: str) -> List[Tuple[int, int]]:
     """
-    Parse a pair string like '2-2 1-2 3-2' into
-    [(2,2,'Ow-Ow'), (1,2,'Hw-Ow'), (3,2,'K-Ow')].
+    Parse a pair string like '2-2 1-2 3-2' into [(2,2), (1,2), (3,2)].
     """
     result = []
     for token in pair_str.split():
@@ -76,9 +127,39 @@ def parse_pairs(pair_str: str) -> List[Tuple[int, int, str]]:
         if len(parts) != 2:
             raise ValueError(f"Bad pair spec '{token}': expected 'T1-T2'")
         t1, t2 = int(parts[0]), int(parts[1])
-        label = f"{TYPE_LABELS.get(t1, str(t1))}-{TYPE_LABELS.get(t2, str(t2))}"
-        result.append((t1, t2, label))
+        result.append((t1, t2))
     return result
+
+
+def find_mm_dirs(run_dir: Path) -> List[Tuple[int, Path]]:
+    """Find mm_N directories sorted by N."""
+    mm_dirs = []
+    for d in run_dir.iterdir():
+        if d.is_dir() and re.match(r"^mm_(\d+)$", d.name):
+            mm_dirs.append((int(d.name.split("_")[1]), d))
+    return sorted(mm_dirs, key=lambda x: x[0])
+
+
+def find_lammpstrj_in_mm_dir(mm_dir: Path) -> Optional[Path]:
+    """Find the trajectory to use for RDF inside one mm_N directory."""
+    for pattern in ("*.emd.lammpstrj", "*.lammpstrj"):
+        matches = sorted(mm_dir.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def find_lammps_input(traj_path: Path, explicit: Optional[Path] = None) -> Optional[Path]:
+    """Find the LAMMPS input near a trajectory path."""
+    candidates = [
+        explicit,
+        traj_path.parent / "in.lammps",
+        traj_path.parent.parent / "in.lammps",
+    ]
+    for c in candidates:
+        if c and c.exists():
+            return c
+    return None
 
 
 def compute_rdf(
@@ -101,6 +182,16 @@ def compute_rdf(
       r_centers : np.ndarray, shape (bins,)   — bin centres in Å
       g_r       : np.ndarray, shape (bins,)   — g(r) averaged over frames
     """
+    try:
+        import freud
+    except ImportError:
+        print(
+            "ERROR: rdf.py requires the 'freud' Python package. "
+            "Install it in this environment before running RDF calculations.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Initialise one freud RDF object per pair
     rdf_objs = {}
     for t1, t2, label in pairs:
@@ -153,8 +244,11 @@ def compute_rdf(
 
     elapsed = time.perf_counter() - t_start
     if verbose:
-        print(f"  Done: {used_frames} frames in {elapsed:.1f} s "
-              f"({elapsed/used_frames*1000:.1f} ms/frame)")
+        if used_frames:
+            print(f"  Done: {used_frames} frames in {elapsed:.1f} s "
+                  f"({elapsed/used_frames*1000:.1f} ms/frame)")
+        else:
+            print(f"  Done: 0 frames in {elapsed:.1f} s")
 
     # Extract results
     results = {}
@@ -171,6 +265,10 @@ def plot_rdf(
     title: str = "Radial Distribution Functions",
 ):
     """Plot all RDFs on a single figure and save to output."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     n = len(results)
     cols = min(3, n)
     rows = (n + cols - 1) // cols
@@ -217,11 +315,122 @@ def save_data(
     print(f"Saved data  → {output}")
 
 
+def resolve_type_context(
+    lammpstrj: Path,
+    lammps_input: Optional[Path] = None,
+) -> Tuple[Dict[int, str], Dict[int, str], Optional[Path]]:
+    """Resolve type→element and type→label maps for one trajectory."""
+    input_path = find_lammps_input(lammpstrj, lammps_input)
+    type_map = DEFAULT_TYPE_MAP
+    type_labels = dict(TYPE_LABELS)
+    if input_path:
+        type_map = auto_detect_type_map(input_path)
+        detected_labels = parse_type_label_map(input_path)
+        type_labels.update(detected_labels)
+        print(f"Type map from {input_path}: {type_map}")
+        if detected_labels:
+            print(f"Type labels from {input_path}: {detected_labels}")
+    return type_map, type_labels, input_path
+
+
+def run_single_rdf(
+    lammpstrj: Path,
+    pair_types: List[Tuple[int, int]],
+    args,
+    output: Optional[Path] = None,
+    title_prefix: str = "RDF",
+) -> bool:
+    """Compute and write RDF outputs for one trajectory."""
+    if not lammpstrj.exists():
+        print(f"ERROR: {lammpstrj} not found", file=sys.stderr)
+        return False
+
+    type_map, type_labels, _ = resolve_type_context(lammpstrj, args.lammps_input)
+    pairs = build_pairs(pair_types, type_labels)
+
+    print(f"Trajectory: {lammpstrj}")
+    print(f"Pairs: {[p[2] for p in pairs]}")
+    print(f"r_max={args.r_max} Å, bins={args.bins}, stride={args.stride}")
+    if args.start or args.end:
+        print(f"Frame range: [{args.start}, {args.end})")
+    print()
+
+    stem = lammpstrj.stem
+    plot_out = output or lammpstrj.parent / f"{stem}_rdf.png"
+    csv_out = plot_out.with_suffix(".csv")
+
+    results = compute_rdf(
+        lammpstrj,
+        pairs,
+        type_map,
+        r_max=args.r_max,
+        bins=args.bins,
+        stride=args.stride,
+        start=args.start,
+        end=args.end,
+    )
+
+    n_frames_label = (
+        f"frames {args.start}–{args.end or 'end'}, stride {args.stride}"
+    )
+    plot_rdf(results, plot_out, title=f"{title_prefix} — {stem} ({n_frames_label})")
+    if not args.no_csv:
+        save_data(results, csv_out)
+    return True
+
+
+def run_mm_rdf(args, pair_types: List[Tuple[int, int]]) -> None:
+    """Compute RDF for every mm_N directory under args.mm."""
+    run_dir = args.mm.resolve()
+    if not run_dir.is_dir():
+        print(f"ERROR: not a directory: {run_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    mm_dirs = find_mm_dirs(run_dir)
+    if not mm_dirs:
+        print(f"ERROR: no mm_N directories found in {run_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"RDF mm_N sweep")
+    print(f"Run directory: {run_dir}")
+    print(f"mm_N found: {len(mm_dirs)}")
+    print()
+
+    processed = 0
+    skipped = 0
+    for step, mm_dir in mm_dirs:
+        traj = find_lammpstrj_in_mm_dir(mm_dir)
+        if traj is None:
+            print(f"mm_{step}: no .lammpstrj found, skipping")
+            skipped += 1
+            continue
+
+        print(f"\n{'=' * 60}")
+        print(f"mm_{step}: {traj.name}")
+        print(f"{'=' * 60}")
+        output = mm_dir / f"{args.prefix}.png"
+        ok = run_single_rdf(
+            traj,
+            pair_types,
+            args,
+            output=output,
+            title_prefix=f"RDF mm_{step}",
+        )
+        processed += int(ok)
+        skipped += int(not ok)
+
+    print(f"\nDone. Processed {processed} mm_N directories, skipped {skipped}.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compute RDF from a LAMMPS .lammpstrj file using freud."
     )
-    parser.add_argument("lammpstrj", type=Path, help="LAMMPS dump file")
+    parser.add_argument("lammpstrj", type=Path, nargs="?", help="LAMMPS dump file")
+    parser.add_argument(
+        "--mm", type=Path, default=None, metavar="RUN_DIR",
+        help="Process every mm_N directory under RUN_DIR, e.g. --mm .",
+    )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
         help="Output plot path (default: <lammpstrj_stem>_rdf.png)",
@@ -241,57 +450,29 @@ def main():
     parser.add_argument("--start",  type=int,   default=0,    help="First frame index (0-based)")
     parser.add_argument("--end",    type=int,   default=None, help="Last frame index (exclusive)")
     parser.add_argument("--no-csv", action="store_true",      help="Skip saving CSV data file")
+    parser.add_argument("--prefix", type=str, default="rdf",
+                        help="Output prefix for --mm mode (default: rdf)")
     args = parser.parse_args()
 
-    if not args.lammpstrj.exists():
-        print(f"ERROR: {args.lammpstrj} not found", file=sys.stderr)
+    if args.mm is not None and args.lammpstrj is not None:
+        print("ERROR: provide either a trajectory file or --mm, not both.", file=sys.stderr)
+        sys.exit(1)
+    if args.mm is not None and args.output is not None:
+        print("ERROR: --output is only supported for single trajectory mode.", file=sys.stderr)
+        sys.exit(1)
+    if args.mm is None and args.lammpstrj is None:
+        print("ERROR: provide a trajectory file or --mm RUN_DIR.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Type map ---
-    candidates = [
-        args.lammps_input,
-        args.lammpstrj.parent / "in.lammps",
-        args.lammpstrj.parent.parent / "in.lammps",
-    ]
-    type_map = DEFAULT_TYPE_MAP
-    for c in candidates:
-        if c and c.exists():
-            type_map = auto_detect_type_map(c)
-            print(f"Type map from {c}: {type_map}")
-            break
-
     # --- Pairs ---
-    pairs = parse_pairs(args.pairs) if args.pairs else DEFAULT_PAIRS
-    print(f"Pairs: {[p[2] for p in pairs]}")
-    print(f"r_max={args.r_max} Å, bins={args.bins}, stride={args.stride}")
-    if args.start or args.end:
-        print(f"Frame range: [{args.start}, {args.end})")
-    print()
+    pair_types = parse_pair_types(args.pairs) if args.pairs else DEFAULT_PAIR_TYPES
 
-    # --- Output paths ---
-    stem = args.lammpstrj.stem
-    base = args.output or args.lammpstrj.parent / f"{stem}_rdf.png"
-    csv_out = base.with_suffix(".csv")
-
-    # --- Compute ---
-    results = compute_rdf(
-        args.lammpstrj,
-        pairs,
-        type_map,
-        r_max=args.r_max,
-        bins=args.bins,
-        stride=args.stride,
-        start=args.start,
-        end=args.end,
-    )
-
-    # --- Output ---
-    n_frames_label = (
-        f"frames {args.start}–{args.end or 'end'}, stride {args.stride}"
-    )
-    plot_rdf(results, base, title=f"RDF — {stem} ({n_frames_label})")
-    if not args.no_csv:
-        save_data(results, csv_out)
+    if args.mm is not None:
+        run_mm_rdf(args, pair_types)
+    else:
+        ok = run_single_rdf(args.lammpstrj, pair_types, args, output=args.output)
+        if not ok:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
