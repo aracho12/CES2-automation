@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-rdf.py — Radial Distribution Function calculator for LAMMPS trajectories
-=========================================================================
+rdf.py — Radial Distribution Function calculator for LAMMPS/ASE trajectories
+============================================================================
 Uses freud (C++ backend) for fast neighbor-list based RDF computation.
 
 Benchmark (ces2.emd.lammpstrj, 10365 atoms):
@@ -13,6 +13,7 @@ Usage
 -----
   # All default pairs, all frames
   python tools/rdf.py test/ces2.emd.lammpstrj
+  python tools/rdf.py test/ces2.emd.wrapped.traj
 
   # Custom pairs (LAMMPS type IDs)
   python tools/rdf.py test/ces2.emd.lammpstrj --pairs "2-2 1-2 3-2 6-2"
@@ -140,9 +141,9 @@ def find_mm_dirs(run_dir: Path) -> List[Tuple[int, Path]]:
     return sorted(mm_dirs, key=lambda x: x[0])
 
 
-def find_lammpstrj_in_mm_dir(mm_dir: Path) -> Optional[Path]:
+def find_rdf_traj_in_mm_dir(mm_dir: Path) -> Optional[Path]:
     """Find the trajectory to use for RDF inside one mm_N directory."""
-    for pattern in ("*.emd.lammpstrj", "*.lammpstrj"):
+    for pattern in ("*.wrapped.traj", "*.traj", "*.emd.lammpstrj", "*.lammpstrj"):
         matches = sorted(mm_dir.glob(pattern))
         if matches:
             return matches[0]
@@ -162,8 +163,57 @@ def find_lammps_input(traj_path: Path, explicit: Optional[Path] = None) -> Optio
     return None
 
 
+def iter_rdf_frames(traj_path: Path, type_map: Dict[int, str]):
+    """Yield frame data needed by freud from .lammpstrj or ASE .traj input."""
+    suffix = traj_path.suffix.lower()
+    if suffix == ".lammpstrj":
+        for frame in iter_frames(traj_path):
+            atoms = frame_to_atoms(frame, type_map)
+            yield {
+                "timestep": frame.get("timestep"),
+                "box": atoms.cell.diagonal(),
+                "positions": atoms.positions.copy(),
+                "types": np.array(atoms.info["lammps_type"]),
+            }
+    elif suffix == ".traj":
+        try:
+            from ase.io.trajectory import Trajectory as ASETraj
+        except ImportError:
+            print(
+                "ERROR: .traj input requires ASE. Install ase in this environment.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        traj = ASETraj(str(traj_path), mode="r")
+        try:
+            for atoms in traj:
+                if "lammps_type" not in atoms.info:
+                    print(
+                        "ERROR: .traj input is missing atoms.info['lammps_type']. "
+                        "Convert from .lammpstrj with tools/lammpstrj_to_traj.py.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                yield {
+                    "timestep": atoms.info.get("timestep"),
+                    "box": atoms.cell.diagonal(),
+                    "positions": atoms.positions.copy(),
+                    "types": np.array(atoms.info["lammps_type"]),
+                }
+        finally:
+            traj.close()
+    else:
+        print(
+            f"ERROR: unsupported trajectory format '{traj_path.suffix}'. "
+            "Use .lammpstrj or .traj.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def compute_rdf(
-    lammpstrj: Path,
+    traj_path: Path,
     pairs: List[Tuple[int, int, str]],
     type_map: Dict[int, str],
     r_max: float = 10.0,
@@ -201,7 +251,7 @@ def compute_rdf(
     used_frames = 0
     t_start = time.perf_counter()
 
-    for frame in iter_frames(lammpstrj):
+    for frame in iter_rdf_frames(traj_path, type_map):
         if frame_count < start:
             frame_count += 1
             continue
@@ -211,10 +261,9 @@ def compute_rdf(
             frame_count += 1
             continue
 
-        atoms = frame_to_atoms(frame, type_map)
-        box_arr = atoms.cell.diagonal()          # [Lx, Ly, Lz]
-        pos     = atoms.positions.copy()
-        types   = np.array(atoms.info["lammps_type"])
+        box_arr = frame["box"]          # [Lx, Ly, Lz]
+        pos     = frame["positions"]
+        types   = frame["types"]
 
         # freud requires positions centred in [-L/2, L/2]
         pos_c = pos - box_arr / 2.0
@@ -316,11 +365,11 @@ def save_data(
 
 
 def resolve_type_context(
-    lammpstrj: Path,
+    traj_path: Path,
     lammps_input: Optional[Path] = None,
 ) -> Tuple[Dict[int, str], Dict[int, str], Optional[Path]]:
     """Resolve type→element and type→label maps for one trajectory."""
-    input_path = find_lammps_input(lammpstrj, lammps_input)
+    input_path = find_lammps_input(traj_path, lammps_input)
     type_map = DEFAULT_TYPE_MAP
     type_labels = dict(TYPE_LABELS)
     if input_path:
@@ -334,33 +383,33 @@ def resolve_type_context(
 
 
 def run_single_rdf(
-    lammpstrj: Path,
+    traj_path: Path,
     pair_types: List[Tuple[int, int]],
     args,
     output: Optional[Path] = None,
     title_prefix: str = "RDF",
 ) -> bool:
     """Compute and write RDF outputs for one trajectory."""
-    if not lammpstrj.exists():
-        print(f"ERROR: {lammpstrj} not found", file=sys.stderr)
+    if not traj_path.exists():
+        print(f"ERROR: {traj_path} not found", file=sys.stderr)
         return False
 
-    type_map, type_labels, _ = resolve_type_context(lammpstrj, args.lammps_input)
+    type_map, type_labels, _ = resolve_type_context(traj_path, args.lammps_input)
     pairs = build_pairs(pair_types, type_labels)
 
-    print(f"Trajectory: {lammpstrj}")
+    print(f"Trajectory: {traj_path}")
     print(f"Pairs: {[p[2] for p in pairs]}")
     print(f"r_max={args.r_max} Å, bins={args.bins}, stride={args.stride}")
     if args.start or args.end:
         print(f"Frame range: [{args.start}, {args.end})")
     print()
 
-    stem = lammpstrj.stem
-    plot_out = output or lammpstrj.parent / f"{stem}_rdf.png"
+    stem = traj_path.stem
+    plot_out = output or traj_path.parent / f"{stem}_rdf.png"
     csv_out = plot_out.with_suffix(".csv")
 
     results = compute_rdf(
-        lammpstrj,
+        traj_path,
         pairs,
         type_map,
         r_max=args.r_max,
@@ -399,9 +448,9 @@ def run_mm_rdf(args, pair_types: List[Tuple[int, int]]) -> None:
     processed = 0
     skipped = 0
     for step, mm_dir in mm_dirs:
-        traj = find_lammpstrj_in_mm_dir(mm_dir)
+        traj = find_rdf_traj_in_mm_dir(mm_dir)
         if traj is None:
-            print(f"mm_{step}: no .lammpstrj found, skipping")
+            print(f"mm_{step}: no .traj/.lammpstrj found, skipping")
             skipped += 1
             continue
 
@@ -424,9 +473,10 @@ def run_mm_rdf(args, pair_types: List[Tuple[int, int]]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compute RDF from a LAMMPS .lammpstrj file using freud."
+        description="Compute RDF from a LAMMPS .lammpstrj or ASE .traj file using freud."
     )
-    parser.add_argument("lammpstrj", type=Path, nargs="?", help="LAMMPS dump file")
+    parser.add_argument("traj", type=Path, nargs="?",
+                        help="Trajectory file (.lammpstrj or .traj)")
     parser.add_argument(
         "--mm", type=Path, default=None, metavar="RUN_DIR",
         help="Process every mm_N directory under RUN_DIR, e.g. --mm .",
@@ -454,13 +504,13 @@ def main():
                         help="Output prefix for --mm mode (default: rdf)")
     args = parser.parse_args()
 
-    if args.mm is not None and args.lammpstrj is not None:
+    if args.mm is not None and args.traj is not None:
         print("ERROR: provide either a trajectory file or --mm, not both.", file=sys.stderr)
         sys.exit(1)
     if args.mm is not None and args.output is not None:
         print("ERROR: --output is only supported for single trajectory mode.", file=sys.stderr)
         sys.exit(1)
-    if args.mm is None and args.lammpstrj is None:
+    if args.mm is None and args.traj is None:
         print("ERROR: provide a trajectory file or --mm RUN_DIR.", file=sys.stderr)
         sys.exit(1)
 
@@ -470,7 +520,7 @@ def main():
     if args.mm is not None:
         run_mm_rdf(args, pair_types)
     else:
-        ok = run_single_rdf(args.lammpstrj, pair_types, args, output=args.output)
+        ok = run_single_rdf(args.traj, pair_types, args, output=args.output)
         if not ok:
             sys.exit(1)
 
