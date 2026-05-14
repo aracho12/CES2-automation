@@ -27,6 +27,9 @@ Usage examples
   # Separate water O from OH- O using LAMMPS type_labels from in.lammps
   python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow
 
+  # Smooth plotted profiles with a Gaussian kernel (sigma in Å)
+  python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow --smooth-sigma 0.3
+
   # Provide LAMMPS type→element map explicitly for .lammpstrj
   python tools/z_density.py ces2.emd.lammpstrj --type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"
 
@@ -846,6 +849,31 @@ def compute_z_density(
 #  Output
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def smooth_profiles(
+    profiles: Dict[str, np.ndarray],
+    dz: float,
+    sigma_ang: float,
+) -> Dict[str, np.ndarray]:
+    """Smooth profiles with a Gaussian kernel whose sigma is given in Å."""
+    if sigma_ang <= 0:
+        return profiles
+
+    sigma_bins = sigma_ang / dz
+    if sigma_bins <= 0:
+        return profiles
+
+    radius = max(1, int(np.ceil(4.0 * sigma_bins)))
+    x = np.arange(-radius, radius + 1, dtype=np.float64)
+    kernel = np.exp(-0.5 * (x / sigma_bins) ** 2)
+    kernel /= kernel.sum()
+
+    smoothed: Dict[str, np.ndarray] = {}
+    for key, values in profiles.items():
+        padded = np.pad(values, radius, mode="edge")
+        smoothed[key] = np.convolve(padded, kernel, mode="valid")
+    return smoothed
+
+
 def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     elems = meta["target_elements"]
     key_name = "type_label" if meta.get("profile_mode") == "type_label" else "element"
@@ -854,6 +882,8 @@ def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
         f.write(f"# profile_mode={key_name}\n")
         f.write(f"# frames={meta['n_frames']}  skip={meta['skip']}"
                 f"  stride={meta['stride']}  dz={meta['dz']:.3f} Ang\n")
+        if meta.get("smooth_sigma", 0.0) > 0:
+            f.write(f"# smooth_sigma={meta['smooth_sigma']:.4f} Ang\n")
         f.write(f"# Lx={meta['Lx']:.4f} Ang  Ly={meta['Ly']:.4f} Ang\n")
         f.write(f"# rho_*: number density [Ang^-3]   mass_*: mass density [g/cm^3]\n")
         num_cols  = [f"rho_{e}" for e in elems]
@@ -874,6 +904,7 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
 
     elems = meta["target_elements"]
     key_name = "type_label" if meta.get("profile_mode") == "type_label" else "element"
+    smooth_sigma = meta.get("smooth_sigma", 0.0)
 
     fig, axes = plt.subplots(1, 2, figsize=(_FW * 2.4, _FH * 1.4))
 
@@ -909,7 +940,8 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     axes[0].text(
         0.99, 0.97,
         f"frames={meta['n_frames']}  skip={meta['skip']}  "
-        f"stride={meta['stride']}  dz={meta['dz']:.2f} Å",
+        f"stride={meta['stride']}  dz={meta['dz']:.2f} Å"
+        + (f"  smooth σ={smooth_sigma:.2f} Å" if smooth_sigma > 0 else ""),
         transform=axes[0].transAxes, ha="right", va="top",
         fontsize=_FS - 2, color="gray",
     )
@@ -1127,7 +1159,18 @@ def run_qmmm_mm_density(args) -> None:
         prefix = args.prefix
         write_csv(z_centers, num_profiles, mass_profiles, meta,
                   mm_dir / f"{prefix}_rawdata.csv")
-        plot_profiles(z_centers, num_profiles, mass_profiles, meta,
+
+        plot_num_profiles = num_profiles
+        plot_mass_profiles = mass_profiles
+        plot_meta = dict(meta)
+        if args.smooth_sigma > 0:
+            plot_num_profiles = smooth_profiles(num_profiles, args.dz, args.smooth_sigma)
+            plot_mass_profiles = smooth_profiles(mass_profiles, args.dz, args.smooth_sigma)
+            plot_meta["smooth_sigma"] = args.smooth_sigma
+            write_csv(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
+                      mm_dir / f"{prefix}_smooth_rawdata.csv")
+
+        plot_profiles(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
                       mm_dir / f"{prefix}.png")
 
         results.append({
@@ -1135,9 +1178,9 @@ def run_qmmm_mm_density(args) -> None:
             "mm_dir": mm_dir,
             "traj_path": traj_path,
             "z_centers": z_centers,
-            "num_profiles": num_profiles,
-            "mass_profiles": mass_profiles,
-            "meta": meta,
+            "num_profiles": plot_num_profiles,
+            "mass_profiles": plot_mass_profiles,
+            "meta": plot_meta,
         })
 
     if not results:
@@ -1145,16 +1188,19 @@ def run_qmmm_mm_density(args) -> None:
 
     elements = sorted({el for r in results for el in r["meta"]["target_elements"]})
     print(f"\n[Summary] Writing mm_N evolution outputs to {run_dir} ...")
+    evolution_prefix = (
+        f"{args.prefix}_smooth" if args.smooth_sigma > 0 else args.prefix
+    )
     write_qmmm_evolution_csv(
         results,
         elements,
-        run_dir / f"{args.prefix}_mm_evolution_rawdata.csv",
+        run_dir / f"{evolution_prefix}_mm_evolution_rawdata.csv",
     )
     plot_qmmm_evolution(
         results,
         elements,
         args.dz,
-        run_dir / f"{args.prefix}_mm_evolution.png",
+        run_dir / f"{evolution_prefix}_mm_evolution.png",
     )
 
     print(f"\nDone. Processed {len(results)} mm_N directories, skipped {skipped}.\n")
@@ -1176,6 +1222,7 @@ def parse_args():
             "  python tools/z_density.py run/ces2.emd.lammpstrj --skip 100 --stride 5\n"
             "  python tools/z_density.py md.traj --elements O H K\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow\n"
+            "  python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow --smooth-sigma 0.3\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
             "  python tools/z_density.py --qmmm-mm run_dir --elements O H Cs\n"
@@ -1204,6 +1251,9 @@ def parse_args():
                    help="Discard the first N frames (equilibration, default: 0)")
     p.add_argument("--stride", type=int, default=1,
                    help="After skipping, use every N-th frame (default: 1 = all)")
+    p.add_argument("--smooth-sigma", type=float, default=0.0, metavar="ANG",
+                   help=("Gaussian smoothing sigma in Å applied to plotted/output "
+                         "profiles after binning (default: 0 = no smoothing)."))
     p.add_argument("--zlo", type=float, default=None,
                    help="Lower z-limit for binning [Å] (default: auto from data)")
     p.add_argument("--zhi", type=float, default=None,
@@ -1234,6 +1284,8 @@ def main():
     args = parse_args()
     if args.elements and args.type_labels:
         sys.exit("ERROR: use either --elements or --type-labels, not both.")
+    if args.smooth_sigma < 0:
+        sys.exit("ERROR: --smooth-sigma must be >= 0.")
 
     if args.qmmm_mm is not None:
         if args.traj is not None:
@@ -1343,11 +1395,20 @@ def main():
         exclude_types=exclude_types,
     )
 
+    plot_num_profiles = num_profiles
+    plot_mass_profiles = mass_profiles
+    plot_meta = dict(meta)
+    if args.smooth_sigma > 0:
+        plot_num_profiles = smooth_profiles(num_profiles, args.dz, args.smooth_sigma)
+        plot_mass_profiles = smooth_profiles(mass_profiles, args.dz, args.smooth_sigma)
+        plot_meta["smooth_sigma"] = args.smooth_sigma
+
     # ── peak info ──
-    print(f"\n    Peak densities:")
-    for el in meta["target_elements"]:
-        rho = num_profiles[el]
-        mrho = mass_profiles[el]
+    smooth_label = " (smoothed)" if args.smooth_sigma > 0 else ""
+    print(f"\n    Peak densities{smooth_label}:")
+    for el in plot_meta["target_elements"]:
+        rho = plot_num_profiles[el]
+        mrho = plot_mass_profiles[el]
         if rho.max() > 0:
             z_peak = z_centers[np.argmax(rho)]
             print(f"    {el:4s}  ρ_max = {rho.max():.5f} Å⁻³"
@@ -1358,7 +1419,10 @@ def main():
     print(f"\n[2] Writing outputs to {out_dir} ...")
     write_csv(z_centers, num_profiles, mass_profiles, meta,
               out_dir / f"{prefix}_rawdata.csv")
-    plot_profiles(z_centers, num_profiles, mass_profiles, meta,
+    if args.smooth_sigma > 0:
+        write_csv(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
+                  out_dir / f"{prefix}_smooth_rawdata.csv")
+    plot_profiles(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
                   out_dir / f"{prefix}.png")
 
     print("\nDone.\n")
