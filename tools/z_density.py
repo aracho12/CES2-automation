@@ -39,6 +39,9 @@ Usage examples
   # Quick scan: frame count, element composition, box size (no density calc)
   python tools/z_density.py ces2.emd.lammpstrj --info
   python tools/z_density.py md.traj --info
+
+  # Process every mm_N directory in a QM/MM run and write an evolution plot
+  python tools/z_density.py --qmmm-mm /path/to/qmmm_run_dir
 """
 
 from __future__ import annotations
@@ -197,6 +200,32 @@ def detect_solute_types(lammps_input: Path) -> Set[int]:
                 type_ids = {int(x) for x in m.group(2).split()}
                 return type_ids
     return set()
+
+
+def find_mm_dirs(run_dir: Path) -> List[Tuple[int, Path]]:
+    """Find mm_N directories in a QM/MM run directory, sorted by step index."""
+    mm_dirs = []
+    for d in run_dir.iterdir():
+        if d.is_dir() and re.match(r"^mm_(\d+)$", d.name):
+            step = int(d.name.split("_")[1])
+            mm_dirs.append((step, d))
+    mm_dirs.sort(key=lambda x: x[0])
+    return mm_dirs
+
+
+def find_density_traj_in_mm_dir(mm_dir: Path) -> Optional[Path]:
+    """Find the trajectory to use for z-density inside one mm_N directory."""
+    patterns = [
+        "*.wrapped.traj",
+        "*.emd.lammpstrj",
+        "*.lammpstrj",
+        "*.traj",
+    ]
+    for pattern in patterns:
+        matches = sorted(mm_dir.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -764,6 +793,221 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     print(f"  Saved: {out_path}")
 
 
+def write_qmmm_evolution_csv(
+    results: List[dict],
+    elements: List[str],
+    out_path: Path,
+):
+    """Write long-format per-mm density profiles for downstream analysis."""
+    with open(out_path, "w") as f:
+        f.write("# z_density.py QM/MM mm_N evolution output\n")
+        f.write("# rho: number density [Ang^-3], mass: mass density [g/cm^3]\n")
+        f.write("mm_step,mm_dir,z_ang,element,rho,mass\n")
+        for result in results:
+            step = result["step"]
+            mm_name = result["mm_dir"].name
+            z_centers = result["z_centers"]
+            num_profiles = result["num_profiles"]
+            mass_profiles = result["mass_profiles"]
+            for el in elements:
+                if el not in num_profiles:
+                    continue
+                rho = num_profiles[el]
+                mass = mass_profiles[el]
+                for z, rv, mv in zip(z_centers, rho, mass):
+                    f.write(f"{step},{mm_name},{z:.4f},{el},{rv:.8f},{mv:.8f}\n")
+    print(f"  Saved: {out_path}")
+
+
+def plot_qmmm_evolution(
+    results: List[dict],
+    elements: List[str],
+    dz: float,
+    out_path: Path,
+):
+    """Plot element-resolved rho(z) evolution across mm_N steps."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if not results:
+        return
+
+    steps = [r["step"] for r in results]
+    z_min = min(float(r["z_centers"][0] - 0.5 * dz) for r in results)
+    z_max = max(float(r["z_centers"][-1] + 0.5 * dz) for r in results)
+    z_common = np.arange(z_min + 0.5 * dz, z_max, dz)
+
+    n_elems = len(elements)
+    ncols = 2 if n_elems > 1 else 1
+    nrows = (n_elems + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(_FW * 1.7 * ncols, _FH * 1.25 * nrows),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+
+    for idx, el in enumerate(elements):
+        ax = axes[idx // ncols][idx % ncols]
+        matrix = np.full((len(z_common), len(results)), np.nan, dtype=float)
+        for col, result in enumerate(results):
+            profile = result["num_profiles"].get(el)
+            if profile is None:
+                continue
+            z_src = result["z_centers"]
+            matrix[:, col] = np.interp(
+                z_common,
+                z_src,
+                profile,
+                left=np.nan,
+                right=np.nan,
+            )
+
+        vmax = np.nanmax(matrix) if np.isfinite(matrix).any() else 0.0
+        im = ax.imshow(
+            matrix,
+            origin="lower",
+            aspect="auto",
+            interpolation="nearest",
+            extent=(-0.5, len(steps) - 0.5, z_common[0], z_common[-1]),
+            cmap="viridis",
+            vmin=0.0,
+            vmax=vmax if vmax > 0 else None,
+        )
+        ax.set_title(f"{el} number density", fontsize=_FS)
+        ax.set_ylabel("z (Å)", fontsize=_LS)
+        ax.set_xticks(range(len(steps)))
+        tick_step = max(1, len(steps) // 8)
+        labels = [str(s) if i % tick_step == 0 else "" for i, s in enumerate(steps)]
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=_FS - 1)
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+        cbar.ax.tick_params(labelsize=_FS - 2)
+        cbar.set_label("Å$^{-3}$", fontsize=_FS - 1)
+
+    for idx in range(n_elems, nrows * ncols):
+        axes[idx // ncols][idx % ncols].axis("off")
+
+    for ax in axes[-1]:
+        if ax.has_data():
+            ax.set_xlabel("mm step", fontsize=_LS)
+
+    fig.tight_layout()
+    fig.savefig(str(out_path), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
+
+
+def resolve_type_map_for_path(args, traj_path: Path) -> Tuple[Optional[Dict[int, str]], Optional[Path]]:
+    """Resolve the LAMMPS type map for one trajectory, when needed."""
+    type_map = None
+    lmp_in_path = args.lammps_input or _find_lammps_input(traj_path)
+    if traj_path.suffix.lower() == ".lammpstrj":
+        if args.type_map:
+            type_map = parse_type_map_str(args.type_map)
+        elif lmp_in_path:
+            type_map = auto_detect_type_map(lmp_in_path)
+    return type_map, lmp_in_path
+
+
+def resolve_exclude_types(args, lmp_in_path: Optional[Path]) -> Optional[Set[int]]:
+    """Resolve LAMMPS types excluded from density calculations."""
+    if args.exclude_types:
+        return set(args.exclude_types)
+    if args.all_atoms:
+        return None
+    if lmp_in_path:
+        solute_types = detect_solute_types(lmp_in_path)
+        if solute_types:
+            return solute_types
+    return None
+
+
+def run_qmmm_mm_density(args) -> None:
+    """Compute per-mm_N z-density plots and a root-level evolution plot."""
+    run_dir = args.qmmm_mm.resolve()
+    if not run_dir.is_dir():
+        sys.exit(f"ERROR: not a directory: {run_dir}")
+
+    mm_dirs = find_mm_dirs(run_dir)
+    if not mm_dirs:
+        sys.exit(f"ERROR: no mm_N directories found in {run_dir}")
+
+    print(f"\n{'=' * 60}")
+    print(f"  z_density.py — QM/MM mm_N z-density sweep")
+    print(f"{'=' * 60}")
+    print(f"  Run directory : {run_dir}")
+    print(f"  mm_N found    : {len(mm_dirs)}")
+    print(f"  skip={args.skip}  stride={args.stride}  dz={args.dz} Å")
+
+    results: List[dict] = []
+    skipped = 0
+
+    for step, mm_dir in mm_dirs:
+        traj_path = find_density_traj_in_mm_dir(mm_dir)
+        if traj_path is None:
+            print(f"\nmm_{step}: no trajectory found, skipping")
+            skipped += 1
+            continue
+
+        print(f"\nmm_{step}: {traj_path.name}")
+        type_map, lmp_in_path = resolve_type_map_for_path(args, traj_path)
+        exclude_types = resolve_exclude_types(args, lmp_in_path)
+        if type_map:
+            print(f"  Type map: {type_map}")
+        if exclude_types:
+            print(f"  Excluding LAMMPS types: {sorted(exclude_types)}")
+
+        z_centers, num_profiles, mass_profiles, meta = compute_z_density(
+            traj_path,
+            type_map=type_map,
+            target_elements=args.elements,
+            dz=args.dz,
+            skip=args.skip,
+            stride=args.stride,
+            zlo=args.zlo,
+            zhi=args.zhi,
+            exclude_types=exclude_types,
+        )
+
+        prefix = args.prefix
+        write_csv(z_centers, num_profiles, mass_profiles, meta,
+                  mm_dir / f"{prefix}_rawdata.csv")
+        plot_profiles(z_centers, num_profiles, mass_profiles, meta,
+                      mm_dir / f"{prefix}.png")
+
+        results.append({
+            "step": step,
+            "mm_dir": mm_dir,
+            "traj_path": traj_path,
+            "z_centers": z_centers,
+            "num_profiles": num_profiles,
+            "mass_profiles": mass_profiles,
+            "meta": meta,
+        })
+
+    if not results:
+        sys.exit("ERROR: no mm_N trajectories were processed.")
+
+    elements = sorted({el for r in results for el in r["meta"]["target_elements"]})
+    print(f"\n[Summary] Writing mm_N evolution outputs to {run_dir} ...")
+    write_qmmm_evolution_csv(
+        results,
+        elements,
+        run_dir / f"{args.prefix}_mm_evolution_rawdata.csv",
+    )
+    plot_qmmm_evolution(
+        results,
+        elements,
+        args.dz,
+        run_dir / f"{args.prefix}_mm_evolution.png",
+    )
+
+    print(f"\nDone. Processed {len(results)} mm_N directories, skipped {skipped}.\n")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -781,12 +1025,17 @@ def parse_args():
             "  python tools/z_density.py md.traj --elements O H K\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
+            "  python tools/z_density.py --qmmm-mm run_dir --elements O H Cs\n"
             "  python tools/z_density.py run/ces2.emd.lammpstrj "
             '--type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"\n'
         ),
     )
-    p.add_argument("traj", type=Path,
+    p.add_argument("traj", type=Path, nargs="?", default=None,
                    help="Trajectory file (.lammpstrj or .traj)")
+    p.add_argument("--qmmm-mm", type=Path, default=None, metavar="RUN_DIR",
+                   help=("Process every mm_N directory in a QM/MM run. Each "
+                         "mm_N gets its own z_density outputs, and RUN_DIR gets "
+                         "element-wise mm-step evolution plots."))
     p.add_argument("--info", action="store_true",
                    help="Scan trajectory and print summary (frames, elements, "
                         "box, suggested skip/stride). No density calculation.")
@@ -823,6 +1072,19 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.qmmm_mm is not None:
+        if args.traj is not None:
+            sys.exit("ERROR: provide either a trajectory file or --qmmm-mm, not both.")
+        if args.info:
+            sys.exit("ERROR: --info is only supported for single trajectory mode.")
+        if args.outdir is not None:
+            sys.exit("ERROR: --outdir is not supported with --qmmm-mm.")
+        run_qmmm_mm_density(args)
+        return
+
+    if args.traj is None:
+        sys.exit("ERROR: trajectory file is required unless --qmmm-mm is used.")
 
     traj_path = args.traj.resolve()
     if not traj_path.exists():
