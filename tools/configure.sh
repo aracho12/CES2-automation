@@ -295,6 +295,82 @@ ask() {
     echo "${reply:-$default}"
 }
 
+list_qm_params_files() {
+    local dir file base found
+    dir="${REPO_ROOT}/species_db/qm_params"
+    found=0
+
+    echo "Available QM parameter YAML files:" >&2
+    if [[ -d "$dir" ]]; then
+        while IFS= read -r file; do
+            base="$(basename -- "$file")"
+            echo "  ${base%.yaml}" >&2
+            found=1
+        done < <(find "$dir" -maxdepth 1 -type f -name '*.yaml' -print | sort)
+    fi
+    if [[ "$found" == "0" ]]; then
+        echo "  (none found in $dir)" >&2
+    fi
+}
+
+list_qm_layer_files() {
+    local dir file base shown found
+    found=0
+
+    echo "Available BJ layer .dat files:" >&2
+    for dir in \
+        "${REPO_ROOT}/species_db/qm_params/layer_files" \
+        "${REPO_ROOT}/species_db/qm_params" \
+        "$CURRENT_DIR" \
+        "$(dirname -- "$CONFIG")"
+    do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r file; do
+            base="$(basename -- "$file")"
+            case "$dir" in
+                "${REPO_ROOT}/species_db/qm_params/layer_files"|\
+                "${REPO_ROOT}/species_db/qm_params")
+                    shown="${base%.dat}"
+                    ;;
+                *)
+                    shown="$file"
+                    ;;
+            esac
+            echo "  $shown" >&2
+            found=1
+        done < <(find "$dir" -maxdepth 1 -type f -name '*.dat' -print | sort)
+    done
+    if [[ "$found" == "0" ]]; then
+        echo "  (none found in bundled DB, current directory, or config directory)" >&2
+    fi
+}
+
+ask_qm_params_file() {
+    local default="$1" reply
+    while true; do
+        reply="$(ask "  qm_params_file ('?' to list)" "$default")"
+        if [[ "$reply" == "?" ]]; then
+            list_qm_params_files
+            continue
+        fi
+        echo "$reply"
+        return 0
+    done
+}
+
+ask_qm_layer_file() {
+    local default="$1" reply
+    while true; do
+        reply="$(ask "  bjparams_layer_file ('?' to list)" "$default")"
+        if [[ "$reply" == "?" ]]; then
+            list_qm_layer_files
+            continue
+        fi
+        echo "$reply"
+        return 0
+    done
+}
+
 sanitize_jobname_part() {
     printf '%s' "$1" | sed -E 's/[^A-Za-z0-9._+-]+/_/g; s/^_+//; s/_+$//'
 }
