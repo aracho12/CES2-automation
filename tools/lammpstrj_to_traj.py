@@ -32,6 +32,9 @@ Usage
   # Extract last 3 steps, with stride and custom output
   python tools/lammpstrj_to_traj.py --qmmm-average /path/to/run_dir \\
       --last-steps 3 --stride 5 -o analysis/average_last3.traj
+
+  # Convert every mm_N/ces2.emd.lammpstrj into a wrapped .traj in place
+  python tools/lammpstrj_to_traj.py --qmmm-wrap-each /path/to/qmmm_run_dir
 """
 
 import argparse
@@ -550,6 +553,80 @@ def convert_qmmm_average(
     return total_written
 
 
+def convert_qmmm_wrap_each(
+    run_dir: Path,
+    type_map: Dict[int, str],
+    stride: int = 1,
+    wrap: bool = True,
+    verbose: bool = True,
+) -> int:
+    """
+    Convert each mm_N/*.emd.lammpstrj trajectory into its own wrapped .traj.
+
+    The output is written next to the source trajectory as
+    <source>.wrapped.traj, for example:
+      mm_12/ces2.emd.lammpstrj -> mm_12/ces2.emd.wrapped.traj
+
+    Returns the total number of frames written across all converted files.
+    """
+    mm_dirs = find_mm_dirs(run_dir)
+    if not mm_dirs:
+        print(f"ERROR: No mm_N/ directories found in {run_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if verbose:
+        print(f"QM/MM run directory: {run_dir}")
+        print(f"  Total mm_N/ directories found: {len(mm_dirs)}")
+        if wrap:
+            print("  Molecule-aware wrapping: ON")
+        else:
+            print("  Molecule-aware wrapping: OFF")
+        print(f"  Stride: every {stride} frame(s)")
+        print()
+
+    total_written = 0
+    converted = 0
+    skipped = 0
+    t_start = time.perf_counter()
+
+    for step_idx, mm_dir in mm_dirs:
+        trj_file = find_lammpstrj_in_dir(mm_dir)
+        if trj_file is None:
+            print(f"  WARNING: No .lammpstrj found in {mm_dir}, skipping step {step_idx}")
+            skipped += 1
+            continue
+
+        output = trj_file.with_suffix(".wrapped.traj")
+        n_frames = count_frames(trj_file)
+        expected = (n_frames + stride - 1) // stride
+
+        if verbose:
+            print(f"  mm_{step_idx}: {trj_file.name} ({n_frames:,} frames)"
+                  f" -> {output.name} (~{expected:,} frames)")
+
+        written = convert(
+            lammpstrj=trj_file,
+            output=output,
+            type_map=type_map,
+            stride=stride,
+            wrap=wrap,
+            verbose=False,
+        )
+        total_written += written
+        converted += 1
+
+    elapsed = time.perf_counter() - t_start
+
+    if verbose:
+        print(f"\nDone. Converted {converted} mm_N directories, skipped {skipped}.")
+        print(f"  Total frames written: {total_written:,}")
+        print(f"  Elapsed: {elapsed:.1f} s")
+        if total_written > 0:
+            print(f"  Per frame: {1000*elapsed/total_written:.2f} ms/frame")
+
+    return total_written
+
+
 def _resolve_type_map(args, search_dir: Path) -> Dict[int, str]:
     """Resolve type→element mapping from args, searching in search_dir as fallback."""
     if args.type_map:
@@ -584,7 +661,7 @@ def main():
     )
     parser.add_argument(
         "lammpstrj", type=Path, nargs="?", default=None,
-        help="Input LAMMPS dump file (not needed when using --qmmm-average)"
+        help="Input LAMMPS dump file (not needed with a QM/MM directory mode)"
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
@@ -635,12 +712,23 @@ def main():
         )
     )
     parser.add_argument(
+        "--qmmm-wrap-each", type=Path, default=None, metavar="RUN_DIR",
+        help=(
+            "Convert each mm_N/*.emd.lammpstrj in a QM/MM run directory into a "
+            "separate wrapped .traj next to the source file.  The default output "
+            "name is <input>.wrapped.traj, e.g. ces2.emd.wrapped.traj."
+        )
+    )
+    parser.add_argument(
         "--last-steps", type=int, default=2,
         help="Number of last QM/MM steps to include (default: 2, used with --qmmm-average)"
     )
 
     args = parser.parse_args()
     do_wrap = args.wrap and not args.no_wrap
+
+    if args.qmmm_average is not None and args.qmmm_wrap_each is not None:
+        parser.error("use only one of --qmmm-average or --qmmm-wrap-each")
 
     # =================================================================
     # Mode 1: --qmmm-average  (extract average trajectories from QM/MM)
@@ -678,7 +766,29 @@ def main():
         return
 
     # =================================================================
-    # Mode 2: Single file conversion (original behavior)
+    # Mode 2: --qmmm-wrap-each  (convert every mm_N trajectory in place)
+    # =================================================================
+    if args.qmmm_wrap_each is not None:
+        run_dir = args.qmmm_wrap_each
+        if not run_dir.is_dir():
+            print(f"ERROR: not a directory: {run_dir}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.output:
+            parser.error("--output is not supported with --qmmm-wrap-each")
+
+        type_map = _resolve_type_map(args, search_dir=run_dir)
+        convert_qmmm_wrap_each(
+            run_dir=run_dir,
+            type_map=type_map,
+            stride=args.stride,
+            wrap=do_wrap,
+        )
+
+        return
+
+    # =================================================================
+    # Mode 3: Single file conversion (original behavior)
     # =================================================================
     if args.lammpstrj is None:
         parser.error("a lammpstrj file is required (or use --qmmm-average)")
