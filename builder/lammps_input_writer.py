@@ -821,10 +821,6 @@ def generate_lammps_input(
     L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
     L()
 
-    L("#MINIMIZE_STEP")
-    L("#SHAKE_CORRECT_STEP")
-    L("#VELOCITY_STEP")
-
     if water_O_tid is not None and water_H_tid is not None:
         b_str = f"b {water_bond_type}"  if water_bond_type  is not None else "b 1"
         a_str = f"a {water_angle_type}" if water_angle_type is not None else "a 1"
