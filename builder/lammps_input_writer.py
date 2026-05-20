@@ -359,12 +359,13 @@ def generate_lammps_input(
             )
 
     # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
-    # Max wall force is 2*K*wall_cutoff. K=1 (soft) is the historical default,
-    # restored on the assumption that proper slab–solvent interactions during
-    # CES2 production keep solvent on the slab; the wall just catches outliers.
-    # If "Particle on or inside fix wall surface" crashes appear, bump K (e.g.
-    # 50) or add an active push to the CES2 input.
-    wall_K           = float(md_cfg.get("wall_K",           1.0))
+    # Max wall force at cutoff edge = 2*K*wall_cutoff.
+    # K=50 default: provides ~500 kcal/mol/Å at the cutoff edge, strong enough
+    # to counteract the systematic ESP-driven upward drift of the water layer
+    # that causes "Particle on or inside fix wall surface" crashes.
+    # K=1 was too weak (only ~10 kcal/mol/Å vs ~100 kcal/mol/Å grid force).
+    # Override via md.wall_K in config if needed.
+    wall_K           = float(md_cfg.get("wall_K",           50.0))
     wall_sigma       = float(md_cfg.get("wall_sigma",       1.0))
     wall_cutoff      = float(md_cfg.get("wall_cutoff",      5.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
