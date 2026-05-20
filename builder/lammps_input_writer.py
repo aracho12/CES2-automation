@@ -304,7 +304,7 @@ def generate_lammps_input(
     #  MD settings from config
     # ------------------------------------------------------------------ #
     md_cfg        = ces2_cfg.get("md", {})
-    timestep      = float(md_cfg.get("timestep_fs",  0.5))
+    timestep      = float(md_cfg.get("timestep_fs",  1.0))
     n_steps       = int(  md_cfg.get("n_steps",      0))
     thermo_every  = int(  md_cfg.get("thermo_every", 100))
     dump_every    = int(  md_cfg.get("dump_every",   1000))
@@ -787,6 +787,11 @@ def generate_lammps_input(
     section("8. MD settings")
     L()
     L(f"timestep        {timestep}")
+    L()
+    L("neighbor        2.0 multi")
+    L("neigh_modify    every 2 delay 4 check yes")
+    L("neigh_modify    exclude group SOLUTE SOLUTE")
+    L("neigh_modify    one 4000")
     L()
 
     # Dispersion force compute + dump

@@ -171,8 +171,10 @@ kspace_modify   slab 3.0   # required for p p f slab electrostatics
 
 {charge_block}
 {freeze_for_min}
-neighbor        2.0 bin
-neigh_modify    delay 0 every 1 check yes
+neighbor        2.0 multi
+neigh_modify    every 2 delay 4 check yes
+neigh_modify    exclude group QM QM
+neigh_modify    one 4000
 
 thermo          100
 thermo_style    custom step temp pe ke etotal press vol
@@ -367,8 +369,10 @@ reset_timestep  0
 read_dump       {minimized_dump} 0 x y z box no
 
 {c['group_block']}
-{c['wall_fix']}neighbor        2.0 bin
-neigh_modify    delay 0 every 1 check yes
+{c['wall_fix']}neighbor        2.0 multi
+neigh_modify    every 2 delay 4 check yes
+neigh_modify    exclude group QM QM
+neigh_modify    one 4000
 
 # ======================================================================
 # Stage 2: Gradual heating  {t_start:.0f} K → {t_target:.0f} K  ({heat_ps:.1f} ps)
@@ -485,8 +489,10 @@ reset_timestep  0
 read_dump       {heated_dump} 0 x y z vx vy vz box no
 
 {c['group_block']}
-{c['wall_fix']}neighbor        2.0 bin
-neigh_modify    delay 0 every 1 check yes
+{c['wall_fix']}neighbor        2.0 multi
+neigh_modify    every 2 delay 4 check yes
+neigh_modify    exclude group QM QM
+neigh_modify    one 4000
 
 # ======================================================================
 # Stage 3: NVT equilibration at {t_target:.0f} K  ({equil_ps:.1f} ps)
@@ -675,7 +681,7 @@ def generate_md_bundle(
             t_target=float(md_cfg.get("t_target",      300.0)),
             tdamp_fs=float(md_cfg.get("tdamp_fs",      100.0)),
             heat_steps=int(md_cfg.get("heat_steps",   10000)),
-            timestep_fs=float(md_cfg.get("timestep_fs",  1.0)),
+            timestep_fs=float(md_cfg.get("timestep_fs",  0.5)),
             dump_every=int(md_cfg.get("dump_every",    2000)),
             **common_nvt_kw,
         )
@@ -688,7 +694,7 @@ def generate_md_bundle(
             t_target=float(md_cfg.get("t_target",      300.0)),
             tdamp_fs=float(md_cfg.get("tdamp_fs",      100.0)),
             equil_steps=int(md_cfg.get("equil_steps", 30000)),
-            timestep_fs=float(md_cfg.get("timestep_fs",  1.0)),
+            timestep_fs=float(md_cfg.get("timestep_fs",  0.5)),
             dump_every=int(md_cfg.get("dump_every",    2000)),
             write_equilibrated=md_cfg.get("write_equilibrated", "equilibrated.data"),
             **common_nvt_kw,
