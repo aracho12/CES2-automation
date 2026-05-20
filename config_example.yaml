@@ -41,6 +41,7 @@ packmol:
   #binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
   tolerance: 2.0
   maxit: 200
+  pbc: true                    # include x/y periodic images when checking Packmol distances
 
 charge_control:
   q_target_total: 0.0           # total MD box charge (0 = neutral)

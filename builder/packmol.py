@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 import subprocess
 
 @dataclass
@@ -23,6 +23,7 @@ class PackmolJob:
     z_hi: float
     output_xyz: str
     structures: List[StructureReq]
+    pbc_box: Optional[Tuple[float, float, float, float, float, float]] = None
 
 def write_packmol_input(path: Path, job: PackmolJob) -> None:
     xlo, ylo, xhi, yhi = 0.0, 0.0, job.Lx, job.Ly
@@ -35,7 +36,11 @@ def write_packmol_input(path: Path, job: PackmolJob) -> None:
     lines += [f"maxit {job.maxit}"]
     lines += ["filetype xyz"]
     lines += [f"seed {job.seed}"]
-    lines += [f"output {job.output_xyz}", ""]
+    lines += [f"output {job.output_xyz}"]
+    if job.pbc_box is not None:
+        pxlo, pylo, pzlo, pxhi, pyhi, pzhi = job.pbc_box
+        lines += [f"pbc {pxlo:.6f} {pylo:.6f} {pzlo:.6f} {pxhi:.6f} {pyhi:.6f} {pzhi:.6f}"]
+    lines += [""]
 
     for s in job.structures:
         if s.count <= 0:

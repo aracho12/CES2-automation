@@ -398,6 +398,16 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # run packmol
     t0 = time.perf_counter()
     pack = cfg["packmol"]
+    packmol_pbc = bool(pack.get("pbc", True))
+    packmol_pbc_box = None
+    if packmol_pbc:
+        # LAMMPS uses p p f boundaries for slabs: x/y are periodic, z is not.
+        # Packmol's pbc keyword is orthorhombic 3D, so use the full simulation
+        # z span including vacuum. That prevents false top/bottom contact while
+        # still making x/y boundary images repel during packing.
+        pbc_zlo = -float(box.z_buffer_lo)
+        pbc_zhi = float(box.z_el_hi) + float(box.vacuum_z) + 1.0
+        packmol_pbc_box = (0.0, 0.0, pbc_zlo, float(box.Lx), float(box.Ly), pbc_zhi)
     job = PackmolJob(
         binary=str(pack.get("binary","packmol")),
         tolerance=float(pack.get("tolerance",2.0)),
@@ -406,7 +416,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         Lx=box.Lx, Ly=box.Ly,
         z_lo=box.z_el_lo, z_hi=box.z_el_hi,
         output_xyz="mm_packmol.xyz",
-        structures=structures
+        structures=structures,
+        pbc_box=packmol_pbc_box,
     )
     inp = build_dir/"packmol.inp"
     write_packmol_input(inp, job)
@@ -726,6 +737,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
             "iterations": pmol.n_iter,
             "maxit":      job.maxit,
             "tolerance":  job.tolerance,
+            "pbc_box":    job.pbc_box,
         },
     }
     (export_dir/"build_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
