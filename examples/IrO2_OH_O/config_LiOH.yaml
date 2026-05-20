@@ -259,4 +259,6 @@ md_relax:
   # relax_wall_buffer:      5.0   # [Å] requested z_wall = z_el_hi + buffer
   # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
   # relax_wall_K:           1.0   # [kcal/mol/Å²] upper harmonic wall spring constant
+  # relax_wall_cutoff:      5.0   # [Å] upper harmonic wall cutoff
+  # relax_wall_lo_cutoff:   1.0   # [Å] lower harmonic wall cutoff; keep short near slab
   # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone

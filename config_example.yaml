@@ -352,15 +352,13 @@ md_relax:
   # relax_wall_buffer:      5.0   # [Å] requested z_wall = z_el_hi + buffer
   # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
   # relax_wall_K:           1.0   # [kcal/mol/Å²] upper harmonic wall spring constant
+  # relax_wall_cutoff:      5.0   # [Å] upper harmonic wall cutoff
+  # relax_wall_lo_cutoff:   1.0   # [Å] lower harmonic wall cutoff; keep short near slab
   # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone
   #
-  # ── Lower LJ93 wall — attracts solvent toward electrode surface ──────────
-  # WALLLO uses wall/lj93 (attraction + repulsion) to pull solvent to the
-  # surface during MM pre-equil.  This is critical: in MM mode the QM slab
-  # atoms have ε=0, so without this wall there is NO electrode–water attraction
-  # and the solvent floats in the middle of the column.
-  # The LJ93 well minimum sits at r_min = (2/5)^(1/6)·sigma ≈ 0.858·sigma
-  # above z_wall_lo, producing a realistic first-adsorption-layer distance.
+  # ── Reserved lower LJ93 wall parameters ─────────────────────────────────
+  # Current pre-relax generation uses a short lower harmonic wall. These are
+  # retained for future attractive wall support.
   # relax_wall_lj_epsilon:  0.5   # [kcal/mol]  water–metal well depth (~0.3–1.0)
   # relax_wall_lj_sigma:    3.0   # [Å]         O–surface LJ size (~2.5–3.5)
   # relax_wall_lj_cutoff:  10.0   # [Å]         LJ93 cutoff

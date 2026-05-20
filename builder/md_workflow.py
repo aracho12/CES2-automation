@@ -43,11 +43,9 @@ def write_in_relax_min(
     wall_K:              float = 1.0,              # kcal/mol/Å² spring constant (upper wall)
     wall_sigma:          float = 1.0,              # Å (upper harmonic wall onset)
     wall_cutoff:         float = 5.0,              # Å (upper wall cutoff)
-    # ── LJ93 lower wall — attracts solvent toward electrode surface ───────
-    # wall/lj93 zlo creates an attractive well at ~0.86·sigma above z_wall_lo,
-    # mimicking real electrode–water attraction absent during MM pre-equil
-    # (QM slab atoms have ε=0).  Without this the solvent floats in the middle
-    # of the electrolyte column with no driving force toward the surface.
+    wall_lo_cutoff:      float = 1.0,              # Å (lower wall cutoff)
+    # ── Reserved LJ93 lower wall parameters ──────────────────────────────
+    # Not currently emitted. Kept for future attractive wall support.
     wall_lj_epsilon:     float = 0.5,              # kcal/mol  (~water–metal well depth)
     wall_lj_sigma:       float = 3.0,              # Å         (O–surface LJ size)
     wall_lj_cutoff:      float = 10.0,             # Å
@@ -92,18 +90,17 @@ def write_in_relax_min(
         freeze_for_min    = ""
         unfix_soft_freeze = ""
 
-    # ── Walls: upper harmonic (repulsion only) + lower LJ93 (attraction+repulsion) ──
+    # ── Walls: upper harmonic + lower harmonic repulsion ────────────────
     # Upper wall keeps solvent out of QE dipole-correction / vacuum zone.
-    # Lower wall prevents solvent from drifting into frozen QM slab (QM atoms have ε=0).
-    # Pure harmonic repulsion — no attractive well — so water finds its natural
-    # distance from the surface without being artificially biased.
+    # Lower wall prevents solvent from drifting into frozen QM slab without
+    # pushing the first water layer far from the slab surface.
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
         wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_lo_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── pair_coeff / bond_coeff / angle_coeff lines ──────────────────────
@@ -213,6 +210,7 @@ def _nvt_common_header(
     wall_K: float = 1.0,
     wall_sigma: float = 1.0,
     wall_cutoff: float = 5.0,
+    wall_lo_cutoff: float = 1.0,
     wall_lj_epsilon: float = 0.5,
     wall_lj_sigma: float = 3.0,
     wall_lj_cutoff: float = 10.0,
@@ -238,18 +236,17 @@ def _nvt_common_header(
         wall_group   = "all"
         unfix_freeze = ""
 
-    # ── Walls: upper harmonic (repulsion only) + lower LJ93 (attraction+repulsion) ──
+    # ── Walls: upper harmonic + lower harmonic repulsion ────────────────
     # Upper wall keeps solvent out of QE dipole-correction / vacuum zone.
-    # Lower wall prevents solvent from drifting into frozen QM slab (QM atoms have ε=0).
-    # Pure harmonic repulsion — no attractive well — so water finds its natural
-    # distance from the surface without being artificially biased.
+    # Lower wall prevents solvent from drifting into frozen QM slab without
+    # pushing the first water layer far from the slab surface.
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
         wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_lo_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── SHAKE block ──────────────────────────────────────────────────────
@@ -307,6 +304,7 @@ def write_in_relax_heat(
     wall_K:              float = 1.0,
     wall_sigma:          float = 1.0,
     wall_cutoff:         float = 5.0,
+    wall_lo_cutoff:      float = 1.0,
     wall_lj_epsilon:     float = 0.5,
     wall_lj_sigma:       float = 3.0,
     wall_lj_cutoff:      float = 10.0,
@@ -330,6 +328,7 @@ def write_in_relax_heat(
     heat_ps = heat_steps * timestep_fs / 1000.0
     c = _nvt_common_header(ff, data_file, minimized_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
                            wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff,
+                           wall_lo_cutoff=wall_lo_cutoff,
                            wall_lj_epsilon=wall_lj_epsilon, wall_lj_sigma=wall_lj_sigma,
                            wall_lj_cutoff=wall_lj_cutoff)
 
@@ -425,6 +424,7 @@ def write_in_relax_equil(
     wall_K:              float = 1.0,
     wall_sigma:          float = 1.0,
     wall_cutoff:         float = 5.0,
+    wall_lo_cutoff:      float = 1.0,
     wall_lj_epsilon:     float = 0.5,
     wall_lj_sigma:       float = 3.0,
     wall_lj_cutoff:      float = 10.0,
@@ -450,6 +450,7 @@ def write_in_relax_equil(
     equil_ps = equil_steps * timestep_fs / 1000.0
     c = _nvt_common_header(ff, data_file, heated_dump, qm_lo, qm_hi, z_wall, z_wall_lo,
                            wall_K=wall_K, wall_sigma=wall_sigma, wall_cutoff=wall_cutoff,
+                           wall_lo_cutoff=wall_lo_cutoff,
                            wall_lj_epsilon=wall_lj_epsilon, wall_lj_sigma=wall_lj_sigma,
                            wall_lj_cutoff=wall_lj_cutoff)
 
@@ -582,18 +583,17 @@ def generate_md_bundle(
         except Exception:
             pass
 
-    # ── Wall parameters (upper harmonic + lower LJ93) ────────────────────
+    # ── Wall parameters (upper harmonic + lower harmonic) ────────────────
     # Upper harmonic wall (WALLHI): repulsion-only, keeps solvent below QE
     # dipole-correction zone.  K=1 is sufficient; the emaxpos safety cap is
     # the binding constraint.
     relax_wall_K       = float(md_cfg.get("relax_wall_K",        1.0))
     relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
     relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
-    # Lower LJ93 wall (WALLLO): attraction + repulsion, mimics electrode–water
-    # binding absent in MM pre-equil (QM slab atoms have ε=0).  Without this
-    # the solvent floats in the middle of the column with no surface affinity.
-    # Well minimum at r_min = (2/5)^(1/6)·sigma ≈ 0.858·sigma above z_wall_lo.
-    # Default: ε=0.5 kcal/mol, σ=3.0 Å → first-layer minimum at ~2.6 Å above wall.
+    relax_wall_lo_cutoff = float(md_cfg.get("relax_wall_lo_cutoff", 1.0))
+    # Lower harmonic wall (WALLLO): keep cutoff short so it only prevents
+    # solvent from entering the slab instead of pushing the first water layer
+    # several Å above the surface.
     relax_wall_lj_epsilon = float(md_cfg.get("relax_wall_lj_epsilon", 0.5))
     relax_wall_lj_sigma   = float(md_cfg.get("relax_wall_lj_sigma",   3.0))
     relax_wall_lj_cutoff  = float(md_cfg.get("relax_wall_lj_cutoff",  10.0))
@@ -637,6 +637,7 @@ def generate_md_bundle(
         wall_K=relax_wall_K,
         wall_sigma=relax_wall_sigma,
         wall_cutoff=relax_wall_cutoff,
+        wall_lo_cutoff=relax_wall_lo_cutoff,
         wall_lj_epsilon=relax_wall_lj_epsilon,
         wall_lj_sigma=relax_wall_lj_sigma,
         wall_lj_cutoff=relax_wall_lj_cutoff,
@@ -667,6 +668,7 @@ def generate_md_bundle(
             wall_K=relax_wall_K,
             wall_sigma=relax_wall_sigma,
             wall_cutoff=relax_wall_cutoff,
+            wall_lo_cutoff=relax_wall_lo_cutoff,
             wall_lj_epsilon=relax_wall_lj_epsilon,
             wall_lj_sigma=relax_wall_lj_sigma,
             wall_lj_cutoff=relax_wall_lj_cutoff,
