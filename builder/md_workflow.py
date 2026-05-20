@@ -94,15 +94,16 @@ def write_in_relax_min(
 
     # ── Walls: upper harmonic (repulsion only) + lower LJ93 (attraction+repulsion) ──
     # Upper wall keeps solvent out of QE dipole-correction / vacuum zone.
-    # Lower wall mimics electrode–water attraction (absent in MM: QM atoms have ε=0).
-    # wall/lj93 zlo minimum at r_min = (2/5)^(1/6)·sigma ≈ 0.858·sigma above wall.
+    # Lower wall prevents solvent from drifting into frozen QM slab (QM atoms have ε=0).
+    # Pure harmonic repulsion — no attractive well — so water finds its natural
+    # distance from the surface without being artificially biased.
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
         wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/lj93 zlo {z_wall_lo:.4f} {wall_lj_epsilon:g} {wall_lj_sigma:g} {wall_lj_cutoff:g} units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── pair_coeff / bond_coeff / angle_coeff lines ──────────────────────
@@ -239,15 +240,16 @@ def _nvt_common_header(
 
     # ── Walls: upper harmonic (repulsion only) + lower LJ93 (attraction+repulsion) ──
     # Upper wall keeps solvent out of QE dipole-correction / vacuum zone.
-    # Lower wall mimics electrode–water attraction (absent in MM: QM atoms have ε=0).
-    # wall/lj93 zlo minimum at r_min = (2/5)^(1/6)·sigma ≈ 0.858·sigma above wall.
+    # Lower wall prevents solvent from drifting into frozen QM slab (QM atoms have ε=0).
+    # Pure harmonic repulsion — no attractive well — so water finds its natural
+    # distance from the surface without being artificially biased.
     wall_fix   = ""
     unfix_wall = ""
     if z_wall is not None:
         wall_fix   += f"fix             WALLHI {wall_group} wall/harmonic zhi {z_wall:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLHI\n"
     if z_wall_lo is not None:
-        wall_fix   += f"fix             WALLLO {wall_group} wall/lj93 zlo {z_wall_lo:.4f} {wall_lj_epsilon:g} {wall_lj_sigma:g} {wall_lj_cutoff:g} units box\n"
+        wall_fix   += f"fix             WALLLO {wall_group} wall/harmonic zlo {z_wall_lo:.4f} {wall_K:g} {wall_sigma:g} {wall_cutoff:g} units box\n"
         unfix_wall += "unfix           WALLLO\n"
 
     # ── SHAKE block ──────────────────────────────────────────────────────
