@@ -358,6 +358,7 @@ def generate_ces2_scripts(
     qm_max_step    = int(sc_cfg.get("qm_max_step",     5))
     md_equil       = int(sc_cfg.get("md_equil_steps",  2000000))
     md_average     = int(sc_cfg.get("md_average_steps",2000000))
+    equil_timestep = float(sc_cfg.get("equil_timestep_fs", 0.5))
     dipole_corr    = str(sc_cfg.get("dipole_corr",     "yes"))
     initial_qm     = int(sc_cfg.get("initial_qm",      0))
     skip_equil     = int(sc_cfg.get("skip_equil",       0))
@@ -473,6 +474,7 @@ def generate_ces2_scripts(
     L('LAMMPSRESTART="ini.restart"')
     L(f'MDEQUIL="{md_equil}" # no. of equilibration steps')
     L(f'MDAVERAGE="{md_average}" # no. of averaging steps')
+    L(f'EQUILTIMESTEP="{equil_timestep}" # timestep (fs) for CES2 equilibration (averaging uses base.in.lammps value)')
 
     # QMLMPTYPE
     if qm_type_ids:
@@ -1052,6 +1054,7 @@ def generate_ces2_scripts(
     L("    fi")
     L("  sed -i \"s/.*reset_timestep.*/reset_timestep ${LAMMPSRESTARTtime}/\" in.lammps")
     L("  cp in.lammps in.lammps.equil ")
+    L("  sed -i \"s/.*timestep.*/timestep        ${EQUILTIMESTEP}/\" in.lammps.equil")
     L("  finaltime=`echo ${LAMMPSRESTARTtime} ${MDEQUIL} | awk '{print $1+$2}'`")
     L("  sed -i \"s/.*c_fdisp.*/fix\\t\\tshowf all ave\\/atom 1 $MDEQUIL $finaltime c_fdisp[*]/\" in.lammps.equil # MDEQUIL is a divisor of MDAVERAGE.")
     L("  sed -i \"s/.*dispf.ave.*/dump\\t\\t11 SOLUTE custom $finaltime dispf.ave id type xu yu zu f_showf[*]/\" in.lammps.equil")
