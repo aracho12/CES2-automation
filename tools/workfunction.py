@@ -29,6 +29,45 @@ Usage
   # from repo root:
   python tools/workfunction.py test/04_Cs/run
   python tools/workfunction.py test/04_Cs/run --cube total_pot_ortho.cube
+
+Cube-file visualization sub-command
+-------------------------------------
+  python tools/workfunction.py plot-cube FILE [FILE2 ...] [OPTIONS]
+
+  Options:
+    --axis {x,y,z,all}      Axis for planar average and 2D slice (default: z)
+    --slice FRAC[,FRAC...]  Fractional cell position(s) for 2D slice
+                            (0–1, default: 0.5; comma-separated for multiple)
+    --unit {auto,ry,ha,ev,e_bohr3,e_ang3,raw}
+                            Data unit — auto-detected from filename if omitted
+    --no-avg                Skip planar-averaged profile plot
+    --no-slice              Skip 2D slice heatmap plot
+    --diff                  Plot difference (requires exactly 2 cube files):
+                            FILE2 − FILE1.  Individual + difference profiles
+                            are all overlaid on the same comparison figure.
+    --output PREFIX         Output filename prefix (default: cubeplot_<stem>
+                            placed next to the first cube file)
+
+  Unit auto-detection heuristic (filename-based):
+    *pot*, *v_*, *hartree*, *electro*  →  ry  (Ry → eV)
+    *charge*, *density*, *rho*, *dens*, *ldos*  →  e_bohr3  (e/Bohr³ → e/Å³)
+    otherwise  →  raw  (plotted as-is)
+
+  Examples:
+    # Potential cube — z planar average + XY slice at 50 % of cell
+    python tools/workfunction.py plot-cube run/total_pot_ortho.cube
+
+    # Charge density — all three axes, slices at 25 % and 75 %
+    python tools/workfunction.py plot-cube run/density.cube \\
+        --axis all --slice 0.25,0.75
+
+    # Difference density — two cubes, z axis, slice at midpoint
+    python tools/workfunction.py plot-cube run1/density.cube run2/density.cube \\
+        --diff --axis z
+
+    # Compare two potential cubes on the same 1D profile figure
+    python tools/workfunction.py plot-cube run1/total_pot_ortho.cube \\
+        run2/total_pot_ortho.cube --no-slice
 """
 
 import sys
@@ -576,9 +615,385 @@ def write_summary_table(run_dir, fermi_data, regions, v_vac_ry, v_vac_std_ry,
     print(f"  Saved: {out_path}")
 
 
+# ══════════════════ cube-file visualization (plot-cube) ══════════════════════
+
+# axis index map and the two complementary axes for each fixed axis
+_AXIS_IDX  = {"x": 0, "y": 1, "z": 2}
+# fix_ax → (h_ax_idx, v_ax_idx, h_name, v_name)
+_AXIS_PAIR = {
+    0: (1, 2, "y", "z"),   # fix x → horizontal=y, vertical=z
+    1: (0, 2, "x", "z"),   # fix y → horizontal=x, vertical=z
+    2: (0, 1, "x", "y"),   # fix z → horizontal=x, vertical=y
+}
+
+
+def _detect_cube_unit(path):
+    """Heuristic: infer data unit from the cube filename."""
+    name = os.path.basename(path).lower()
+    if any(x in name for x in ("pot", "v_", "vkohn", "vxc", "hartree", "electro")):
+        return "ry"
+    if any(x in name for x in ("charge", "density", "rho", "dens", "ldos", "parchg")):
+        return "e_bohr3"
+    return "raw"
+
+
+def _unit_display_label(unit):
+    return {
+        "ry":      "Potential (eV)",
+        "ha":      "Potential (eV)",
+        "ev":      "Potential (eV)",
+        "e_bohr3": "Density (e/Å³)",
+        "e_ang3":  "Density (e/Å³)",
+        "raw":     "Value (a.u.)",
+    }.get(unit, "Value (a.u.)")
+
+
+def _convert_cube_values(values, unit):
+    """Convert raw cube data to display units."""
+    if unit == "ry":
+        return values * RY2EV
+    if unit == "ha":
+        return values * RY2EV * 2.0
+    if unit == "e_bohr3":
+        return values / BOHR2ANG ** 3
+    return values   # ev, e_ang3, raw: no conversion
+
+
+def _axis_coords(origin, nvox, vvec, ai):
+    """1D coordinate arrays (Bohr and Å) along axis index ai."""
+    n     = nvox[ai]
+    step  = float(np.linalg.norm(vvec[ai]))
+    z_b   = origin[ai] + np.arange(n) * step
+    return z_b, z_b * BOHR2ANG
+
+
+def _cube_planar_avg(grid, ai):
+    """Planar average of grid (nx,ny,nz) along axis ai; returns 1-D array."""
+    other = tuple(j for j in range(3) if j != ai)
+    return grid.mean(axis=other)
+
+
+def _cube_slice_2d(grid, fix_ai, frac):
+    """
+    Extract a 2-D slice through grid by fixing axis fix_ai at fractional
+    position frac (0–1).
+
+    Returns
+    -------
+    sl_for_imshow : ndarray shape (n_v, n_h)
+        Transposed so that imshow(origin='lower') gives
+        h_name on x-axis and v_name on y-axis.
+    h_ai, v_ai : int — horizontal / vertical axis indices
+    h_name, v_name : str — axis labels
+    idx : int — voxel index used for the slice
+    """
+    n   = grid.shape[fix_ai]
+    idx = max(0, min(n - 1, int(round(frac * n))))
+    h_ai, v_ai, h_name, v_name = _AXIS_PAIR[fix_ai]
+    if fix_ai == 0:
+        sl = grid[idx, :, :]   # shape (ny, nz)
+    elif fix_ai == 1:
+        sl = grid[:, idx, :]   # shape (nx, nz)
+    else:
+        sl = grid[:, :, idx]   # shape (nx, ny)
+    # sl shape is (n_h, n_v) — transpose for imshow
+    return sl.T, h_ai, v_ai, h_name, v_name, idx
+
+
+def _imshow_extent_ang(origin, nvox, vvec, h_ai, v_ai):
+    """[xmin, xmax, ymin, ymax] in Å for imshow extent."""
+    def span(ai):
+        step = float(np.linalg.norm(vvec[ai])) * BOHR2ANG
+        o    = origin[ai] * BOHR2ANG
+        return o, o + nvox[ai] * step
+    x0, x1 = span(h_ai)
+    y0, y1 = span(v_ai)
+    return [x0, x1, y0, y1]
+
+
+# ── cube-plot: planar-averaged 1-D profiles ──────────────────────────────────
+
+def plot_cube_avg_profiles(entries, axis_str, out_prefix):
+    """
+    Plot planar-averaged 1-D profiles for one or more cube entries.
+
+    Parameters
+    ----------
+    entries   : list of dicts with keys label, origin, nvox, vvec, grid, unit
+    axis_str  : "x" | "y" | "z" | "all"
+    out_prefix: output filename stem (axis name appended automatically)
+    """
+    axes_to_plot = ["x", "y", "z"] if axis_str == "all" else [axis_str]
+
+    for ax_name in axes_to_plot:
+        ai = _AXIS_IDX[ax_name]
+
+        fig, ax = plt.subplots(figsize=(_FW * 2.2, _FH * 1.5))
+
+        for k, entry in enumerate(entries):
+            _, z_ang  = _axis_coords(entry["origin"], entry["nvox"],
+                                     entry["vvec"], ai)
+            avg       = _cube_planar_avg(entry["grid"], ai)
+            avg_disp  = _convert_cube_values(avg, entry["unit"])
+            ax.plot(z_ang, avg_disp, color=_C[k % len(_C)],
+                    lw=_LW * 2, label=entry["label"])
+
+        unit_lbl = _unit_display_label(entries[0]["unit"])
+        ax.set_xlabel(f"{ax_name} (Å)", fontsize=_LS)
+        ax.set_ylabel(unit_lbl, fontsize=_LS)
+        ax.set_title(f"Planar-Averaged Profile  ({ax_name}-axis)",
+                     fontsize=_FS, fontweight="bold")
+        if len(entries) > 1:
+            ax.legend(fontsize=_FS - 1, loc="best")
+        if ps:
+            ps.set_ylim_top_margin(ax)
+        _apply_minor_ticks(ax)
+        fig.tight_layout()
+
+        out = f"{out_prefix}_avg_{ax_name}.png"
+        fig.savefig(out, bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        print(f"  Saved: {out}")
+
+
+# ── cube-plot: 2-D slice heatmap ─────────────────────────────────────────────
+
+def plot_cube_slice_2d(entry, fix_axis_name, frac, out_prefix):
+    """
+    Plot a 2-D heatmap slice through a cube.
+
+    Parameters
+    ----------
+    entry          : dict with label, origin, nvox, vvec, grid, unit
+    fix_axis_name  : "x" | "y" | "z"
+    frac           : float, fractional position along fix axis (0–1)
+    out_prefix     : output filename stem
+    """
+    fix_ai = _AXIS_IDX[fix_axis_name]
+    sl, h_ai, v_ai, h_name, v_name, idx = _cube_slice_2d(
+        entry["grid"], fix_ai, frac)
+
+    unit     = entry["unit"]
+    sl_disp  = _convert_cube_values(sl, unit)
+    extent   = _imshow_extent_ang(entry["origin"], entry["nvox"],
+                                  entry["vvec"], h_ai, v_ai)
+
+    # colour map & symmetric limits for potential; sequential for density
+    is_pot  = unit in ("ry", "ha", "ev")
+    cmap    = "RdBu_r" if is_pot else "viridis"
+    if is_pot:
+        vabs = float(np.percentile(np.abs(sl_disp), 98))
+        vmin, vmax = -vabs, vabs
+    else:
+        vmin = float(np.percentile(sl_disp, 2))
+        vmax = float(np.percentile(sl_disp, 98))
+
+    # figure size proportional to physical cell dimensions
+    w_ang = extent[1] - extent[0]
+    h_ang = extent[3] - extent[2]
+    ratio = w_ang / max(h_ang, 1e-6)
+    fw    = min(_FW * 3.0, _FW * 1.8 * max(1.0, ratio))
+    fh    = _FH * 1.8
+
+    fig, ax = plt.subplots(figsize=(fw, fh))
+    im = ax.imshow(sl_disp, origin="lower", extent=extent,
+                   cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto",
+                   interpolation="nearest")
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label(_unit_display_label(unit), fontsize=_LS - 1)
+
+    # annotate with actual position of the slice
+    fix_coords_b, fix_coords_a = _axis_coords(
+        entry["origin"], entry["nvox"], entry["vvec"], fix_ai)
+    fix_pos_ang = float(fix_coords_a[idx]) if idx < len(fix_coords_a) else 0.0
+    frac_pct    = int(round(frac * 100))
+
+    ax.set_xlabel(f"{h_name} (Å)", fontsize=_LS)
+    ax.set_ylabel(f"{v_name} (Å)", fontsize=_LS)
+    ax.set_title(
+        f"{entry['label']}  |  "
+        f"{fix_axis_name} = {fix_pos_ang:.2f} Å  ({frac_pct} % of cell)",
+        fontsize=_FS, fontweight="bold")
+
+    fig.tight_layout()
+    out = f"{out_prefix}_slice_{fix_axis_name}{frac_pct:03d}.png"
+    fig.savefig(out, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
+# ── cube-plot: CLI parsing and orchestration ──────────────────────────────────
+
+def parse_cube_plot_args(argv):
+    """
+    Parse CLI args for the 'plot-cube' sub-command.
+    argv is everything that follows 'plot-cube' in sys.argv.
+    """
+    files       = []
+    axis        = "z"
+    slice_fracs = [0.5]
+    unit        = "auto"
+    no_avg      = False
+    no_slice    = False
+    diff        = False
+    out_prefix  = None
+
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            print(__doc__); sys.exit(0)
+        elif a == "--axis" and i + 1 < len(argv):
+            axis = argv[i + 1]; i += 2
+        elif a == "--slice" and i + 1 < len(argv):
+            try:
+                slice_fracs = [float(x) for x in argv[i + 1].split(",")]
+            except ValueError:
+                sys.exit(f"ERROR: --slice value must be float(s), got: {argv[i+1]}")
+            i += 2
+        elif a == "--unit" and i + 1 < len(argv):
+            unit = argv[i + 1]; i += 2
+        elif a == "--no-avg":
+            no_avg = True; i += 1
+        elif a == "--no-slice":
+            no_slice = True; i += 1
+        elif a == "--diff":
+            diff = True; i += 1
+        elif a in ("--output", "-o") and i + 1 < len(argv):
+            out_prefix = argv[i + 1]; i += 2
+        elif not a.startswith("--"):
+            files.append(os.path.abspath(a)); i += 1
+        else:
+            print(f"WARNING: unknown option ignored: {a}"); i += 1
+
+    if not files:
+        sys.exit("ERROR: plot-cube requires at least one cube file.\n"
+                 "Usage: python tools/workfunction.py plot-cube FILE [FILE2 ...]")
+    for f in files:
+        if not os.path.isfile(f):
+            sys.exit(f"ERROR: cube file not found: {f}")
+    if diff and len(files) != 2:
+        sys.exit("ERROR: --diff requires exactly 2 cube files.")
+    valid_axes = ("x", "y", "z", "all")
+    if axis not in valid_axes:
+        sys.exit(f"ERROR: --axis must be one of {valid_axes}, got: '{axis}'")
+    for frac in slice_fracs:
+        if not (0.0 <= frac <= 1.0):
+            sys.exit(f"ERROR: --slice values must be in [0, 1], got: {frac}")
+
+    if out_prefix is None:
+        stem       = os.path.splitext(os.path.basename(files[0]))[0]
+        out_prefix = os.path.join(os.path.dirname(files[0]),
+                                  "cubeplot_" + stem)
+
+    return dict(files=files, axis=axis, slice_fracs=slice_fracs, unit=unit,
+                no_avg=no_avg, no_slice=no_slice, diff=diff,
+                out_prefix=out_prefix)
+
+
+def main_plot_cube(argv_after):
+    """Entry-point for the 'plot-cube' sub-command."""
+    cfg = parse_cube_plot_args(argv_after)
+
+    files    = cfg["files"]
+    unit_arg = cfg["unit"]
+    out_pfx  = cfg["out_prefix"]
+
+    print(f"\n{'='*60}")
+    print(f"  workfunction.py  →  plot-cube mode")
+    print(f"  Output prefix    :  {out_pfx}")
+    print(f"  Axis             :  {cfg['axis']}")
+    print(f"  Slice position(s):  {cfg['slice_fracs']}")
+    print(f"{'='*60}")
+
+    # ── load cubes ────────────────────────────────────────────────────────
+    entries = []
+    for path in files:
+        unit = unit_arg if unit_arg != "auto" else _detect_cube_unit(path)
+        print(f"\n  Loading: {os.path.basename(path)}  →  unit: {unit}")
+        origin, nvox, vvec, grid = load_cube(path)
+        cell_ang = [nvox[i] * float(np.linalg.norm(vvec[i])) * BOHR2ANG
+                    for i in range(3)]
+        print(f"    grid : {nvox[0]} × {nvox[1]} × {nvox[2]}")
+        print(f"    cell : {cell_ang[0]:.3f} × {cell_ang[1]:.3f} × "
+              f"{cell_ang[2]:.3f} Å")
+        print(f"    range: {_convert_cube_values(grid.min(), unit):.4g}"
+              f" – {_convert_cube_values(grid.max(), unit):.4g}"
+              f"  [{_unit_display_label(unit)}]")
+        entries.append(dict(
+            path=path,
+            label=os.path.splitext(os.path.basename(path))[0],
+            origin=origin, nvox=nvox, vvec=vvec, grid=grid, unit=unit,
+        ))
+
+    # ── difference mode ───────────────────────────────────────────────────
+    if cfg["diff"]:
+        e0, e1 = entries[0], entries[1]
+        if e0["nvox"] != e1["nvox"]:
+            sys.exit("ERROR: --diff requires cubes with identical grid dimensions.\n"
+                     f"  {e0['label']} : {e0['nvox']}\n"
+                     f"  {e1['label']} : {e1['nvox']}")
+        diff_grid  = e1["grid"] - e0["grid"]
+        diff_label = f"Δ ({e1['label']} − {e0['label']})"
+        diff_entry = dict(
+            path=None, label=diff_label,
+            origin=e0["origin"], nvox=e0["nvox"], vvec=e0["vvec"],
+            grid=diff_grid, unit=e0["unit"],
+        )
+        # For avg: show all three on one comparison figure
+        entries_for_avg   = entries + [diff_entry]
+        # For slices: only the difference
+        entries_for_slice = [diff_entry]
+        out_pfx_diff = out_pfx + "_diff"
+        print(f"\n  Difference cube  :  {diff_label}")
+        dv = _convert_cube_values(diff_grid, e0["unit"])
+        print(f"    range: {dv.min():.4g} – {dv.max():.4g}"
+              f"  [{_unit_display_label(e0['unit'])}]")
+    else:
+        entries_for_avg   = entries
+        entries_for_slice = entries
+        out_pfx_diff      = out_pfx
+
+    # ── planar-averaged profiles ──────────────────────────────────────────
+    if not cfg["no_avg"]:
+        print(f"\n[1] Planar-averaged profile(s)  (axis = {cfg['axis']}) ...")
+        if cfg["diff"]:
+            # One comparison figure: both inputs + difference
+            plot_cube_avg_profiles(entries_for_avg, cfg["axis"],
+                                   out_pfx + "_comparison")
+        else:
+            plot_cube_avg_profiles(entries, cfg["axis"], out_pfx)
+
+    # ── 2-D slice heatmaps ────────────────────────────────────────────────
+    if not cfg["no_slice"]:
+        axes_to_slice = (["x", "y", "z"] if cfg["axis"] == "all"
+                         else [cfg["axis"]])
+        print(f"\n[2] 2-D slice heatmap(s)  "
+              f"(fix axis = {axes_to_slice}, "
+              f"frac = {cfg['slice_fracs']}) ...")
+        for entry in entries_for_slice:
+            # per-cube output prefix when multiple non-diff cubes
+            if not cfg["diff"] and len(entries) > 1:
+                stem = out_pfx + "_" + entry["label"]
+            else:
+                stem = out_pfx_diff if cfg["diff"] else out_pfx
+            for fix_ax in axes_to_slice:
+                for frac in cfg["slice_fracs"]:
+                    plot_cube_slice_2d(entry, fix_ax, frac, stem)
+
+    print(f"\nDone.\n")
+
+
 # ─────────────────────────── main ───────────────────────────────────────────
 
 def main():
+    # ── sub-command dispatch ──────────────────────────────────────────────────
+    # Check for 'plot-cube' as the first non-option argument.
+    raw_args = sys.argv[1:]
+    if raw_args and raw_args[0] == "plot-cube":
+        main_plot_cube(raw_args[1:])
+        return
+
     run_dir, cube_override = parse_args(sys.argv)
     print(f"\n{'='*55}")
     print(f"  workfunction.py  →  {run_dir}")
