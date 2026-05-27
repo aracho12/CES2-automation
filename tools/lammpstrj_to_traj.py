@@ -202,10 +202,15 @@ def iter_frames(lammpstrj: Path):
             columns = atoms_header.split()[2:]  # skip "ITEM:" and "ATOMS"
 
             # --- atom data ---
-            rows = []
-            for _ in range(n_atoms):
-                rows.append(f.readline().split())
-            data = np.array(rows, dtype=float)
+            # Pre-allocate and fill row-by-row to avoid building a Python
+            # list-of-lists before the np.array() conversion — that pattern
+            # keeps two copies of the data alive simultaneously (the nested
+            # Python list *and* the numpy array) which doubles peak memory
+            # per frame and triggers OOM on login nodes with tight ulimits.
+            n_cols = len(columns)
+            data = np.empty((n_atoms, n_cols), dtype=float)
+            for i in range(n_atoms):
+                data[i] = f.readline().split()
 
             yield {
                 "timestep": timestep,
@@ -257,7 +262,7 @@ def frame_to_atoms(frame: dict, type_map: Dict[int, str]) -> Atoms:
 
     # Store timestep as info
     atoms.info["timestep"] = frame["timestep"]
-    atoms.info["lammps_type"] = types.tolist()
+    atoms.info["lammps_type"] = types  # keep as numpy array; .tolist() on large systems wastes memory
 
     return atoms
 
