@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import plot_setting
 
 # ── local import ──────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
