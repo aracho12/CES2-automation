@@ -38,6 +38,7 @@ Usage
 """
 
 import argparse
+import gc
 import sys
 import re
 import time
@@ -202,10 +203,11 @@ def iter_frames(lammpstrj: Path):
             columns = atoms_header.split()[2:]  # skip "ITEM:" and "ATOMS"
 
             # --- atom data ---
-            rows = []
-            for _ in range(n_atoms):
-                rows.append(f.readline().split())
-            data = np.array(rows, dtype=float)
+            # Pre-allocate array to avoid building an intermediate list-of-lists
+            n_cols = len(columns)
+            data = np.empty((n_atoms, n_cols), dtype=np.float64)
+            for i in range(n_atoms):
+                data[i] = f.readline().split()
 
             yield {
                 "timestep": timestep,
@@ -255,9 +257,8 @@ def frame_to_atoms(frame: dict, type_map: Dict[int, str]) -> Atoms:
         calc = SinglePointCalculator(atoms, forces=forces)
         atoms.calc = calc
 
-    # Store timestep as info
+    # Store timestep as info (lammps_type omitted to reduce per-frame memory)
     atoms.info["timestep"] = frame["timestep"]
-    atoms.info["lammps_type"] = types.tolist()
 
     return atoms
 
@@ -285,9 +286,8 @@ def wrap_molecules(atoms: Atoms, oh_cutoff: float = 1.3) -> Atoms:
     -------
     A new Atoms object with wrapped positions (forces/info preserved).
     """
-    atoms = atoms.copy()
+    # Modify positions in-place (caller passes ownership; no full copy needed)
     cell = atoms.cell.diagonal()          # orthorhombic: [Lx, Ly, Lz]
-    pbc_mask = np.array([1.0, 1.0, 0.0]) # wrap only in x, y
 
     pos = atoms.positions.copy()
     origin = atoms.cell.scaled_positions(pos)  # fractional coords
@@ -341,6 +341,7 @@ def wrap_molecules(atoms: Atoms, oh_cutoff: float = 1.3) -> Atoms:
     frac = atoms.cell.scaled_positions(atoms.positions)
     frac[:, :2] = frac[:, :2] % 1.0
     atoms.positions = atoms.cell.cartesian_positions(frac)
+    del pos, frac
 
     return atoms
 
@@ -383,12 +384,15 @@ def convert(
             t3 = time.perf_counter()
             t_write += t3 - t2
 
+            del atoms
+
             written += 1
             if verbose and written % 100 == 0:
                 elapsed = time.perf_counter() - t_start
                 fps = written / elapsed if elapsed > 0 else 0
                 print(f"  Written {written} frames (timestep {frame['timestep']}) "
                       f"[{elapsed:.1f}s elapsed, {fps:.1f} frames/s]")
+                gc.collect()
         frame_idx += 1
 
     traj.close()
@@ -530,6 +534,7 @@ def convert_qmmm_average(
                 if wrap:
                     atoms = wrap_molecules(atoms)
                 traj.write(atoms)
+                del atoms
                 total_written += 1
                 if verbose and total_written % 100 == 0:
                     elapsed = time.perf_counter() - t_start
@@ -537,6 +542,7 @@ def convert_qmmm_average(
                     print(f"  Written {total_written} frames "
                           f"({step_name}, timestep {frame['timestep']}) "
                           f"[{elapsed:.1f}s, {fps:.1f} fr/s]")
+                    gc.collect()
             frame_idx += 1
 
     traj.close()
