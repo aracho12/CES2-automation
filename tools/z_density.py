@@ -15,6 +15,8 @@ Outputs (written next to the trajectory)
 -----------------------------------------
   z_density_rawdata.csv   — z and ρ(z) for every element
   z_density.png           — density profile plot
+  With --water-density, CSV/plot also include water molecular density
+  (rho_water in Å⁻³, mass_water in g/cm³) from water oxygen z positions.
 
 Usage examples
 --------------
@@ -29,6 +31,9 @@ Usage examples
 
   # Smooth plotted profiles with a Gaussian kernel (sigma in Å)
   python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow --smooth-sigma 0.3
+
+  # Also report water molecular density in g/cm^3 vs z
+  python tools/z_density.py ces2.emd.lammpstrj --water-density
 
   # Provide LAMMPS type→element map explicitly for .lammpstrj
   python tools/z_density.py ces2.emd.lammpstrj --type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"
@@ -102,6 +107,8 @@ ELECTRODE_ELEMENTS: Set[str] = {
 
 # ── unit conversion ──────────────────────────────────────────────────────────
 _ANG3_TO_GCM3 = 1e24 / 6.02214076e23   # ρ[g/cm³] = ρ_num[Å⁻³] × M × this
+WATER_MOLAR_MASS = 2 * ATOMIC_MASS["H"] + ATOMIC_MASS["O"]
+WATER_PROFILE_NAME = "water"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -146,6 +153,12 @@ def _label_to_element(label: str) -> Optional[str]:
     if len(prefix) >= 2 and prefix[0] in {"H", "O"} and prefix[1].islower():
         return prefix[0]
     return None
+
+
+def _is_water_oxygen_label(label: str) -> bool:
+    """Return True for CES2 water oxygen labels such as Ow/Ow_spce."""
+    clean = label.strip().lower()
+    return clean == "ow" or clean.startswith("ow_")
 
 
 def _extract_type_labels_from_comment(comment: str, type_ids: List[int]) -> List[str]:
@@ -535,7 +548,7 @@ def iter_lammpstrj(path: Path, type_map: Dict[int, str],
                    skip: int = 0, stride: int = 1,
                    exclude_types: Optional[Set[int]] = None):
     """
-    Yield (labels, z_coords, Lx, Ly, Lz) per selected frame.
+    Yield (labels, z_coords, Lx, Ly, Lz, lammps_types) per selected frame.
 
     Parameters
     ----------
@@ -605,14 +618,14 @@ def iter_lammpstrj(path: Path, type_map: Dict[int, str],
             z_wrap = zlo + ((z_arr - zlo) % Lz)
 
             accepted += 1
-            yield elements, z_wrap, Lx, Ly, Lz
+            yield elements, z_wrap, Lx, Ly, Lz, types_raw
 
 
 def iter_traj(path: Path, skip: int = 0, stride: int = 1,
               type_label_map: Optional[Dict[int, str]] = None,
               exclude_types: Optional[Set[int]] = None):
     """
-    Yield (labels, z_coords, Lx, Ly, Lz) per selected frame from ASE .traj.
+    Yield (labels, z_coords, Lx, Ly, Lz, lammps_types) per selected frame.
 
     Parameters
     ----------
@@ -657,13 +670,14 @@ def iter_traj(path: Path, skip: int = 0, stride: int = 1,
             keep = np.array([t not in _excl for t in lmp_types])
             elements = elements[keep]
             z_arr = z_arr[keep]
+            lmp_types = lmp_types[keep]
 
         # wrap z if periodic in z
         if atoms.pbc[2]:
             zlo = 0.0
             z_arr = zlo + ((z_arr - zlo) % Lz)
 
-        yield elements, z_arr, Lx, Ly, Lz
+        yield elements, z_arr, Lx, Ly, Lz, lmp_types
 
     traj.close()
 
@@ -678,6 +692,9 @@ def compute_z_density(
     target_elements: Optional[List[str]],
     target_type_labels: Optional[List[str]] = None,
     type_label_map: Optional[Dict[int, str]] = None,
+    water_density: bool = False,
+    water_oxygen_labels: Optional[List[str]] = None,
+    water_oxygen_types: Optional[Set[int]] = None,
     dz: float = 0.1,
     skip: int = 0,
     stride: int = 1,
@@ -692,11 +709,69 @@ def compute_z_density(
     -------
     z_centers      : bin centres [Å]
     num_profiles   : {element_or_type_label: ρ(z) [Å⁻³]}
+                     If --water-density is enabled, rho_water is water molecule
+                     number density using water oxygen z positions.
     mass_profiles  : {element_or_type_label: ρ(z) [g/cm³]}
     meta           : dict with n_frames, Lx, Ly, etc.
     """
     suffix = traj_path.suffix.lower()
     use_type_labels = target_type_labels is not None
+    water_oxygen_type_ids: Optional[Set[int]] = None
+    water_oxygen_label_set: Optional[Set[str]] = None
+    water_selection_desc = ""
+
+    if water_density:
+        if water_oxygen_types:
+            water_oxygen_type_ids = set(water_oxygen_types)
+            water_selection_desc = (
+                f"LAMMPS types {sorted(water_oxygen_type_ids)}"
+            )
+        elif type_label_map:
+            if water_oxygen_labels:
+                water_oxygen_label_set = set(water_oxygen_labels)
+            else:
+                water_oxygen_label_set = {
+                    label for label in type_label_map.values()
+                    if _is_water_oxygen_label(label)
+                }
+            water_oxygen_type_ids = {
+                tid for tid, label in type_label_map.items()
+                if label in water_oxygen_label_set
+            }
+            if not water_oxygen_type_ids and not water_oxygen_labels:
+                water_oxygen_label_set = {
+                    label for tid, label in type_label_map.items()
+                    if (type_map and type_map.get(tid) == "O")
+                    or (_label_to_element(label) == "O")
+                }
+                water_oxygen_type_ids = {
+                    tid for tid, label in type_label_map.items()
+                    if label in water_oxygen_label_set
+                }
+            if water_oxygen_labels and not water_oxygen_type_ids:
+                available = ", ".join(sorted(set(type_label_map.values())))
+                sys.exit(
+                    "ERROR: --water-oxygen-labels did not match the "
+                    f"type_label map. Available labels: {available}"
+                )
+            if water_oxygen_type_ids:
+                labels = ", ".join(sorted(water_oxygen_label_set))
+                water_selection_desc = (
+                    f"type_labels [{labels}] "
+                    f"(types {sorted(water_oxygen_type_ids)})"
+                )
+        elif water_oxygen_labels:
+            water_oxygen_label_set = set(water_oxygen_labels)
+            water_selection_desc = (
+                f"labels [{', '.join(sorted(water_oxygen_label_set))}]"
+            )
+
+        if not water_selection_desc:
+            water_selection_desc = "all O atoms (fallback)"
+        print(
+            "    Water density: using water O z positions; "
+            f"selector = {water_selection_desc}"
+        )
 
     if exclude_types:
         print(f"    Excluding LAMMPS types: {sorted(exclude_types)}")
@@ -747,6 +822,7 @@ def compute_z_density(
     # On the first frame we discover which elements are present and set up bins.
 
     counts: Dict[str, np.ndarray] = {}
+    water_counts: Optional[np.ndarray] = None
     edges: Optional[np.ndarray] = None
     all_elements: Set[str] = set()
     n_frames = 0
@@ -756,7 +832,7 @@ def compute_z_density(
 
     t0 = time.perf_counter()
 
-    for elements, z_arr, Lx, Ly, Lz in frame_iter:
+    for elements, z_arr, Lx, Ly, Lz, lmp_types in frame_iter:
         # ── first frame: set up bins ──
         if edges is None:
             all_elements = set(elements)
@@ -781,6 +857,8 @@ def compute_z_density(
 
             for el in target_elements:
                 counts[el] = np.zeros(n_bins, dtype=np.float64)
+            if water_density:
+                water_counts = np.zeros(n_bins, dtype=np.float64)
         else:
             all_elements |= set(elements)
 
@@ -792,6 +870,17 @@ def compute_z_density(
             if mask.any():
                 h, _ = np.histogram(z_arr[mask], bins=edges)
                 counts[el] += h
+
+        if water_density and water_counts is not None:
+            if water_oxygen_type_ids and lmp_types is not None:
+                water_mask = np.isin(lmp_types, list(water_oxygen_type_ids))
+            elif water_oxygen_label_set and (use_type_labels or not water_oxygen_type_ids):
+                water_mask = np.isin(elements, list(water_oxygen_label_set))
+            else:
+                water_mask = elements == "O"
+            if water_mask.any():
+                h, _ = np.histogram(z_arr[water_mask], bins=edges)
+                water_counts += h
 
         n_frames += 1
         if n_frames % 200 == 0:
@@ -829,6 +918,16 @@ def compute_z_density(
         M = ATOMIC_MASS.get(mass_elem, 1.0)
         mass_profiles[el] = num_profiles[el] * M * _ANG3_TO_GCM3
 
+    if water_density and water_counts is not None:
+        water_profile_name = WATER_PROFILE_NAME
+        if water_profile_name in num_profiles:
+            water_profile_name = "water_molecule"
+        target_elements = list(target_elements) + [water_profile_name]
+        num_profiles[water_profile_name] = water_counts / norm
+        mass_profiles[water_profile_name] = (
+            num_profiles[water_profile_name] * WATER_MOLAR_MASS * _ANG3_TO_GCM3
+        )
+
     meta = {
         "n_frames": n_frames,
         "skip": skip,
@@ -841,6 +940,12 @@ def compute_z_density(
         "target_elements": target_elements,
         "profile_mode": "type_label" if use_type_labels else "element",
         "label_to_element": label_to_element,
+        "water_density": water_density,
+        "water_profile_name": (
+            water_profile_name if water_density and water_counts is not None else None
+        ),
+        "water_molar_mass": WATER_MOLAR_MASS,
+        "water_selection": water_selection_desc,
     }
     return z_centers, num_profiles, mass_profiles, meta
 
@@ -886,6 +991,13 @@ def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
             f.write(f"# smooth_sigma={meta['smooth_sigma']:.4f} Ang\n")
         f.write(f"# Lx={meta['Lx']:.4f} Ang  Ly={meta['Ly']:.4f} Ang\n")
         f.write(f"# rho_*: number density [Ang^-3]   mass_*: mass density [g/cm^3]\n")
+        if meta.get("water_density"):
+            water_name = meta.get("water_profile_name") or WATER_PROFILE_NAME
+            f.write(
+                f"# rho_{water_name}: water molecule number density [Ang^-3] "
+                f"from water O z positions; mass_{water_name}: water density "
+                "[g/cm^3]\n"
+            )
         num_cols  = [f"rho_{e}" for e in elems]
         mass_cols = [f"mass_{e}" for e in elems]
         f.write(",".join(["z_ang"] + num_cols + mass_cols) + "\n")
@@ -968,6 +1080,11 @@ def write_qmmm_evolution_csv(
     with open(out_path, "w") as f:
         f.write("# z_density.py QM/MM mm_N evolution output\n")
         f.write("# rho: number density [Ang^-3], mass: mass density [g/cm^3]\n")
+        if any(r["meta"].get("water_density") for r in results):
+            f.write(
+                "# water rows: rho is water molecule number density from water "
+                "O z positions; mass is water density [g/cm^3]\n"
+            )
         f.write(f"mm_step,mm_dir,z_ang,{key_name},rho,mass\n")
         for result in results:
             step = result["step"]
@@ -1082,7 +1199,7 @@ def resolve_type_label_map_for_path(
     lmp_in_path: Optional[Path],
 ) -> Optional[Dict[int, str]]:
     """Resolve the LAMMPS type→type_label map when type_label profiles are requested."""
-    if not args.type_labels:
+    if not (args.type_labels or args.water_density or args.water_oxygen_labels):
         return None
     if args.type_label_map:
         return parse_type_label_map_str(args.type_label_map)
@@ -1148,6 +1265,11 @@ def run_qmmm_mm_density(args) -> None:
             target_elements=args.elements,
             target_type_labels=args.type_labels,
             type_label_map=type_label_map,
+            water_density=args.water_density,
+            water_oxygen_labels=args.water_oxygen_labels,
+            water_oxygen_types=(
+                set(args.water_oxygen_types) if args.water_oxygen_types else None
+            ),
             dz=args.dz,
             skip=args.skip,
             stride=args.stride,
@@ -1223,6 +1345,7 @@ def parse_args():
             "  python tools/z_density.py md.traj --elements O H K\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow --smooth-sigma 0.3\n"
+            "  python tools/z_density.py ces2.emd.lammpstrj --water-density\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
             "  python tools/z_density.py --qmmm-mm run_dir --elements O H Cs\n"
@@ -1254,6 +1377,17 @@ def parse_args():
     p.add_argument("--smooth-sigma", type=float, default=0.0, metavar="ANG",
                    help=("Gaussian smoothing sigma in Å applied to plotted/output "
                          "profiles after binning (default: 0 = no smoothing)."))
+    p.add_argument("--water-density", action="store_true",
+                   help=("Also compute water molecular density vs z. Water O "
+                         "positions represent molecule positions; mass_water is "
+                         "reported in g/cm^3."))
+    p.add_argument("--water-oxygen-labels", nargs="+", default=None,
+                   help=("CES2 type_labels to treat as water oxygen for "
+                         "--water-density (default: auto-detect Ow/Ow_* from "
+                         "the type_label map)."))
+    p.add_argument("--water-oxygen-types", nargs="+", type=int, default=None,
+                   help=("LAMMPS type IDs to treat as water oxygen for "
+                         "--water-density, e.g. --water-oxygen-types 2."))
     p.add_argument("--zlo", type=float, default=None,
                    help="Lower z-limit for binning [Å] (default: auto from data)")
     p.add_argument("--zhi", type=float, default=None,
@@ -1286,6 +1420,8 @@ def main():
         sys.exit("ERROR: use either --elements or --type-labels, not both.")
     if args.smooth_sigma < 0:
         sys.exit("ERROR: --smooth-sigma must be >= 0.")
+    if args.water_oxygen_labels or args.water_oxygen_types:
+        args.water_density = True
 
     if args.qmmm_mm is not None:
         if args.traj is not None:
@@ -1325,14 +1461,14 @@ def main():
         type_map = auto_detect_type_map(lmp_in_path)
         print(f"  Auto-detected type map from {lmp_in_path}")
 
-    if args.type_labels:
+    if args.type_labels or args.water_density or args.water_oxygen_labels:
         if args.type_label_map:
             type_label_map = parse_type_label_map_str(args.type_label_map)
             print(f"  Manual type_label map: {type_label_map}")
         elif lmp_in_path:
             type_label_map = auto_detect_type_label_map(lmp_in_path)
             print(f"  Auto-detected type_label map from {lmp_in_path}")
-        if not type_label_map:
+        if args.type_labels and not type_label_map:
             sys.exit(
                 "ERROR: --type-labels requires --type-label-map or an in.lammps "
                 "with group comments containing type_labels."
@@ -1387,6 +1523,11 @@ def main():
         target_elements=args.elements,
         target_type_labels=args.type_labels,
         type_label_map=type_label_map,
+        water_density=args.water_density,
+        water_oxygen_labels=args.water_oxygen_labels,
+        water_oxygen_types=(
+            set(args.water_oxygen_types) if args.water_oxygen_types else None
+        ),
         dz=args.dz,
         skip=args.skip,
         stride=args.stride,
