@@ -17,7 +17,8 @@ Outputs (written next to the trajectory)
   z_density.png           — density profile plot
   With --water-density, number density shows water O/H atom profiles and
   mass density shows only water molecular density (mass_water in g/cm³)
-  from water oxygen z positions.
+  from water oxygen z positions. Outputs use the *_water prefix, e.g.
+  z_density_water_rawdata.csv and z_density_water.png.
 
 Usage examples
 --------------
@@ -1058,6 +1059,15 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     for i, el in enumerate(mass_elems):
         ax.plot(z_centers, mass_profiles[el],
                 color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
+    if meta.get("water_density"):
+        ax.axhline(
+            1.0,
+            color="0.45",
+            lw=max(_LW * 1.5, 0.6),
+            ls="--",
+            alpha=0.8,
+            label="1 g/cm$^3$",
+        )
     ax.set_xlabel("z (Å)", fontsize=_LS)
     ax.set_ylabel("Mass density (g/cm³)", fontsize=_LS)
     ax.set_title(f"Mass density ρ(z) by {key_name}", fontsize=_FS)
@@ -1254,6 +1264,13 @@ def resolve_exclude_types(args, lmp_in_path: Optional[Path]) -> Optional[Set[int
     return None
 
 
+def resolve_output_prefix(args) -> str:
+    """Return output prefix, adding _water for --water-density outputs."""
+    if args.water_density and not args.prefix.endswith("_water"):
+        return f"{args.prefix}_water"
+    return args.prefix
+
+
 def run_qmmm_mm_density(args) -> None:
     """Compute per-mm_N z-density plots and a root-level evolution plot."""
     run_dir = args.qmmm_mm.resolve()
@@ -1311,7 +1328,7 @@ def run_qmmm_mm_density(args) -> None:
             exclude_types=exclude_types,
         )
 
-        prefix = args.prefix
+        prefix = resolve_output_prefix(args)
         write_csv(z_centers, num_profiles, mass_profiles, meta,
                   mm_dir / f"{prefix}_rawdata.csv")
 
@@ -1355,8 +1372,9 @@ def run_qmmm_mm_density(args) -> None:
         for el in r["meta"].get("number_profile_elements", r["meta"]["target_elements"])
     })
     print(f"\n[Summary] Writing mm_N evolution outputs to {run_dir} ...")
+    prefix = resolve_output_prefix(args)
     evolution_prefix = (
-        f"{args.prefix}_smooth" if args.smooth_sigma > 0 else args.prefix
+        f"{prefix}_smooth" if args.smooth_sigma > 0 else prefix
     )
     write_qmmm_evolution_csv(
         results,
@@ -1617,7 +1635,7 @@ def main():
                       f"  ({mrho.max():.4f} g/cm³)  at z = {z_peak:.2f} Å")
 
     # ── write outputs ──
-    prefix = args.prefix
+    prefix = resolve_output_prefix(args)
     print(f"\n[2] Writing outputs to {out_dir} ...")
     write_csv(z_centers, num_profiles, mass_profiles, meta,
               out_dir / f"{prefix}_rawdata.csv")
