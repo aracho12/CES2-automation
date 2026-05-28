@@ -15,8 +15,9 @@ Outputs (written next to the trajectory)
 -----------------------------------------
   z_density_rawdata.csv   — z and ρ(z) for every element
   z_density.png           — density profile plot
-  With --water-density, CSV/plot also include water molecular density
-  (rho_water in Å⁻³, mass_water in g/cm³) from water oxygen z positions.
+  With --water-density, number density shows water O/H atom profiles and
+  mass density shows only water molecular density (mass_water in g/cm³)
+  from water oxygen z positions.
 
 Usage examples
 --------------
@@ -32,7 +33,7 @@ Usage examples
   # Smooth plotted profiles with a Gaussian kernel (sigma in Å)
   python tools/z_density.py ces2.emd.lammpstrj --type-labels O_oh Ow --smooth-sigma 0.3
 
-  # Also report water molecular density in g/cm^3 vs z
+  # Report O/H number density plus water mass density in g/cm^3 vs z
   python tools/z_density.py ces2.emd.lammpstrj --water-density
 
   # Provide LAMMPS type→element map explicitly for .lammpstrj
@@ -846,12 +847,20 @@ def compute_z_density(
                 target_elements = target_type_labels
                 print(f"    Target type_labels: {target_elements}")
             elif target_elements is None:
-                # all solvent = everything minus electrode metals
-                solvent = sorted(all_elements - ELECTRODE_ELEMENTS - {"X"})
-                if not solvent:
-                    solvent = sorted(all_elements - {"X"})
-                target_elements = solvent
-                print(f"    Auto-detected solvent elements: {target_elements}")
+                if water_density:
+                    # With --water-density, keep the number-density panel focused
+                    # on water atoms; the mass-density panel gets the molecular
+                    # water density derived from water O positions.
+                    water_atoms = [el for el in ["O", "H"] if el in all_elements]
+                    target_elements = water_atoms or sorted(all_elements - {"X"})
+                    print(f"    Auto-detected water atom elements: {target_elements}")
+                else:
+                    # all solvent = everything minus electrode metals
+                    solvent = sorted(all_elements - ELECTRODE_ELEMENTS - {"X"})
+                    if not solvent:
+                        solvent = sorted(all_elements - {"X"})
+                    target_elements = solvent
+                    print(f"    Auto-detected solvent elements: {target_elements}")
             else:
                 print(f"    Target elements: {target_elements}")
 
@@ -922,11 +931,15 @@ def compute_z_density(
         water_profile_name = WATER_PROFILE_NAME
         if water_profile_name in num_profiles:
             water_profile_name = "water_molecule"
-        target_elements = list(target_elements) + [water_profile_name]
         num_profiles[water_profile_name] = water_counts / norm
         mass_profiles[water_profile_name] = (
             num_profiles[water_profile_name] * WATER_MOLAR_MASS * _ANG3_TO_GCM3
         )
+
+    number_profile_elements = list(target_elements)
+    mass_profile_elements = list(target_elements)
+    if water_density and water_counts is not None:
+        mass_profile_elements = [water_profile_name]
 
     meta = {
         "n_frames": n_frames,
@@ -938,6 +951,8 @@ def compute_z_density(
         "area": area,
         "all_elements": sorted(all_elements),
         "target_elements": target_elements,
+        "number_profile_elements": number_profile_elements,
+        "mass_profile_elements": mass_profile_elements,
         "profile_mode": "type_label" if use_type_labels else "element",
         "label_to_element": label_to_element,
         "water_density": water_density,
@@ -981,6 +996,8 @@ def smooth_profiles(
 
 def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     elems = meta["target_elements"]
+    number_elems = meta.get("number_profile_elements", elems)
+    mass_elems = meta.get("mass_profile_elements", elems)
     key_name = "type_label" if meta.get("profile_mode") == "type_label" else "element"
     with open(out_path, "w") as f:
         f.write(f"# z_density.py output\n")
@@ -994,16 +1011,16 @@ def write_csv(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
         if meta.get("water_density"):
             water_name = meta.get("water_profile_name") or WATER_PROFILE_NAME
             f.write(
-                f"# rho_{water_name}: water molecule number density [Ang^-3] "
-                f"from water O z positions; mass_{water_name}: water density "
-                "[g/cm^3]\n"
+                f"# --water-density: number-density columns are water atoms; "
+                f"mass_{water_name} is water molecular density [g/cm^3] from "
+                "water O z positions\n"
             )
-        num_cols  = [f"rho_{e}" for e in elems]
-        mass_cols = [f"mass_{e}" for e in elems]
+        num_cols  = [f"rho_{e}" for e in number_elems]
+        mass_cols = [f"mass_{e}" for e in mass_elems]
         f.write(",".join(["z_ang"] + num_cols + mass_cols) + "\n")
         for i, z in enumerate(z_centers):
-            nv = [f"{num_profiles[e][i]:.8f}" for e in elems]
-            mv = [f"{mass_profiles[e][i]:.8f}" for e in elems]
+            nv = [f"{num_profiles[e][i]:.8f}" for e in number_elems]
+            mv = [f"{mass_profiles[e][i]:.8f}" for e in mass_elems]
             f.write(",".join([f"{z:.4f}"] + nv + mv) + "\n")
     print(f"  Saved: {out_path}")
 
@@ -1015,6 +1032,8 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     from matplotlib.ticker import AutoMinorLocator
 
     elems = meta["target_elements"]
+    number_elems = meta.get("number_profile_elements", elems)
+    mass_elems = meta.get("mass_profile_elements", elems)
     key_name = "type_label" if meta.get("profile_mode") == "type_label" else "element"
     smooth_sigma = meta.get("smooth_sigma", 0.0)
 
@@ -1022,13 +1041,13 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
 
     # ── left panel: number density ──
     ax = axes[0]
-    for i, el in enumerate(elems):
+    for i, el in enumerate(number_elems):
         ax.plot(z_centers, num_profiles[el],
                 color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
     ax.set_xlabel("z (Å)", fontsize=_LS)
     ax.set_ylabel("Number density (Å$^{-3}$)", fontsize=_LS)
     ax.set_title(f"Number density ρ(z) by {key_name}", fontsize=_FS)
-    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(elems) // 4))
+    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(number_elems) // 4))
     ax.xaxis.set_minor_locator(AutoMinorLocator(2))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     if ps:
@@ -1036,13 +1055,13 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
 
     # ── right panel: mass density ──
     ax = axes[1]
-    for i, el in enumerate(elems):
+    for i, el in enumerate(mass_elems):
         ax.plot(z_centers, mass_profiles[el],
                 color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
     ax.set_xlabel("z (Å)", fontsize=_LS)
     ax.set_ylabel("Mass density (g/cm³)", fontsize=_LS)
     ax.set_title(f"Mass density ρ(z) by {key_name}", fontsize=_FS)
-    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(elems) // 4))
+    ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(mass_elems) // 4))
     ax.xaxis.set_minor_locator(AutoMinorLocator(2))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
     if ps:
@@ -1092,13 +1111,27 @@ def write_qmmm_evolution_csv(
             z_centers = result["z_centers"]
             num_profiles = result["num_profiles"]
             mass_profiles = result["mass_profiles"]
+            number_set = set(
+                result["meta"].get(
+                    "number_profile_elements",
+                    result["meta"]["target_elements"],
+                )
+            )
+            mass_set = set(
+                result["meta"].get(
+                    "mass_profile_elements",
+                    result["meta"]["target_elements"],
+                )
+            )
             for el in elements:
-                if el not in num_profiles:
+                if el not in number_set and el not in mass_set:
                     continue
-                rho = num_profiles[el]
-                mass = mass_profiles[el]
-                for z, rv, mv in zip(z_centers, rho, mass):
-                    f.write(f"{step},{mm_name},{z:.4f},{el},{rv:.8f},{mv:.8f}\n")
+                rho = num_profiles.get(el) if el in number_set else None
+                mass = mass_profiles.get(el) if el in mass_set else None
+                for i, z in enumerate(z_centers):
+                    rv = f"{rho[i]:.8f}" if rho is not None else ""
+                    mv = f"{mass[i]:.8f}" if mass is not None else ""
+                    f.write(f"{step},{mm_name},{z:.4f},{el},{rv},{mv}\n")
     print(f"  Saved: {out_path}")
 
 
@@ -1308,7 +1341,19 @@ def run_qmmm_mm_density(args) -> None:
     if not results:
         sys.exit("ERROR: no mm_N trajectories were processed.")
 
-    elements = sorted({el for r in results for el in r["meta"]["target_elements"]})
+    elements = sorted({
+        el
+        for r in results
+        for el in (
+            r["meta"].get("number_profile_elements", r["meta"]["target_elements"])
+            + r["meta"].get("mass_profile_elements", r["meta"]["target_elements"])
+        )
+    })
+    number_elements = sorted({
+        el
+        for r in results
+        for el in r["meta"].get("number_profile_elements", r["meta"]["target_elements"])
+    })
     print(f"\n[Summary] Writing mm_N evolution outputs to {run_dir} ...")
     evolution_prefix = (
         f"{args.prefix}_smooth" if args.smooth_sigma > 0 else args.prefix
@@ -1320,7 +1365,7 @@ def run_qmmm_mm_density(args) -> None:
     )
     plot_qmmm_evolution(
         results,
-        elements,
+        number_elements,
         args.dz,
         run_dir / f"{evolution_prefix}_mm_evolution.png",
     )
@@ -1546,14 +1591,30 @@ def main():
 
     # ── peak info ──
     smooth_label = " (smoothed)" if args.smooth_sigma > 0 else ""
-    print(f"\n    Peak densities{smooth_label}:")
-    for el in plot_meta["target_elements"]:
-        rho = plot_num_profiles[el]
-        mrho = plot_mass_profiles[el]
-        if rho.max() > 0:
-            z_peak = z_centers[np.argmax(rho)]
-            print(f"    {el:4s}  ρ_max = {rho.max():.5f} Å⁻³"
-                  f"  ({mrho.max():.4f} g/cm³)  at z = {z_peak:.2f} Å")
+    if plot_meta.get("water_density"):
+        print(f"\n    Peak number densities{smooth_label}:")
+        for el in plot_meta.get("number_profile_elements", plot_meta["target_elements"]):
+            rho = plot_num_profiles[el]
+            if rho.max() > 0:
+                z_peak = z_centers[np.argmax(rho)]
+                print(f"    {el:4s}  ρ_max = {rho.max():.5f} Å⁻³"
+                      f"  at z = {z_peak:.2f} Å")
+        print(f"\n    Peak mass densities{smooth_label}:")
+        for el in plot_meta.get("mass_profile_elements", plot_meta["target_elements"]):
+            mrho = plot_mass_profiles[el]
+            if mrho.max() > 0:
+                z_peak = z_centers[np.argmax(mrho)]
+                print(f"    {el:4s}  ρ_max = {mrho.max():.4f} g/cm³"
+                      f"  at z = {z_peak:.2f} Å")
+    else:
+        print(f"\n    Peak densities{smooth_label}:")
+        for el in plot_meta["target_elements"]:
+            rho = plot_num_profiles[el]
+            mrho = plot_mass_profiles[el]
+            if rho.max() > 0:
+                z_peak = z_centers[np.argmax(rho)]
+                print(f"    {el:4s}  ρ_max = {rho.max():.5f} Å⁻³"
+                      f"  ({mrho.max():.4f} g/cm³)  at z = {z_peak:.2f} Å")
 
     # ── write outputs ──
     prefix = args.prefix
