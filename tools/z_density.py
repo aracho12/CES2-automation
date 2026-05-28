@@ -1037,6 +1037,7 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
     mass_elems = meta.get("mass_profile_elements", elems)
     key_name = "type_label" if meta.get("profile_mode") == "type_label" else "element"
     smooth_sigma = meta.get("smooth_sigma", 0.0)
+    show_title = meta.get("plot_title", False)
 
     fig, axes = plt.subplots(1, 2, figsize=(_FW * 2.4, _FH * 1.4))
 
@@ -1047,7 +1048,8 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
                 color=_C[(i + 1) % len(_C)], lw=_LW * 2, label=el)
     ax.set_xlabel("z (Å)", fontsize=_LS)
     ax.set_ylabel("Number density (Å$^{-3}$)", fontsize=_LS)
-    ax.set_title(f"Number density ρ(z) by {key_name}", fontsize=_FS)
+    if show_title:
+        ax.set_title(f"Number density ρ(z) by {key_name}", fontsize=_FS)
     ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(number_elems) // 4))
     ax.xaxis.set_minor_locator(AutoMinorLocator(2))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
@@ -1070,7 +1072,8 @@ def plot_profiles(z_centers, num_profiles, mass_profiles, meta, out_path: Path):
         )
     ax.set_xlabel("z (Å)", fontsize=_LS)
     ax.set_ylabel("Mass density (g/cm³)", fontsize=_LS)
-    ax.set_title(f"Mass density ρ(z) by {key_name}", fontsize=_FS)
+    if show_title:
+        ax.set_title(f"Mass density ρ(z) by {key_name}", fontsize=_FS)
     ax.legend(fontsize=_FS - 1, frameon=False, ncol=max(1, len(mass_elems) // 4))
     ax.xaxis.set_minor_locator(AutoMinorLocator(2))
     ax.yaxis.set_minor_locator(AutoMinorLocator(2))
@@ -1150,6 +1153,7 @@ def plot_qmmm_evolution(
     elements: List[str],
     dz: float,
     out_path: Path,
+    show_title: bool = False,
 ):
     """Plot element- or type_label-resolved rho(z) evolution across mm_N steps."""
     import matplotlib
@@ -1203,7 +1207,8 @@ def plot_qmmm_evolution(
             vmin=0.0,
             vmax=vmax if vmax > 0 else None,
         )
-        ax.set_title(f"{el} number density", fontsize=_FS)
+        if show_title:
+            ax.set_title(f"{el} number density", fontsize=_FS)
         ax.set_ylabel("z (Å)", fontsize=_LS)
         ax.set_xticks(range(len(steps)))
         tick_step = max(1, len(steps) // 8)
@@ -1264,11 +1269,28 @@ def resolve_exclude_types(args, lmp_in_path: Optional[Path]) -> Optional[Set[int
     return None
 
 
+def _safe_prefix_token(value: str) -> str:
+    """Convert a selected element/type string into a filename-safe token."""
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_")
+    return token or "profile"
+
+
+def _append_prefix_suffix(prefix: str, suffix: str) -> str:
+    """Append suffix to prefix unless it is already the trailing suffix."""
+    if not suffix or prefix == suffix or prefix.endswith(f"_{suffix}"):
+        return prefix
+    return f"{prefix}_{suffix}"
+
+
 def resolve_output_prefix(args) -> str:
-    """Return output prefix, adding _water for --water-density outputs."""
-    if args.water_density and not args.prefix.endswith("_water"):
-        return f"{args.prefix}_water"
-    return args.prefix
+    """Return output prefix, adding selected elements and water mode."""
+    prefix = args.prefix
+    if args.elements:
+        elem_suffix = "_".join(_safe_prefix_token(el) for el in args.elements)
+        prefix = _append_prefix_suffix(prefix, elem_suffix)
+    if args.water_density:
+        prefix = _append_prefix_suffix(prefix, "water")
+    return prefix
 
 
 def run_qmmm_mm_density(args) -> None:
@@ -1341,6 +1363,7 @@ def run_qmmm_mm_density(args) -> None:
             plot_meta["smooth_sigma"] = args.smooth_sigma
             write_csv(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
                       mm_dir / f"{prefix}_smooth_rawdata.csv")
+        plot_meta["plot_title"] = args.plot_title
 
         plot_profiles(z_centers, plot_num_profiles, plot_mass_profiles, plot_meta,
                       mm_dir / f"{prefix}.png")
@@ -1386,6 +1409,7 @@ def run_qmmm_mm_density(args) -> None:
         number_elements,
         args.dz,
         run_dir / f"{evolution_prefix}_mm_evolution.png",
+        show_title=args.plot_title,
     )
 
     print(f"\nDone. Processed {len(results)} mm_N directories, skipped {skipped}.\n")
@@ -1440,6 +1464,8 @@ def parse_args():
     p.add_argument("--smooth-sigma", type=float, default=0.0, metavar="ANG",
                    help=("Gaussian smoothing sigma in Å applied to plotted/output "
                          "profiles after binning (default: 0 = no smoothing)."))
+    p.add_argument("--plot-title", action="store_true",
+                   help="Show subplot titles in generated figures (default: off).")
     p.add_argument("--water-density", action="store_true",
                    help=("Also compute water molecular density vs z. Water O "
                          "positions represent molecule positions; mass_water is "
@@ -1606,6 +1632,7 @@ def main():
         plot_num_profiles = smooth_profiles(num_profiles, args.dz, args.smooth_sigma)
         plot_mass_profiles = smooth_profiles(mass_profiles, args.dz, args.smooth_sigma)
         plot_meta["smooth_sigma"] = args.smooth_sigma
+    plot_meta["plot_title"] = args.plot_title
 
     # ── peak info ──
     smooth_label = " (smoothed)" if args.smooth_sigma > 0 else ""
