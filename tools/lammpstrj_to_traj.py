@@ -165,6 +165,18 @@ def count_frames(lammpstrj: Path) -> int:
     return count
 
 
+def count_traj_frames(traj_path: Path) -> int:
+    """Return the number of frames in an existing ASE .traj file."""
+    if not traj_path.exists() or traj_path.stat().st_size == 0:
+        return 0
+
+    traj = Trajectory(str(traj_path), mode="r")
+    try:
+        return len(traj)
+    finally:
+        traj.close()
+
+
 def iter_frames(
     lammpstrj: Path,
     stride: int = 1,
@@ -393,19 +405,38 @@ def convert(
     stride: int = 1,
     wrap: bool = True,
     verbose: bool = True,
+    mode: str = "w",
+    start_frame: int = 0,
+    max_written: Optional[int] = None,
+    progress_offset: int = 0,
 ) -> int:
     """
     Convert lammpstrj → ASE .traj.
     Returns the number of frames written.
     """
-    traj = Trajectory(str(output), mode="w")
+    if mode not in {"w", "a"}:
+        raise ValueError("mode must be 'w' or 'a'")
+    if start_frame < 0:
+        raise ValueError("start_frame must be >= 0")
+    if max_written is not None and max_written < 1:
+        raise ValueError("max_written must be >= 1")
+
+    traj = Trajectory(str(output), mode=mode)
     written = 0
     t_start = time.perf_counter()
     t_parse = 0.0
     t_wrap = 0.0
     t_write = 0.0
+    stop_frame = None
+    if max_written is not None:
+        stop_frame = start_frame + max_written * stride
 
-    for frame in iter_frames(lammpstrj, stride=stride):
+    for frame in iter_frames(
+        lammpstrj,
+        stride=stride,
+        start=start_frame,
+        stop=stop_frame,
+    ):
         t0 = time.perf_counter()
         atoms = frame_to_atoms(frame, type_map)
         t1 = time.perf_counter()
@@ -426,7 +457,9 @@ def convert(
         if verbose and written % 100 == 0:
             elapsed = time.perf_counter() - t_start
             fps = written / elapsed if elapsed > 0 else 0
-            print(f"  Written {written} frames (timestep {frame['timestep']}) "
+            total = progress_offset + written
+            print(f"  Written {written} frames this run, {total} total "
+                  f"(timestep {frame['timestep']}) "
                   f"[{elapsed:.1f}s elapsed, {fps:.1f} frames/s]", flush=True)
 
     traj.close()
@@ -595,6 +628,8 @@ def convert_qmmm_wrap_each(
     wrap: bool = True,
     verbose: bool = True,
     precount: bool = True,
+    resume: bool = False,
+    max_written_frames: Optional[int] = None,
 ) -> int:
     """
     Convert each mm_N/*.emd.lammpstrj trajectory into its own wrapped .traj.
@@ -618,6 +653,10 @@ def convert_qmmm_wrap_each(
         else:
             print("  Molecule-aware wrapping: OFF")
         print(f"  Stride: every {stride} frame(s)")
+        if resume:
+            print("  Resume: ON")
+        if max_written_frames is not None:
+            print(f"  Chunk limit: {max_written_frames} written frame(s) this run")
         print()
 
     total_written = 0
@@ -635,6 +674,19 @@ def convert_qmmm_wrap_each(
         output = trj_file.with_suffix(".wrapped.traj")
 
         if verbose:
+            existing = 0
+            if resume:
+                try:
+                    existing = count_traj_frames(output)
+                except Exception as exc:
+                    print(
+                        f"ERROR: Could not read existing output for resume: {output}\n"
+                        f"  {exc}\n"
+                        "Delete the partial .traj file or rerun without --resume.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
             if precount:
                 n_frames = count_frames(trj_file)
                 expected = (n_frames + stride - 1) // stride
@@ -644,6 +696,17 @@ def convert_qmmm_wrap_each(
                 print(f"  mm_{step_idx}: {trj_file.name}"
                       f" -> {output.name} (frame count skipped)", flush=True)
 
+            if resume and existing:
+                print(f"    Resuming after {existing:,} existing frame(s)", flush=True)
+        else:
+            existing = count_traj_frames(output) if resume else 0
+
+        remaining = None
+        if max_written_frames is not None:
+            remaining = max_written_frames - total_written
+            if remaining <= 0:
+                break
+
         written = convert(
             lammpstrj=trj_file,
             output=output,
@@ -651,9 +714,22 @@ def convert_qmmm_wrap_each(
             stride=stride,
             wrap=wrap,
             verbose=verbose,
+            mode="a" if resume and existing > 0 else "w",
+            start_frame=existing * stride if resume else 0,
+            max_written=remaining,
+            progress_offset=existing,
         )
         total_written += written
         converted += 1
+
+        if max_written_frames is not None and total_written >= max_written_frames:
+            if verbose:
+                print(
+                    f"\nChunk limit reached after writing {total_written:,} frame(s). "
+                    "Rerun the same command with --resume to continue.",
+                    flush=True,
+                )
+            break
 
     elapsed = time.perf_counter() - t_start
 
@@ -770,12 +846,28 @@ def main():
             "This saves one read pass over each large .lammpstrj file."
         )
     )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "Resume --qmmm-wrap-each by appending to existing .wrapped.traj files "
+            "and skipping source frames that were already written."
+        )
+    )
+    parser.add_argument(
+        "--max-written-frames", type=int, default=None, metavar="N",
+        help=(
+            "Stop after writing at most N selected frames in this command. "
+            "Use with --resume to process large trajectories in login-node chunks."
+        )
+    )
 
     args = parser.parse_args()
     do_wrap = args.wrap and not args.no_wrap
 
     if args.stride < 1:
         parser.error("--stride must be >= 1")
+    if args.max_written_frames is not None and args.max_written_frames < 1:
+        parser.error("--max-written-frames must be >= 1")
 
     if args.qmmm_average is not None and args.qmmm_wrap_each is not None:
         parser.error("use only one of --qmmm-average or --qmmm-wrap-each")
@@ -834,6 +926,8 @@ def main():
             stride=args.stride,
             wrap=do_wrap,
             precount=not args.no_precount,
+            resume=args.resume,
+            max_written_frames=args.max_written_frames,
         )
 
         return
