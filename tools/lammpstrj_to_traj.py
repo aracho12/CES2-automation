@@ -165,7 +165,12 @@ def count_frames(lammpstrj: Path) -> int:
     return count
 
 
-def iter_frames(lammpstrj: Path):
+def iter_frames(
+    lammpstrj: Path,
+    stride: int = 1,
+    start: int = 0,
+    stop: Optional[int] = None,
+):
     """
     Generator that yields one frame at a time as a dict:
       {
@@ -175,7 +180,17 @@ def iter_frames(lammpstrj: Path):
         'columns': list[str],
         'data': np.ndarray (n_atoms, n_cols),
       }
+
+    Frames outside the selected start/stop/stride window are skipped at the
+    text-line level, so large dumped frames are not converted to numpy arrays
+    unless they will actually be used.
     """
+    if stride < 1:
+        raise ValueError("stride must be >= 1")
+    if start < 0:
+        raise ValueError("start must be >= 0")
+
+    frame_idx = 0
     with open(lammpstrj) as f:
         while True:
             # --- TIMESTEP ---
@@ -200,6 +215,15 @@ def iter_frames(lammpstrj: Path):
             # --- ATOMS header ---
             atoms_header = f.readline()  # "ITEM: ATOMS id type xu yu zu ..."
             columns = atoms_header.split()[2:]  # skip "ITEM:" and "ATOMS"
+            n_cols = len(columns)
+
+            if stop is not None and frame_idx >= stop:
+                return
+
+            should_yield = (
+                frame_idx >= start
+                and (frame_idx - start) % stride == 0
+            )
 
             # --- atom data ---
             # Pre-allocate and fill row-by-row to avoid building a Python
@@ -207,10 +231,21 @@ def iter_frames(lammpstrj: Path):
             # keeps two copies of the data alive simultaneously (the nested
             # Python list *and* the numpy array) which doubles peak memory
             # per frame and triggers OOM on login nodes with tight ulimits.
-            n_cols = len(columns)
-            data = np.empty((n_atoms, n_cols), dtype=float)
-            for i in range(n_atoms):
-                data[i] = f.readline().split()
+            if should_yield:
+                data = np.empty((n_atoms, n_cols), dtype=np.float64)
+                for i in range(n_atoms):
+                    row = np.fromstring(f.readline(), sep=" ", dtype=np.float64)
+                    if row.size != n_cols:
+                        raise ValueError(
+                            f"Malformed atom row in {lammpstrj} at frame "
+                            f"{frame_idx}: expected {n_cols} columns, got {row.size}"
+                        )
+                    data[i] = row
+            else:
+                for _ in range(n_atoms):
+                    f.readline()
+                frame_idx += 1
+                continue
 
             yield {
                 "timestep": timestep,
@@ -219,6 +254,7 @@ def iter_frames(lammpstrj: Path):
                 "columns": columns,
                 "data": data,
             }
+            frame_idx += 1
 
 
 def frame_to_atoms(frame: dict, type_map: Dict[int, str]) -> Atoms:
@@ -364,37 +400,34 @@ def convert(
     """
     traj = Trajectory(str(output), mode="w")
     written = 0
-    frame_idx = 0
     t_start = time.perf_counter()
     t_parse = 0.0
     t_wrap = 0.0
     t_write = 0.0
 
-    for frame in iter_frames(lammpstrj):
-        if frame_idx % stride == 0:
-            t0 = time.perf_counter()
-            atoms = frame_to_atoms(frame, type_map)
-            t1 = time.perf_counter()
-            t_parse += t1 - t0
+    for frame in iter_frames(lammpstrj, stride=stride):
+        t0 = time.perf_counter()
+        atoms = frame_to_atoms(frame, type_map)
+        t1 = time.perf_counter()
+        t_parse += t1 - t0
 
-            if wrap:
-                atoms = wrap_molecules(atoms)
-                t2 = time.perf_counter()
-                t_wrap += t2 - t1
-            else:
-                t2 = t1
+        if wrap:
+            atoms = wrap_molecules(atoms)
+            t2 = time.perf_counter()
+            t_wrap += t2 - t1
+        else:
+            t2 = t1
 
-            traj.write(atoms)
-            t3 = time.perf_counter()
-            t_write += t3 - t2
+        traj.write(atoms)
+        t3 = time.perf_counter()
+        t_write += t3 - t2
 
-            written += 1
-            if verbose and written % 100 == 0:
-                elapsed = time.perf_counter() - t_start
-                fps = written / elapsed if elapsed > 0 else 0
-                print(f"  Written {written} frames (timestep {frame['timestep']}) "
-                      f"[{elapsed:.1f}s elapsed, {fps:.1f} frames/s]")
-        frame_idx += 1
+        written += 1
+        if verbose and written % 100 == 0:
+            elapsed = time.perf_counter() - t_start
+            fps = written / elapsed if elapsed > 0 else 0
+            print(f"  Written {written} frames (timestep {frame['timestep']}) "
+                  f"[{elapsed:.1f}s elapsed, {fps:.1f} frames/s]", flush=True)
 
     traj.close()
     t_total = time.perf_counter() - t_start
@@ -525,24 +558,21 @@ def convert_qmmm_average(
     t_start = time.perf_counter()
 
     for trj_file in trj_files:
-        frame_idx = 0
         step_name = trj_file.parent.name
-        for frame in iter_frames(trj_file):
-            if frame_idx % stride == 0:
-                atoms = frame_to_atoms(frame, type_map)
-                # Tag QM/MM step in atoms.info for downstream analysis
-                atoms.info["qmmm_step"] = step_name
-                if wrap:
-                    atoms = wrap_molecules(atoms)
-                traj.write(atoms)
-                total_written += 1
-                if verbose and total_written % 100 == 0:
-                    elapsed = time.perf_counter() - t_start
-                    fps = total_written / elapsed if elapsed > 0 else 0
-                    print(f"  Written {total_written} frames "
-                          f"({step_name}, timestep {frame['timestep']}) "
-                          f"[{elapsed:.1f}s, {fps:.1f} fr/s]")
-            frame_idx += 1
+        for frame in iter_frames(trj_file, stride=stride):
+            atoms = frame_to_atoms(frame, type_map)
+            # Tag QM/MM step in atoms.info for downstream analysis
+            atoms.info["qmmm_step"] = step_name
+            if wrap:
+                atoms = wrap_molecules(atoms)
+            traj.write(atoms)
+            total_written += 1
+            if verbose and total_written % 100 == 0:
+                elapsed = time.perf_counter() - t_start
+                fps = total_written / elapsed if elapsed > 0 else 0
+                print(f"  Written {total_written} frames "
+                      f"({step_name}, timestep {frame['timestep']}) "
+                      f"[{elapsed:.1f}s, {fps:.1f} fr/s]", flush=True)
 
     traj.close()
     elapsed = time.perf_counter() - t_start
@@ -564,6 +594,7 @@ def convert_qmmm_wrap_each(
     stride: int = 1,
     wrap: bool = True,
     verbose: bool = True,
+    precount: bool = True,
 ) -> int:
     """
     Convert each mm_N/*.emd.lammpstrj trajectory into its own wrapped .traj.
@@ -602,12 +633,16 @@ def convert_qmmm_wrap_each(
             continue
 
         output = trj_file.with_suffix(".wrapped.traj")
-        n_frames = count_frames(trj_file)
-        expected = (n_frames + stride - 1) // stride
 
         if verbose:
-            print(f"  mm_{step_idx}: {trj_file.name} ({n_frames:,} frames)"
-                  f" -> {output.name} (~{expected:,} frames)")
+            if precount:
+                n_frames = count_frames(trj_file)
+                expected = (n_frames + stride - 1) // stride
+                print(f"  mm_{step_idx}: {trj_file.name} ({n_frames:,} frames)"
+                      f" -> {output.name} (~{expected:,} frames)", flush=True)
+            else:
+                print(f"  mm_{step_idx}: {trj_file.name}"
+                      f" -> {output.name} (frame count skipped)", flush=True)
 
         written = convert(
             lammpstrj=trj_file,
@@ -615,7 +650,7 @@ def convert_qmmm_wrap_each(
             type_map=type_map,
             stride=stride,
             wrap=wrap,
-            verbose=False,
+            verbose=verbose,
         )
         total_written += written
         converted += 1
@@ -728,9 +763,19 @@ def main():
         "--last-steps", type=int, default=2,
         help="Number of last QM/MM steps to include (default: 2, used with --qmmm-average)"
     )
+    parser.add_argument(
+        "--no-precount", action="store_true",
+        help=(
+            "Skip the preliminary full-file frame-count scan in --qmmm-wrap-each. "
+            "This saves one read pass over each large .lammpstrj file."
+        )
+    )
 
     args = parser.parse_args()
     do_wrap = args.wrap and not args.no_wrap
+
+    if args.stride < 1:
+        parser.error("--stride must be >= 1")
 
     if args.qmmm_average is not None and args.qmmm_wrap_each is not None:
         parser.error("use only one of --qmmm-average or --qmmm-wrap-each")
@@ -788,6 +833,7 @@ def main():
             type_map=type_map,
             stride=args.stride,
             wrap=do_wrap,
+            precount=not args.no_precount,
         )
 
         return
