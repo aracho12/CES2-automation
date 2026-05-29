@@ -87,6 +87,47 @@ def _parse_timestep(lines: List[str]) -> Optional[float]:
     return None
 
 
+def _parse_atom_counts(lines: List[str]) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Auto-detect N_total and N_mobile for temperature DOF correction.
+
+    Strategy:
+      1. N_total  — from "N atoms" in read_data output
+      2. N_mobile — from "N atoms in group GROUP_NAME" where GROUP_NAME is
+                    the group used in 'fix NAME GROUP_NAME nvt/npt/langevin'
+                    (i.e. the thermostat group).
+
+    Returns (N_total, N_mobile).  Either may be None if not found.
+    """
+    n_total: Optional[int] = None
+    n_mobile: Optional[int] = None
+
+    # N_total: first "  N atoms" line after read_data
+    for line in lines:
+        m = re.match(r"^\s+(\d+)\s+atoms\s*$", line)
+        if m:
+            n_total = int(m.group(1))
+            break
+
+    # Thermostat group: fix NAME GROUP nvt/npt/langevin
+    thermo_group: Optional[str] = None
+    for line in lines:
+        m = re.match(r"^\s*fix\s+\S+\s+(\S+)\s+(?:nvt|npt|langevin)\b", line, re.IGNORECASE)
+        if m:
+            thermo_group = m.group(1)
+            break
+
+    if thermo_group:
+        pat = re.compile(rf"^\s*(\d+)\s+atoms\s+in\s+group\s+{re.escape(thermo_group)}\s*$")
+        for line in lines:
+            m = pat.match(line)
+            if m:
+                n_mobile = int(m.group(1))
+                break
+
+    return n_total, n_mobile
+
+
 def _parse_thermo_blocks(
     lines: List[str],
     columns: Optional[List[str]] = None,
@@ -235,16 +276,22 @@ def parse_log(
     log_path: Path,
     dt_override: Optional[float] = None,
     extra_cols: Optional[List[str]] = None,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], float]:
+    n_total_override: Optional[int] = None,
+    n_mobile_override: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], float, Optional[float]]:
     """
     Parse a LAMMPS log file.
 
     Returns
     -------
-    steps    : 1-D array of step numbers
-    time_ps  : 1-D array of simulation time in ps
-    extra    : dict of extra thermo column arrays (empty if none requested)
-    dt_fs    : timestep in fs (used for time conversion)
+    steps       : 1-D array of step numbers
+    time_ps     : 1-D array of simulation time in ps
+    temp_raw    : reported Temp (all atoms, may be diluted by frozen QM slab)
+    temp_corr   : DOF-corrected Temp for mobile (thermostat) group
+                  equals temp_raw when no frozen atoms are detected
+    extra       : dict of extra thermo column arrays (empty if none requested)
+    dt_fs       : timestep in fs
+    corr_factor : N_total/N_mobile used for correction (None if no correction)
     """
     with open(log_path, "r", errors="replace") as fh:
         lines = fh.readlines()
@@ -266,14 +313,34 @@ def parse_log(
     if "Step" not in data or "Temp" not in data:
         raise ValueError(f"No thermo data (Step + Temp) found in {log_path}")
 
-    steps   = data["Step"]
-    time_ps = steps * dt_fs / 1000.0   # fs → ps
+    steps    = data["Step"]
+    time_ps  = steps * dt_fs / 1000.0
+    temp_raw = data["Temp"]
 
     extra: Dict[str, np.ndarray] = {
         k: v for k, v in data.items() if k not in ("Step", "Temp")
     }
 
-    return steps, time_ps, data["Temp"], extra, dt_fs
+    # ── DOF correction for frozen QM slab ────────────────────────────────────
+    n_total  = n_total_override
+    n_mobile = n_mobile_override
+    if n_total is None or n_mobile is None:
+        _nt, _nm = _parse_atom_counts(lines)
+        if n_total  is None: n_total  = _nt
+        if n_mobile is None: n_mobile = _nm
+
+    corr_factor: Optional[float] = None
+    if n_total is not None and n_mobile is not None and n_mobile < n_total:
+        corr_factor = n_total / n_mobile
+        temp_corr   = temp_raw * corr_factor
+        print(
+            f"  DOF correction: N_total={n_total}, N_mobile={n_mobile} "
+            f"→ ×{corr_factor:.4f}"
+        )
+    else:
+        temp_corr = temp_raw.copy()
+
+    return steps, time_ps, temp_raw, temp_corr, extra, dt_fs, corr_factor
 
 
 # ─────────────────────────── running average ─────────────────────────────────
@@ -333,25 +400,41 @@ def _setup_axes(n_extra: int = 0):
 
 def plot_single(
     time_ps: np.ndarray,
-    temp_K: np.ndarray,
+    temp_raw: np.ndarray,
+    temp_corr: np.ndarray,
     extra: Dict[str, np.ndarray],
     avg_window: int,
     label: Optional[str],
     out_prefix: Path,
     target_T: Optional[float],
+    corr_factor: Optional[float],
 ) -> None:
-    """Plot T(t) for a single log file."""
+    """Plot T(t) for a single log file.
+
+    If corr_factor is not None, temp_corr (DOF-corrected) is shown as the
+    primary line and temp_raw is drawn faintly for reference.
+    """
     n_extra = len(extra)
     fig, axes = _setup_axes(n_extra)
 
     ax_T = axes[0]
     color = _C[0]
     lw = _LW * 2
+    corrected = corr_factor is not None
 
-    ax_T.plot(time_ps, temp_K, color=color, lw=lw * 0.6, alpha=0.4,
-              label=label or "T(t)")
+    # ── raw T (faint, for reference when correction is applied) ──────────────
+    if corrected:
+        ax_T.plot(time_ps, temp_raw, color="grey", lw=lw * 0.4, alpha=0.25,
+                  label="T_raw (all atoms)")
+
+    # ── primary: corrected (or raw if no correction) ──────────────────────────
+    primary = temp_corr
+    primary_label = label or ("T (mobile atoms)" if corrected else "T(t)")
+    ax_T.plot(time_ps, primary, color=color, lw=lw * 0.6, alpha=0.45,
+              label=primary_label)
+
     if avg_window > 1:
-        avg = running_average(temp_K, avg_window)
+        avg = running_average(primary, avg_window)
         ax_T.plot(time_ps, avg, color=color, lw=lw,
                   label=f"running avg ({avg_window})")
 
@@ -359,11 +442,14 @@ def plot_single(
         ax_T.axhline(target_T, color=_C[5] if len(_C) > 5 else "grey",
                      lw=lw, ls="--", label=f"target {target_T:.0f} K")
 
-    mean_T = np.mean(temp_K)
+    mean_T = np.mean(primary)
     ax_T.axhline(mean_T, color=_C[1] if len(_C) > 1 else "red",
                  lw=lw, ls=":", label=f"mean {mean_T:.1f} K")
 
-    ax_T.set_ylabel("Temperature (K)", fontsize=_LS)
+    ylabel = "Temperature (K)"
+    if corrected:
+        ylabel += f"\n(corrected ×{corr_factor:.3f})"
+    ax_T.set_ylabel(ylabel, fontsize=_LS)
     ax_T.legend(fontsize=_FS - 1)
     if n_extra == 0:
         ax_T.set_xlabel("Time (ps)", fontsize=_LS)
@@ -492,6 +578,18 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", default=None, metavar="PREFIX",
         help="Output filename prefix (default: temperature, placed next to log).",
     )
+    p.add_argument(
+        "--no-correct", action="store_true",
+        help="Disable DOF correction for frozen QM atoms; plot raw Temp as-is.",
+    )
+    p.add_argument(
+        "--n-total", type=int, default=None, metavar="N",
+        help="Override total atom count for DOF correction.",
+    )
+    p.add_argument(
+        "--n-mobile", type=int, default=None, metavar="N",
+        help="Override mobile (thermostat) atom count for DOF correction.",
+    )
     return p
 
 
@@ -519,12 +617,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"  mm_{mm_idx}: no log file found, skipping")
                 continue
             try:
-                steps, time_ps, temp_K, _, dt_fs = parse_log(
-                    log_path, dt_override=args.dt, extra_cols=args.extra or None
+                steps, time_ps, temp_raw, temp_corr, _, dt_fs, cf = parse_log(
+                    log_path, dt_override=args.dt, extra_cols=args.extra or None,
+                    n_total_override=args.n_total if not args.no_correct else None,
+                    n_mobile_override=args.n_mobile if not args.no_correct else None,
                 )
             except Exception as e:
                 print(f"  mm_{mm_idx}: {e}, skipping", file=sys.stderr)
                 continue
+            temp_K = temp_raw if args.no_correct else temp_corr
             if args.skip:
                 steps, time_ps, temp_K = steps[args.skip:], time_ps[args.skip:], temp_K[args.skip:]
             print(f"  mm_{mm_idx}: {len(steps)} rows, dt={dt_fs} fs, "
@@ -571,37 +672,46 @@ def main(argv: Optional[List[str]] = None) -> None:
         sys.exit(1)
 
     print(f"Parsing: {log_path}")
-    steps, time_ps, temp_K, extra, dt_fs = parse_log(
-        log_path, dt_override=args.dt, extra_cols=args.extra or None
+    steps, time_ps, temp_raw, temp_corr, extra, dt_fs, corr_factor = parse_log(
+        log_path, dt_override=args.dt, extra_cols=args.extra or None,
+        n_total_override=args.n_total if not args.no_correct else None,
+        n_mobile_override=args.n_mobile if not args.no_correct else None,
     )
+    if args.no_correct:
+        corr_factor = None
+        temp_corr   = temp_raw.copy()
 
     if args.skip:
-        steps    = steps[args.skip:]
-        time_ps  = time_ps[args.skip:]
-        temp_K   = temp_K[args.skip:]
-        extra    = {k: v[args.skip:] for k, v in extra.items()}
+        steps     = steps[args.skip:]
+        time_ps   = time_ps[args.skip:]
+        temp_raw  = temp_raw[args.skip:]
+        temp_corr = temp_corr[args.skip:]
+        extra     = {k: v[args.skip:] for k, v in extra.items()}
 
+    primary = temp_corr
     print(
         f"  {len(steps)} data rows | dt={dt_fs} fs | "
         f"t=[{time_ps[0]:.2f}, {time_ps[-1]:.2f}] ps | "
-        f"T_mean={np.mean(temp_K):.1f} ± {np.std(temp_K):.1f} K"
+        f"T_mean={np.mean(primary):.1f} ± {np.std(primary):.1f} K"
+        + (f" (corrected, raw={np.mean(temp_raw):.1f} K)" if corr_factor else "")
     )
 
     out_dir    = log_path.parent
     out_stem   = args.output or "temperature"
     out_prefix = out_dir / out_stem
 
-    plot_single(time_ps, temp_K, extra, args.avg_window, None, out_prefix, args.target_T)
+    plot_single(time_ps, temp_raw, temp_corr, extra, args.avg_window,
+                None, out_prefix, args.target_T, corr_factor)
 
     # CSV
     csv_path = out_dir / f"{out_stem}_rawdata.csv"
-    header   = "step,time_ps,temperature_K"
+    header   = "step,time_ps,temperature_K,temperature_raw_K"
     if extra:
         header += "," + ",".join(extra.keys())
     with open(csv_path, "w") as fh:
         fh.write(header + "\n")
-        for i, (s, t, T) in enumerate(zip(steps, time_ps, temp_K)):
-            row = f"{int(s)},{t:.6f},{T:.4f}"
+        for i, (s, t, Tc, Tr) in enumerate(zip(steps, time_ps, temp_corr, temp_raw)):
+            row = f"{int(s)},{t:.6f},{Tc:.4f},{Tr:.4f}"
             if extra:
                 row += "," + ",".join(f"{v[i]:.6f}" for v in extra.values())
             fh.write(row + "\n")
