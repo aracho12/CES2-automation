@@ -8,6 +8,7 @@ Features
 --------
   • Auto-detects timestep from log (falls back to --dt)
   • Skips SHAKE/non-numeric lines between thermo rows
+  • DOF-corrects frozen-QM temperatures, including SHAKE constraints when possible
   • Optional running average overlay (--avg-window)
   • Handles multiple thermo blocks in one log (e.g. heat + NVT runs)
   • QM/MM mode: sweeps mm_N directories and overlays or concatenates T(t)
@@ -75,6 +76,8 @@ except ImportError:
     _C  = ["#1A6FDF", "#F14040", "#37AD6B", "#B177DE", "#FEC211", "#515151"]
     _FS = 9; _LS = 9; _LW = 0.4; _FW, _FH = 3.5, 2.8
 
+_KB_REAL = 0.00198720425864083  # kcal mol^-1 K^-1, LAMMPS units real
+
 
 # ─────────────────────────── log parser ──────────────────────────────────────
 
@@ -126,6 +129,58 @@ def _parse_atom_counts(lines: List[str]) -> Tuple[Optional[int], Optional[int]]:
                 break
 
     return n_total, n_mobile
+
+
+def _find_column(data: Dict[str, np.ndarray], names: Tuple[str, ...]) -> Optional[np.ndarray]:
+    """Return the first matching thermo column, preserving LAMMPS name variants."""
+    for name in names:
+        if name in data:
+            return data[name]
+    return None
+
+
+def _parse_shake_dof(lines: List[str]) -> Optional[int]:
+    """
+    Estimate constraint DOF removed by fix SHAKE/RATTLE from LAMMPS init output.
+
+    LAMMPS reports constrained clusters as:
+        N = # of size 2 clusters       -> 1 constrained bond each
+        N = # of size 3 clusters       -> 2 constrained bonds each
+        N = # of size 4 clusters       -> 3 constrained bonds each
+        N = # of frozen angles         -> 2 bonds + 1 angle each
+    """
+    n2 = n3 = n4 = nang = 0
+    found = False
+
+    for line in lines:
+        m = re.match(r"^\s*(\d+)\s+=\s+#\s+of\s+size\s+([234])\s+clusters\b", line)
+        if m:
+            count = int(m.group(1))
+            size = int(m.group(2))
+            found = True
+            if size == 2:
+                n2 = max(n2, count)
+            elif size == 3:
+                n3 = max(n3, count)
+            elif size == 4:
+                n4 = max(n4, count)
+            continue
+
+        m = re.match(r"^\s*(\d+)\s+=\s+#\s+of\s+frozen\s+angles\b", line)
+        if m:
+            nang = max(nang, int(m.group(1)))
+            found = True
+
+    if not found:
+        return None
+    return n2 + 2 * n3 + 3 * n4 + 3 * nang
+
+
+def _finite_median(values: np.ndarray) -> Optional[float]:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(np.median(finite))
 
 
 def _parse_thermo_blocks(
@@ -278,6 +333,8 @@ def parse_log(
     extra_cols: Optional[List[str]] = None,
     n_total_override: Optional[int] = None,
     n_mobile_override: Optional[int] = None,
+    constraint_dof_override: Optional[float] = None,
+    correct: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray], float, Optional[float]]:
     """
     Parse a LAMMPS log file.
@@ -291,7 +348,7 @@ def parse_log(
                   equals temp_raw when no frozen atoms are detected
     extra       : dict of extra thermo column arrays (empty if none requested)
     dt_fs       : timestep in fs
-    corr_factor : N_total/N_mobile used for correction (None if no correction)
+    corr_factor : DOF correction factor used for plotting (None if no correction)
     """
     with open(log_path, "r", errors="replace") as fh:
         lines = fh.readlines()
@@ -305,7 +362,9 @@ def parse_log(
         )
         dt_fs = 1.0
 
-    want = {"Step", "Temp"}
+    requested_extra = set(extra_cols or [])
+    internal_cols = {"KinEng", "KE", "ke"}
+    want = {"Step", "Temp"} | internal_cols
     if extra_cols:
         want.update(extra_cols)
 
@@ -317,11 +376,12 @@ def parse_log(
     time_ps  = steps * dt_fs / 1000.0
     temp_raw = data["Temp"]
 
-    extra: Dict[str, np.ndarray] = {
-        k: v for k, v in data.items() if k not in ("Step", "Temp")
-    }
+    extra: Dict[str, np.ndarray] = {k: v for k, v in data.items() if k in requested_extra}
 
     # ── DOF correction for frozen QM slab ────────────────────────────────────
+    if not correct:
+        return steps, time_ps, temp_raw, temp_raw.copy(), extra, dt_fs, None
+
     n_total  = n_total_override
     n_mobile = n_mobile_override
     if n_total is None or n_mobile is None:
@@ -331,12 +391,62 @@ def parse_log(
 
     corr_factor: Optional[float] = None
     if n_total is not None and n_mobile is not None and n_mobile < n_total:
-        corr_factor = n_total / n_mobile
-        temp_corr   = temp_raw * corr_factor
-        print(
-            f"  DOF correction: N_total={n_total}, N_mobile={n_mobile} "
-            f"→ ×{corr_factor:.4f}"
-        )
+        frozen_dof = 3.0 * (n_total - n_mobile)
+        kineng = _find_column(data, ("KinEng", "KE", "ke"))
+        factors: Optional[np.ndarray] = None
+        raw_dof_ref: Optional[float] = None
+        mobile_dof_ref: Optional[float] = None
+        source = "from atom counts"
+
+        if kineng is not None:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                raw_dof = 2.0 * kineng / (_KB_REAL * temp_raw)
+                mobile_dof = raw_dof - frozen_dof
+                valid = (temp_raw > 0.0) & (kineng > 0.0) & (mobile_dof > 0.0)
+                row_factors = np.where(valid, raw_dof / mobile_dof, np.nan)
+            if np.any(valid):
+                factors = row_factors
+                raw_dof_ref = _finite_median(raw_dof[valid])
+                mobile_dof_ref = _finite_median(mobile_dof[valid])
+                source = "from KinEng"
+
+        if factors is None:
+            constraint_dof = constraint_dof_override
+            if constraint_dof is None:
+                parsed_shake_dof = _parse_shake_dof(lines)
+                constraint_dof = float(parsed_shake_dof or 0)
+                if parsed_shake_dof:
+                    source = "from SHAKE stats"
+            else:
+                source = "from --constraint-dof"
+
+            raw_dof_ref = 3.0 * n_total - 3.0 - constraint_dof
+            mobile_dof_ref = 3.0 * n_mobile - 3.0 - constraint_dof
+            if mobile_dof_ref <= 0:
+                print(
+                    "WARNING: DOF correction skipped because mobile DOF is not positive "
+                    f"(raw={raw_dof_ref:.1f}, mobile={mobile_dof_ref:.1f}).",
+                    file=sys.stderr,
+                )
+                temp_corr = temp_raw.copy()
+            else:
+                corr_factor = raw_dof_ref / mobile_dof_ref
+                temp_corr = temp_raw * corr_factor
+
+        if factors is not None:
+            corr_factor = _finite_median(factors)
+            temp_corr = temp_raw.copy()
+            valid_factor = np.isfinite(factors)
+            temp_corr[valid_factor] = temp_raw[valid_factor] * factors[valid_factor]
+
+        if corr_factor is not None:
+            print(
+                f"  DOF correction: N_total={n_total}, N_mobile={n_mobile}, "
+                f"raw_DOF≈{raw_dof_ref:.1f}, mobile_DOF≈{mobile_dof_ref:.1f} "
+                f"→ ×{corr_factor:.4f} ({source})"
+            )
+        else:
+            temp_corr = temp_raw.copy()
     else:
         temp_corr = temp_raw.copy()
 
@@ -590,6 +700,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--n-mobile", type=int, default=None, metavar="N",
         help="Override mobile (thermostat) atom count for DOF correction.",
     )
+    p.add_argument(
+        "--constraint-dof", type=float, default=None, metavar="DOF",
+        help=(
+            "Override constrained DOF removed by fixes such as SHAKE. "
+            "Normally inferred from KinEng or SHAKE stats."
+        ),
+    )
     return p
 
 
@@ -619,8 +736,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             try:
                 steps, time_ps, temp_raw, temp_corr, _, dt_fs, cf = parse_log(
                     log_path, dt_override=args.dt, extra_cols=args.extra or None,
-                    n_total_override=args.n_total if not args.no_correct else None,
-                    n_mobile_override=args.n_mobile if not args.no_correct else None,
+                    n_total_override=args.n_total,
+                    n_mobile_override=args.n_mobile,
+                    constraint_dof_override=args.constraint_dof,
+                    correct=not args.no_correct,
                 )
             except Exception as e:
                 print(f"  mm_{mm_idx}: {e}, skipping", file=sys.stderr)
@@ -674,8 +793,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"Parsing: {log_path}")
     steps, time_ps, temp_raw, temp_corr, extra, dt_fs, corr_factor = parse_log(
         log_path, dt_override=args.dt, extra_cols=args.extra or None,
-        n_total_override=args.n_total if not args.no_correct else None,
-        n_mobile_override=args.n_mobile if not args.no_correct else None,
+        n_total_override=args.n_total,
+        n_mobile_override=args.n_mobile,
+        constraint_dof_override=args.constraint_dof,
+        correct=not args.no_correct,
     )
     if args.no_correct:
         corr_factor = None
