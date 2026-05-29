@@ -20,8 +20,10 @@ Usage
   python tools/workfunction.py [run_dir] [--cube PATH]
 
   # default: run_dir = current directory
-  # If pot.z.avg is missing in run_dir, the script automatically planar-
-  # averages total_pot_ortho.cube — the total electrostatic potential
+  # If --cube is given, the script always planar-averages that cube and
+  # overwrites pot.z.avg.  Otherwise, if pot.z.avg is missing in run_dir,
+  # it automatically planar-averages total_pot_ortho.cube — the total
+  # electrostatic potential
   # (QM solute V_H+V_bare + V_saw dipole correction + MM mobile-charge
   # potential, in Ry / electron convention) — along z and writes
   # pot.z.avg.  Use --cube to point at a specific cube file.
@@ -194,12 +196,16 @@ def cube_to_pot_z_avg(cube_path, out_path):
 
 def load_pot_z_avg(run_dir, cube_override=None):
     """Load pot.z.avg → arrays z_bohr, z_ang, v_ry, v_ev.
-    If pot.z.avg is missing, planar-average total_pot_ortho.cube (or
-    --cube PATH) and write pot.z.avg in run_dir.
+    If --cube PATH is given, always planar-average that cube and overwrite
+    pot.z.avg in run_dir. Otherwise, if pot.z.avg is missing, planar-average
+    total_pot_ortho.cube and write pot.z.avg in run_dir.
     """
     fpath = os.path.join(run_dir, "pot.z.avg")
-    if not os.path.isfile(fpath):
-        cube_path = cube_override or find_cube(run_dir)
+    if cube_override:
+        print("    --cube given — overwriting pot.z.avg from cube:")
+        cube_to_pot_z_avg(cube_override, fpath)
+    elif not os.path.isfile(fpath):
+        cube_path = find_cube(run_dir)
         if not cube_path:
             sys.exit(
                 f"ERROR: pot.z.avg not found in {run_dir}, and no cube file "
