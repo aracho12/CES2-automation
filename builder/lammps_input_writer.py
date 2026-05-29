@@ -804,10 +804,11 @@ def generate_lammps_input(
     L()
     L("# bjdisp energy (for thermo)")
     L("compute edisp all pair bjdisp")
+    L("compute T_solvent SOLVENT temp   # true SOLVENT temperature (excludes frozen QM slab)")
 
     # Thermo — include ALL gridforce energy variables (water + all non-water types)
     L()
-    L("thermo_style    custom step temp etotal ke pe evdwl ecoul elong press &")
+    L("thermo_style    custom step c_T_solvent etotal ke pe evdwl ecoul elong press &")
     # Write gridforce variables 4 per continuation line for readability
     chunk_size = 4
     for i in range(0, len(egrid_vars), chunk_size):
