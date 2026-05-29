@@ -124,6 +124,24 @@ tools/configure.sh --variant \
 tools/configure.sh --validate configs/variants/IrO2_2OH_2O_LiOH_1M_qm1.yaml
 ```
 
+### Surface Charge Density Helper
+
+Use `tools/surface_charge.py` to compute surface charge density from the
+xy-area stored in CES2-generated files. The input can be an `export/`
+directory, `build_summary.json`, or `data.file`; the charge is provided in
+units of `e`.
+
+```bash
+# Uses export/build_summary.json first, then export/data.file as fallback
+python tools/surface_charge.py export --charge-e -4
+
+# Read directly from one generated file
+python tools/surface_charge.py export/data.file --charge-e -4
+
+# If the total charge is shared by two equivalent surfaces
+python tools/surface_charge.py export --charge-e -4 --surfaces 2
+```
+
 ---
 
 ## Project Structure
