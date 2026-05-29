@@ -94,13 +94,101 @@ def _parse_thermo_blocks(
     """
     Parse all thermo data blocks from LAMMPS log lines.
 
-    Returns a dict  {col_name: np.ndarray}  where the first column is always
-    'Step'.  Rows from all blocks are concatenated in order.
+    Supports two thermo_style formats:
 
-    A thermo block starts with a header line whose *first* token is 'Step'
-    and ends at a line starting with 'Loop time' or the next header.
-    Lines that cannot be parsed as all-numeric are silently skipped (e.g.
-    SHAKE stats).
+    1. Tabular (traditional):
+         Step Temp PotEng KinEng TotEng Press Volume
+              0   300.0   ...
+            500   301.2   ...
+
+    2. Key=Value (QM/MM style, thermo_style custom with one keyword per token):
+         ---- Step 2000000 ----- CPU = 0.0 (sec) ----
+         Step     =  2000000 Temp     =  216.78 TotEng   = -27347.09
+         KinEng   = 4030.84  PotEng   = -31377.93 ...
+         (continues until next separator line)
+
+    Returns {col_name: np.ndarray} for all blocks concatenated.
+    """
+    # ── detect format ─────────────────────────────────────────────────────────
+    kv_sep_re  = re.compile(r"^-+\s*Step\s+\d+")   # ---- Step N ----
+    tab_hdr_re = re.compile(r"^Step\s")             # Step Temp ...
+
+    has_kv  = any(kv_sep_re.match(l) for l in lines)
+    has_tab = any(tab_hdr_re.match(l.strip()) for l in lines)
+
+    if has_kv:
+        return _parse_kv_blocks(lines, columns)
+    elif has_tab:
+        return _parse_tabular_blocks(lines, columns)
+    else:
+        return {}
+
+
+def _parse_kv_blocks(
+    lines: List[str],
+    columns: Optional[List[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Parse Key = Value thermo blocks.
+    Each block is delimited by  ---- Step N ----- CPU = ... ----
+    and contains lines of the form:
+        Key1 = val1  Key2 = val2  ...
+    (may span multiple lines until the next separator).
+    """
+    sep_re = re.compile(r"^-+\s*Step\s+\d+")
+    kv_re  = re.compile(r"(\S+)\s*=\s*([-+]?\d[\d.eE+\-]*)")
+
+    all_records: List[Dict[str, float]] = []
+    in_block = False
+    current: Dict[str, float] = {}
+
+    for line in lines:
+        stripped = line.strip()
+        if sep_re.match(stripped):
+            # Save previous block
+            if current:
+                all_records.append(current)
+            current = {}
+            in_block = True
+            continue
+
+        if in_block:
+            if stripped.startswith("Loop time") or stripped.startswith("SHAKE"):
+                in_block = False
+                if current:
+                    all_records.append(current)
+                    current = {}
+                continue
+            # Parse all key=value pairs on this line
+            for key, val in kv_re.findall(stripped):
+                current[key] = float(val)
+
+    if current:
+        all_records.append(current)
+
+    if not all_records:
+        return {}
+
+    # Collect all keys that appear in every record (consistent columns)
+    all_keys = list(all_records[0].keys())
+    result: Dict[str, List[float]] = {k: [] for k in all_keys
+                                       if columns is None or k in columns or k == "Step"}
+
+    for rec in all_records:
+        for k in result:
+            if k in rec:
+                result[k].append(rec[k])
+
+    return {k: np.array(v) for k, v in result.items() if v}
+
+
+def _parse_tabular_blocks(
+    lines: List[str],
+    columns: Optional[List[str]] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Parse traditional tabular thermo blocks (header row + numeric rows).
+    Lines that cannot be parsed as all-numeric are silently skipped.
     """
     header_re = re.compile(r"^Step\s")
 
@@ -111,7 +199,6 @@ def _parse_thermo_blocks(
     for line in lines:
         stripped = line.strip()
         if header_re.match(stripped):
-            # New thermo header — grab column names (or keep existing)
             new_cols = stripped.split()
             if not col_names:
                 col_names = new_cols
@@ -122,14 +209,13 @@ def _parse_thermo_blocks(
             if stripped.startswith("Loop time") or stripped.startswith("Per MPI"):
                 in_block = False
                 continue
-            # Try to parse a numeric data row
             tokens = stripped.split()
             if not tokens:
                 continue
             try:
                 row = [float(t) for t in tokens]
             except ValueError:
-                continue  # SHAKE stats, WARNING lines, etc.
+                continue
             if len(row) == len(col_names):
                 all_rows.append(row)
 
