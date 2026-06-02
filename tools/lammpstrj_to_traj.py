@@ -842,14 +842,14 @@ def main():
     parser.add_argument(
         "--no-precount", action="store_true",
         help=(
-            "Skip the preliminary full-file frame-count scan in --qmmm-wrap-each. "
+            "Skip the preliminary full-file frame-count scan before conversion. "
             "This saves one read pass over each large .lammpstrj file."
         )
     )
     parser.add_argument(
         "--resume", action="store_true",
         help=(
-            "Resume --qmmm-wrap-each by appending to existing .wrapped.traj files "
+            "Resume by appending to existing output .traj files "
             "and skipping source frames that were already written."
         )
     )
@@ -944,9 +944,13 @@ def main():
         sys.exit(1)
 
     # --- Count frames ---
-    print(f"Counting frames in {lammpstrj} ...")
-    n_frames = count_frames(lammpstrj)
-    print(f"  Total frames: {n_frames:,}")
+    n_frames = None
+    if args.count_only or not args.no_precount:
+        print(f"Counting frames in {lammpstrj} ...")
+        n_frames = count_frames(lammpstrj)
+        print(f"  Total frames: {n_frames:,}")
+    else:
+        print(f"Skipping preliminary frame count for {lammpstrj} ...")
 
     if args.count_only:
         return
@@ -961,19 +965,51 @@ def main():
         output = lammpstrj.with_suffix(".traj")
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    existing = 0
+    if args.resume:
+        try:
+            existing = count_traj_frames(output)
+        except Exception as exc:
+            print(
+                f"ERROR: Could not read existing output for resume: {output}\n"
+                f"  {exc}\n"
+                "Delete the partial .traj file or rerun without --resume.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # --- Convert ---
-    expected = (n_frames + args.stride - 1) // args.stride
     print(f"\nConverting to {output}")
-    print(f"  Stride: every {args.stride} frame(s) → ~{expected:,} frames to write")
+    if n_frames is not None:
+        expected = (n_frames + args.stride - 1) // args.stride
+        print(f"  Stride: every {args.stride} frame(s) → ~{expected:,} frames to write")
+    else:
+        print(f"  Stride: every {args.stride} frame(s)")
+    if args.resume:
+        print(f"  Resume: ON ({existing:,} existing frame(s))")
+    if args.max_written_frames is not None:
+        print(f"  Chunk limit: {args.max_written_frames} written frame(s) this run")
     print()
 
     if do_wrap:
         print("  Molecule-aware wrapping: ON (O-H cutoff 1.3 Å, wrapping x/y only)")
     else:
         print("  Molecule-aware wrapping: OFF")
-    written = convert(lammpstrj, output, type_map, stride=args.stride, wrap=do_wrap)
+    written = convert(
+        lammpstrj,
+        output,
+        type_map,
+        stride=args.stride,
+        wrap=do_wrap,
+        mode="a" if args.resume and existing > 0 else "w",
+        start_frame=existing * args.stride if args.resume else 0,
+        max_written=args.max_written_frames,
+        progress_offset=existing,
+    )
 
     print(f"\nDone. Wrote {written:,} frames → {output}")
+    if args.max_written_frames is not None and written >= args.max_written_frames:
+        print("Chunk limit reached. Rerun the same command with --resume to continue.")
     print(f"View with:  ase gui {output}")
 
     if args.view:
