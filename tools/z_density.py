@@ -61,6 +61,7 @@ Usage examples
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import sys
@@ -1293,6 +1294,118 @@ def resolve_output_prefix(args) -> str:
     return prefix
 
 
+def _existing_file_ok(path: Path) -> bool:
+    """Return True when an expected output file exists and is non-empty."""
+    return path.exists() and path.stat().st_size > 0
+
+
+def expected_mm_output_files(mm_dir: Path, prefix: str, smooth_sigma: float) -> List[Path]:
+    """Per-mm files that mean the current analysis output already exists."""
+    files = [
+        mm_dir / f"{prefix}_rawdata.csv",
+        mm_dir / f"{prefix}.png",
+    ]
+    if smooth_sigma > 0:
+        files.append(mm_dir / f"{prefix}_smooth_rawdata.csv")
+    return files
+
+
+def selected_mm_rawdata_path(mm_dir: Path, prefix: str, smooth_sigma: float) -> Path:
+    """CSV to reuse for evolution: smoothed when requested, otherwise raw."""
+    if smooth_sigma > 0:
+        return mm_dir / f"{prefix}_smooth_rawdata.csv"
+    return mm_dir / f"{prefix}_rawdata.csv"
+
+
+def expected_qmmm_evolution_files(run_dir: Path, prefix: str, smooth_sigma: float) -> List[Path]:
+    """Root-level files written after a QM/MM sweep."""
+    evolution_prefix = f"{prefix}_smooth" if smooth_sigma > 0 else prefix
+    return [
+        run_dir / f"{evolution_prefix}_mm_evolution_rawdata.csv",
+        run_dir / f"{evolution_prefix}_mm_evolution.png",
+    ]
+
+
+def read_density_csv_result(
+    csv_path: Path,
+    step: int,
+    mm_dir: Path,
+    traj_path: Optional[Path],
+) -> dict:
+    """Load an existing wide-format z_density rawdata CSV into result form."""
+    comments: List[str] = []
+    data_lines: List[str] = []
+    with open(csv_path, newline="") as f:
+        for line in f:
+            if line.startswith("#"):
+                comments.append(line.strip())
+            elif line.strip():
+                data_lines.append(line)
+
+    if not data_lines:
+        raise ValueError(f"no data rows in {csv_path}")
+
+    rows = list(csv.DictReader(data_lines))
+    if not rows:
+        raise ValueError(f"no CSV rows in {csv_path}")
+
+    fieldnames = rows[0].keys()
+    number_elems = [name[4:] for name in fieldnames if name.startswith("rho_")]
+    mass_elems = [name[5:] for name in fieldnames if name.startswith("mass_")]
+    if not number_elems and not mass_elems:
+        raise ValueError(f"no rho_* or mass_* columns in {csv_path}")
+
+    z_centers = np.array([float(row["z_ang"]) for row in rows], dtype=np.float64)
+    num_profiles = {
+        el: np.array([float(row[f"rho_{el}"]) for row in rows], dtype=np.float64)
+        for el in number_elems
+    }
+    mass_profiles = {
+        el: np.array([float(row[f"mass_{el}"]) for row in rows], dtype=np.float64)
+        for el in mass_elems
+    }
+
+    profile_mode = "element"
+    smooth_sigma = 0.0
+    water_density = False
+    for comment in comments:
+        if comment.startswith("# profile_mode="):
+            profile_mode = comment.split("=", 1)[1].strip()
+        elif comment.startswith("# smooth_sigma="):
+            smooth_sigma = float(comment.split("=", 1)[1].split()[0])
+        elif "--water-density" in comment:
+            water_density = True
+
+    target_elements = number_elems or mass_elems
+    meta = {
+        "n_frames": 0,
+        "skip": 0,
+        "stride": 0,
+        "dz": float(z_centers[1] - z_centers[0]) if len(z_centers) > 1 else 0.0,
+        "Lx": 0.0,
+        "Ly": 0.0,
+        "area": 0.0,
+        "all_elements": sorted(set(number_elems + mass_elems)),
+        "target_elements": target_elements,
+        "number_profile_elements": number_elems,
+        "mass_profile_elements": mass_elems,
+        "profile_mode": profile_mode,
+        "label_to_element": {},
+        "water_density": water_density,
+        "water_profile_name": "water" if "water" in mass_elems else None,
+        "smooth_sigma": smooth_sigma,
+    }
+    return {
+        "step": step,
+        "mm_dir": mm_dir,
+        "traj_path": traj_path,
+        "z_centers": z_centers,
+        "num_profiles": num_profiles,
+        "mass_profiles": mass_profiles,
+        "meta": meta,
+    }
+
+
 def run_qmmm_mm_density(args) -> None:
     """Compute per-mm_N z-density plots and a root-level evolution plot."""
     run_dir = args.qmmm_mm.resolve()
@@ -1309,15 +1422,38 @@ def run_qmmm_mm_density(args) -> None:
     print(f"  Run directory : {run_dir}")
     print(f"  mm_N found    : {len(mm_dirs)}")
     print(f"  skip={args.skip}  stride={args.stride}  dz={args.dz} Å")
+    if args.skip_existing:
+        print(f"  skip-existing: enabled")
 
     results: List[dict] = []
-    skipped = 0
+    prefix = resolve_output_prefix(args)
+    processed = 0
+    skipped_existing = 0
+    skipped_missing = 0
 
     for step, mm_dir in mm_dirs:
         traj_path = find_density_traj_in_mm_dir(mm_dir)
+
+        if args.skip_existing:
+            expected_files = expected_mm_output_files(mm_dir, prefix, args.smooth_sigma)
+            if all(_existing_file_ok(path) for path in expected_files):
+                csv_path = selected_mm_rawdata_path(mm_dir, prefix, args.smooth_sigma)
+                try:
+                    results.append(
+                        read_density_csv_result(csv_path, step, mm_dir, traj_path)
+                    )
+                    print(f"\nmm_{step}: existing outputs found, skipping")
+                    skipped_existing += 1
+                    continue
+                except ValueError as exc:
+                    print(
+                        f"\nmm_{step}: existing outputs found but could not be "
+                        f"reused ({exc}); recomputing"
+                    )
+
         if traj_path is None:
             print(f"\nmm_{step}: no trajectory found, skipping")
-            skipped += 1
+            skipped_missing += 1
             continue
 
         print(f"\nmm_{step}: {traj_path.name}")
@@ -1350,7 +1486,6 @@ def run_qmmm_mm_density(args) -> None:
             exclude_types=exclude_types,
         )
 
-        prefix = resolve_output_prefix(args)
         write_csv(z_centers, num_profiles, mass_profiles, meta,
                   mm_dir / f"{prefix}_rawdata.csv")
 
@@ -1377,6 +1512,7 @@ def run_qmmm_mm_density(args) -> None:
             "mass_profiles": plot_mass_profiles,
             "meta": plot_meta,
         })
+        processed += 1
 
     if not results:
         sys.exit("ERROR: no mm_N trajectories were processed.")
@@ -1395,10 +1531,22 @@ def run_qmmm_mm_density(args) -> None:
         for el in r["meta"].get("number_profile_elements", r["meta"]["target_elements"])
     })
     print(f"\n[Summary] Writing mm_N evolution outputs to {run_dir} ...")
-    prefix = resolve_output_prefix(args)
     evolution_prefix = (
         f"{prefix}_smooth" if args.smooth_sigma > 0 else prefix
     )
+    root_outputs = expected_qmmm_evolution_files(run_dir, prefix, args.smooth_sigma)
+    if (
+        args.skip_existing
+        and processed == 0
+        and all(_existing_file_ok(path) for path in root_outputs)
+    ):
+        print("  Existing root-level evolution outputs found, skipping summary rewrite")
+        print(
+            f"\nDone. Processed {processed} mm_N directories, "
+            f"reused {skipped_existing}, skipped missing {skipped_missing}.\n"
+        )
+        return
+
     write_qmmm_evolution_csv(
         results,
         elements,
@@ -1412,7 +1560,10 @@ def run_qmmm_mm_density(args) -> None:
         show_title=args.plot_title,
     )
 
-    print(f"\nDone. Processed {len(results)} mm_N directories, skipped {skipped}.\n")
+    print(
+        f"\nDone. Processed {processed} mm_N directories, "
+        f"reused {skipped_existing}, skipped missing {skipped_missing}.\n"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1436,6 +1587,7 @@ def parse_args():
             "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
             "  python tools/z_density.py --qmmm-mm run_dir --elements O H Cs\n"
+            "  python tools/z_density.py --qmmm-mm run_dir --skip-existing\n"
             "  python tools/z_density.py run/ces2.emd.lammpstrj "
             '--type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"\n'
         ),
@@ -1446,6 +1598,10 @@ def parse_args():
                    help=("Process every mm_N directory in a QM/MM run. Each "
                          "mm_N gets its own z_density outputs, and RUN_DIR gets "
                          "profile-wise mm-step evolution plots."))
+    p.add_argument("--skip-existing", action="store_true",
+                   help=("With --qmmm-mm, skip mm_N directories whose expected "
+                         "output files already exist and reuse their rawdata CSV "
+                         "for the root-level evolution output."))
     p.add_argument("--info", action="store_true",
                    help="Scan trajectory and print summary (frames, elements, "
                         "box, suggested skip/stride). No density calculation.")
