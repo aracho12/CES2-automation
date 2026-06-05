@@ -142,6 +142,24 @@ python tools/surface_charge.py export/data.file --charge-e -4
 python tools/surface_charge.py export --charge-e -4 --surfaces 2
 ```
 
+### Water Orientation Helper
+
+Use `tools/water_orientation.py` to compute water dipole orientation and O-H
+bond orientation along the surface normal. The script writes a z-resolved
+P1/P2 CSV, an O-H angle-distribution CSV, and a combined plot.
+
+```bash
+# Water dipole P1/P2 and O-H orientation vs. z
+python tools/water_orientation.py run/ces2.emd.lammpstrj --skip 100 --stride 5
+
+# Explicit water atom types if in.lammps is unavailable
+python tools/water_orientation.py run/ces2.emd.lammpstrj \
+  --water-o-types 2 --water-h-types 1
+
+# Process every mm_N directory in a QM/MM run
+python tools/water_orientation.py --qmmm-mm run_dir --skip 100 --stride 5
+```
+
 ---
 
 ## Project Structure
