@@ -49,9 +49,9 @@ def write_data_file_reference_style(path: Path,
         z_coords = pos[:, 2] if len(pos) > 0 else np.array([0.0])
         z_hi = max(Lz, float(z_coords.max()) + 1.0) + vacuum_z
         z_lo = -z_buffer_lo
-        f.write(f"0.0      {Lx:.4f}  xlo xhi\n")
-        f.write(f"0.0      {Ly:.4f}  ylo yhi\n")
-        f.write(f"{z_lo:.1f}     {z_hi:.4f}  zlo zhi\n\n")
+        f.write(f"{0.0:.8f}      {Lx:.8f}  xlo xhi\n")
+        f.write(f"{0.0:.8f}      {Ly:.8f}  ylo yhi\n")
+        f.write(f"{z_lo:.8f}     {z_hi:.8f}  zlo zhi\n\n")
 
         f.write("Masses\n\n")
         for t in range(1, n_atom_types+1):
