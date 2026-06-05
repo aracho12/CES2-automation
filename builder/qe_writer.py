@@ -34,7 +34,6 @@ Pseudopotential config (config.yaml)
     pseudo_set:  "sssp"              # built-in pseudopotential set to use as default
                                      # currently supported: "sssp" (SSSP PBE library)
     occupations: "smearing"          # or "fixed"
-    smearing:    "mv"                # Methfessel-Paxton
     degauss:     0.02                # Ry
     k_points:    [1, 1, 1, 0, 0, 0] # Monkhorst-Pack grid + offsets
     emaxpos:     0.9                 # dipole correction (fraction of unit cell)
@@ -146,7 +145,6 @@ def generate_qe_input(
     outdir      = str(  qe_cfg.get("outdir",      "./solute"))
     pseudo_dir  = str(  qe_cfg.get("pseudo_dir",  "./pseudo"))
     occupations = str(  qe_cfg.get("occupations", "smearing"))
-    smearing    = str(  qe_cfg.get("smearing",    "mv"))
     degauss     = float(qe_cfg.get("degauss",     0.02))
     emaxpos     = float(qe_cfg.get("emaxpos",     0.9))
     edir        = int(  qe_cfg.get("edir",        3))
@@ -214,7 +212,6 @@ def generate_qe_input(
     PW(f"  ecutrho   = {ecutrho:.1f},")
     PW(f"  occupations = '{occupations}',")
     if occupations == "smearing":
-        PW(f"  smearing  = '{smearing}',")
         PW(f"  degauss   = {degauss},")
     PW(f"  edir      = {edir},")
     PW(f"  emaxpos   = {emaxpos},")

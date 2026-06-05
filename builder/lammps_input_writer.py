@@ -358,14 +358,8 @@ def generate_lammps_input(
                 f"(d) lowering md.emaxpos_safety_margin. Aborting build."
             )
 
-    # Spring constant K for the upper harmonic wall on SOLVENT during QM/MM.
-    # Max wall force at cutoff edge = 2*K*wall_cutoff.
-    # K=50 default: provides ~500 kcal/mol/Å at the cutoff edge, strong enough
-    # to counteract the systematic ESP-driven upward drift of the water layer
-    # that causes "Particle on or inside fix wall surface" crashes.
-    # K=1 was too weak (only ~10 kcal/mol/Å vs ~100 kcal/mol/Å grid force).
-    # Override via md.wall_K in config if needed.
-    wall_K           = float(md_cfg.get("wall_K",           50.0))
+    # Upper harmonic wall parameters for SOLVENT during QM/MM.
+    wall_K           = float(md_cfg.get("wall_K",           1.0))
     wall_sigma       = float(md_cfg.get("wall_sigma",       1.0))
     wall_cutoff      = float(md_cfg.get("wall_cutoff",      5.0))
     prefix        = str(  ces2_cfg.get("prefix", "ces2"))
@@ -820,8 +814,8 @@ def generate_lammps_input(
 
     # Wall, momentum, SHAKE, NVT
     L("# Keep solvent from escaping through fixed-z boundaries")
-    L(f"fix   wallhi  SOLVENT wall/harmonic zhi {z_wall_hi:.2f}"
-      f" {wall_K:g} {wall_sigma:g} {wall_cutoff:g}")
+    L(f"fix             wallhi SOLVENT wall/harmonic zhi {z_wall_hi:.2f}"
+      f" {wall_K:.1f} {wall_sigma:.1f} {wall_cutoff:.1f}")
     L()
     L("# Remove spurious COM momentum drift")
     L("fix   momentum SOLVENT momentum 1 linear 1 1 0 angular")
