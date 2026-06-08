@@ -314,49 +314,7 @@ def generate_lammps_input(
     shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
     shake_iter    = int(  md_cfg.get("shake_iter",   20))
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
-    _wall_buffer     = float(md_cfg.get("wall_buffer",       5.0))
-    z_wall_hi        = float(md_cfg.get("z_wall_hi",    box.z_el_hi + _wall_buffer))
-
-    # Cap the upper wall safely below QE's dipole-correction (emaxpos) zone.
-    # Any solvent that crosses QE z = emaxpos·c sees a discontinuous cube
-    # potential → gridforce/net produces singular forces → run dies. The wall
-    # MUST sit at least `emaxpos_safety_margin` Å below emaxpos in absolute
-    # LAMMPS coords. Without this clamp, the default `z_el_hi + 10` could
-    # easily land *inside* the dipole region (e.g. emaxpos=0.8 with a thin
-    # vacuum_z), making the wall protect nothing.
-    qe_cfg              = cfg.get("qe", {})
-    emaxpos             = float(qe_cfg.get("emaxpos", 0.9))
-    emaxpos_safety      = float(md_cfg.get("emaxpos_safety_margin", 5.0))
-    _box_z_total = getattr(box, "box_z_total", None)
-    _box_zlo     = getattr(box, "box_zlo",     None)
-    if _box_z_total is None or _box_zlo is None:
-        # Fallback: conservative approximation when BoxMeta fields weren't
-        # populated (e.g. older callers). Underestimates box_z_total slightly,
-        # which makes the cap stricter — safe direction.
-        _box_zlo     = -float(getattr(box, "z_buffer_lo", 1.0))
-        _box_z_total = float(box.z_el_hi) + float(box.vacuum_z) + float(getattr(box, "z_buffer_lo", 1.0))
-    _z_emaxpos   = _box_zlo + emaxpos * _box_z_total
-    _z_wall_safe = _z_emaxpos - emaxpos_safety
-    if z_wall_hi > _z_wall_safe:
-        print(f"[lammps_input_writer] Capping CES2 upper wall {z_wall_hi:.3f} → {_z_wall_safe:.3f} Å "
-              f"(emaxpos={emaxpos} → z_emaxpos={_z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
-        z_wall_hi = _z_wall_safe
-        # Hard guard: if the emaxpos cap pushes the wall below the solvent
-        # column top, the very first LAMMPS step will trip
-        # "Particle on or inside fix wall surface" on every solvent atom
-        # above z_wall_hi. Refuse to write a guaranteed-broken input file.
-        _min_clearance = float(md_cfg.get("min_wall_clearance", 0.5))
-        if z_wall_hi < float(box.z_el_hi) + _min_clearance:
-            raise ValueError(
-                f"[lammps_input_writer] Upper wall (z_wall_hi={z_wall_hi:.3f} Å) lands at or "
-                f"below the solvent column top (z_el_hi={float(box.z_el_hi):.3f} Å, "
-                f"min_clearance={_min_clearance:.2f} Å). LAMMPS would die at step 0 with "
-                f"'Particle on or inside fix wall surface'. Geometry is inconsistent: "
-                f"emaxpos={emaxpos}, emaxpos_safety_margin={emaxpos_safety:.2f} Å, "
-                f"z_emaxpos={_z_emaxpos:.3f} Å. Fix by either (a) increasing cell.vacuum_z, "
-                f"(b) decreasing cell.thickness, (c) raising qe.emaxpos toward 1.0, or "
-                f"(d) lowering md.emaxpos_safety_margin. Aborting build."
-            )
+    z_wall_hi        = float(box.z_el_hi) + 5.0
 
     # Upper harmonic wall parameters for SOLVENT during QM/MM.
     wall_K           = float(md_cfg.get("wall_K",           1.0))

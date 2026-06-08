@@ -13,11 +13,8 @@ cell:
 
 electrolyte_box:
   z_gap: 0.0
-  # thickness/vacuum_z must satisfy: 0.9·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
-  # ≥ z_top_slab + thickness + 5.  Otherwise the SOLVENT upper wall gets clamped
-  # below z_el_hi (water column compressed) to keep solvent out of QE's
-  # dipole-correction zone (emaxpos·c).  With default emaxpos=0.9, even
-  # (50, 20) leaves >10 Å margin between water top and z_emaxpos.
+  # z_el_hi = z_top_slab + thickness. The SOLVENT upper wall is fixed at
+  # z_el_hi + 5 Å during both pre-relax and QM/MM production.
   thickness:   50.0            # [Å] water column height above slab
   z_margin_top: 2.0
   vacuum_z:    30.0            # [Å] vacuum gap above water for boundary p p f
@@ -161,11 +158,8 @@ ces2:
     shake_iter:    20      # SHAKE max iterations
     shake_maxiter: 500     # SHAKE absolute max iterations
     # ── SOLVENT upper-wall during QM/MM production ──────────────────────────
-    # Defaults below match what the writer applies if omitted.
-    # wall_buffer:            5.0   # [Å] requested z_wall = z_el_hi + buffer
+    # The writer fixes z_wall_hi at z_el_hi + 5 Å.
     # wall_K:                 1.0   # [kcal/mol/Å²] soft default; bump to 50 if solvent escapes
-    # emaxpos_safety_margin:  5.0   # [Å] hard cap: z_wall ≤ z_emaxpos − margin
-                                    # (prevents wall from sitting inside QE dipole zone)
 
 # ---- QE (Quantum ESPRESSO) settings for CES2 QM calculation ----
 qe:
@@ -257,9 +251,8 @@ md_relax:
 
   # ── SOLVENT walls during pre-relax (min/heat/equil) ─────────────────────
   # Defaults below match what the writer applies if omitted.
-  # relax_wall_buffer:      5.0   # [Å] requested z_wall = z_el_hi + buffer
+  # Upper wall is fixed at z_el_hi + 5 Å.
   # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
   # relax_wall_K:           1.0   # [kcal/mol/Å²] upper harmonic wall spring constant
   # relax_wall_cutoff:      5.0   # [Å] upper harmonic wall cutoff
   # relax_wall_lo_cutoff:   1.0   # [Å] lower harmonic wall cutoff; keep short near slab
-  # emaxpos_safety_margin:  5.0   # [Å] hard cap below QE dipole zone

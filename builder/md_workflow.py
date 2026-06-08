@@ -38,7 +38,7 @@ def write_in_relax_min(
     min_dmax:            float = 0.2,
     min_dump_every:      int   = 10,       # trajectory frames during minimize
     # ── Harmonic walls — confine solvent within electrolyte region ─────────
-    z_wall:              Optional[float] = None,  # Å — upper wall (z_el_hi + buffer)
+    z_wall:              Optional[float] = None,  # Å — upper wall (z_el_hi + 5)
     z_wall_lo:           Optional[float] = None,  # Å — lower wall (z_el_lo - margin)
     wall_K:              float = 1.0,              # kcal/mol/Å² spring constant (upper wall)
     wall_sigma:          float = 1.0,              # Å (upper harmonic wall onset)
@@ -546,10 +546,7 @@ def generate_md_bundle(
     qm_hi: Optional[int]   = None
     z_wall: Optional[float] = None
     z_wall_lo: Optional[float] = None
-    wall_buffer: float = float(md_cfg.get("relax_wall_buffer", 5.0))  # Å above z_el_hi
     wall_buffer_lo: float = float(md_cfg.get("wall_buffer_lo", 2.0))  # Å above slab top
-    box_zlo: Optional[float] = None
-    box_z_total: Optional[float] = None
     summary_path = export_dir / "build_summary.json"
     if summary_path.exists():
         try:
@@ -560,33 +557,20 @@ def generate_md_bundle(
                 qm_lo = n_mm + 1
                 qm_hi = n_mm + n_qm
             box_info = summary.get("box", {})
-            # Upper wall: top of electrolyte + buffer
+            # Upper wall: top of electrolyte + 5 Å
             z_el_hi = box_info.get("z_el_hi")
             if z_el_hi is not None:
-                z_wall = float(z_el_hi) + wall_buffer
+                z_wall = float(z_el_hi) + 5.0
             # Lower wall: just above slab top — prevent solvent from
             # crashing into QM slab (no QM-MM LJ in relax FF)
             z_top_slab = box_info.get("z_top_slab")
             if z_top_slab is not None:
                 z_wall_lo = float(z_top_slab) + wall_buffer_lo
-            # Geometry needed to clamp upper wall below QE dipole-correction zone.
-            box_zlo     = box_info.get("box_zlo")
-            box_z_total = box_info.get("box_z_total")
-            if box_zlo is None or box_z_total is None:
-                # Fallback: approximate from BoxMeta-style fields written before
-                # box_zlo/box_zhi were populated by main.py.
-                _vac = float(box_info.get("vacuum_z",    20.0))
-                _zbl = float(box_info.get("z_buffer_lo",  1.0))
-                if z_el_hi is not None:
-                    box_zlo     = -_zbl
-                    box_z_total = float(z_el_hi) + _vac + _zbl
         except Exception:
             pass
 
     # ── Wall parameters (upper harmonic + lower harmonic) ────────────────
-    # Upper harmonic wall (WALLHI): repulsion-only, keeps solvent below QE
-    # dipole-correction zone.  K=1 is sufficient; the emaxpos safety cap is
-    # the binding constraint.
+    # Upper harmonic wall (WALLHI): repulsion-only, fixed at z_el_hi + 5 Å.
     relax_wall_K       = float(md_cfg.get("relax_wall_K",        1.0))
     relax_wall_sigma   = float(md_cfg.get("relax_wall_sigma",    1.0))
     relax_wall_cutoff  = float(md_cfg.get("relax_wall_cutoff",   5.0))
@@ -597,38 +581,6 @@ def generate_md_bundle(
     relax_wall_lj_epsilon = float(md_cfg.get("relax_wall_lj_epsilon", 0.5))
     relax_wall_lj_sigma   = float(md_cfg.get("relax_wall_lj_sigma",   3.0))
     relax_wall_lj_cutoff  = float(md_cfg.get("relax_wall_lj_cutoff",  10.0))
-
-    # ── Cap upper wall safely below QE dipole-correction (emaxpos) zone ──
-    # The QM cube's potential becomes discontinuous starting at QE z = emaxpos·c,
-    # which in LAMMPS box coords is  box_zlo + emaxpos·box_z_total.  Any solvent
-    # atom that crosses into that region experiences a singular gridforce/net force
-    # and the run dies.  Force the wall to sit at least `emaxpos_safety_margin` Å
-    # below it (default 5 Å).
-    emaxpos        = float((qe_cfg or {}).get("emaxpos", 0.9))
-    emaxpos_safety = float(md_cfg.get("emaxpos_safety_margin", 5.0))
-    if z_wall is not None and box_zlo is not None and box_z_total is not None:
-        z_emaxpos      = box_zlo + emaxpos * box_z_total
-        z_wall_safe    = z_emaxpos - emaxpos_safety
-        if z_wall > z_wall_safe:
-            print(f"[md_workflow] Capping upper wall {z_wall:.3f} → {z_wall_safe:.3f} Å "
-                  f"(emaxpos={emaxpos} → z_emaxpos={z_emaxpos:.3f}, safety={emaxpos_safety:.1f} Å)")
-            z_wall = z_wall_safe
-            # Hard guard: a wall below z_el_hi guarantees solvent atoms start
-            # inside the wall and LAMMPS aborts at step 0 with
-            # "Particle on or inside fix wall surface". Fail the build now.
-            _min_clearance = float(md_cfg.get("min_wall_clearance", 0.5))
-            if z_el_hi is not None and z_wall < float(z_el_hi) + _min_clearance:
-                raise ValueError(
-                    f"[md_workflow] Relax upper wall (z_wall={z_wall:.3f} Å) lands at or "
-                    f"below the solvent column top (z_el_hi={float(z_el_hi):.3f} Å, "
-                    f"min_clearance={_min_clearance:.2f} Å). LAMMPS would die at step 0 "
-                    f"with 'Particle on or inside fix wall surface'. Geometry is "
-                    f"inconsistent: emaxpos={emaxpos}, emaxpos_safety_margin="
-                    f"{emaxpos_safety:.2f} Å, z_emaxpos={z_emaxpos:.3f} Å. Fix by either "
-                    f"(a) increasing cell.vacuum_z, (b) decreasing cell.thickness, "
-                    f"(c) raising qe.emaxpos toward 1.0, or (d) lowering "
-                    f"md.emaxpos_safety_margin. Aborting build."
-                )
 
     # ── Common kwargs for NVT stages ─────────────────────────────────────
     common_nvt_kw = dict(
