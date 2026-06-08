@@ -593,7 +593,18 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         json.dumps(charged_params, indent=2), encoding="utf-8")
     print(f"[charged] auto-calculated: tot_chg={charged_params['tot_chg']:.8f}, "
           f"mpc_layer={charged_params['mpc_layer']:.4f} bohr, "
-          f"plate_pos={charged_params['plate_pos']:.6f}")
+          f"plate_pos={charged_params['plate_pos']:.6f}, "
+          f"tot_layer={charged_params['tot_layer']} "
+          f"(MDIPC window {charged_params['n_window_atoms']} atoms)")
+    _nw = charged_params['n_window_atoms']
+    _resid = abs(_nw * charged_params['tot_layer'] - len(slab_sc)) / len(slab_sc) if len(slab_sc) else 1.0
+    if _nw == 0:
+        print("[charged][WARN] no atoms within +/-1.0 bohr of mpc_layer — "
+              "MDIPC will NOT neutralize; check mpc_layer/z_cutoff")
+    elif _resid > 0.05:
+        print(f"[charged][WARN] MDIPC monopole cancellation off by {_resid:.0%} "
+              f"(window {_nw} x tot_layer {charged_params['tot_layer']} vs {len(slab_sc)} atoms) — "
+              f"consider adjusting z_cutoff/mpc_layer or set an adsorbate offset")
 
     atom_types = mm_types + slab_types
     charges = mm_charges + slab_charges

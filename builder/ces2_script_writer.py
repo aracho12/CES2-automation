@@ -373,7 +373,8 @@ def generate_ces2_scripts(
 
     tot_chg        = str(sc_cfg.get("tot_chg",         _auto_tot_chg))
     mpc_layer      = str(sc_cfg.get("mpc_layer",       _auto_mpc_layer))   # bohr
-    tot_layer      = str(sc_cfg.get("tot_layer",       "4"))
+    _auto_tot_layer = str(_cp["tot_layer"]) if "tot_layer" in _cp else "4"
+    tot_layer      = str(sc_cfg.get("tot_layer",       _auto_tot_layer))
     mpc_one        = str(sc_cfg.get("mpc_one",         "1"))
     adsorbate      = str(sc_cfg.get("adsorbate",       "0"))
     plate_pos      = str(sc_cfg.get("plate_pos",       _auto_plate_pos))   # fraction

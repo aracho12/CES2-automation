@@ -275,6 +275,19 @@ def compute_charged_system_params(
     # QE tot_charge: per unit cell
     tot_chg = float(q_electrode) / float(sc_factor) if sc_factor else 0.0
 
+    # --- tot_layer for MDIPC monopole cancellation -----------------------
+    # mdipc.cpp places counter-charge on atoms within +/-1.0 bohr of mpc_layer
+    # (hardcoded window). Full monopole cancellation requires
+    #     (atoms in window) * tot_layer = nAtoms(unit cell)
+    # In the supercell this is  tot_layer = N_total / N_window, because the
+    # in-plane replication leaves z unchanged so sc_factor cancels.
+    # NOTE: this window count is NOT the same as n_top_atoms (z_cutoff based);
+    # it must use the exact +/-1.0 bohr window that mdipc applies.
+    MDIPC_WINDOW_BOHR = 1.0
+    zpos_bohr = zpos * ANG_TO_BOHR
+    n_window = int(np.sum(np.abs(zpos_bohr - mpc_layer) < MDIPC_WINDOW_BOHR))
+    tot_layer = max(1, int(round(len(slab) / n_window))) if n_window else 1
+
     return {
         "tot_chg":     tot_chg,
         "mpc_layer":   mpc_layer,
@@ -283,6 +296,8 @@ def compute_charged_system_params(
         "n_top_atoms": n_top,
         "top_z_mean":  top_z_mean,
         "slab_mid_z":  slab_mid_z,
+        "tot_layer":      tot_layer,
+        "n_window_atoms": n_window,
     }
 
 def masses_by_type_from_labels(label_by_type_id: Dict[int,str],
