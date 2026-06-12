@@ -275,47 +275,61 @@ def parse_dipole_info(run_dir):
 
 
 def parse_cell_info(run_dir):
-    """Get cell z-length (Bohr) and emaxpos from pw.in or build_summary."""
-    cell_z = None
-    emaxpos = 0.9  # default (matches cesbuild qe_writer default)
+    """Get emaxpos and eopreg from the QE input (pw.in).
 
-    # Try build_summary.json
-    bsf = os.path.join(run_dir, "build_summary.json")
-    if os.path.isfile(bsf):
-        with open(bsf) as f:
-            bs = json.load(f)
-        box = bs.get("box", {})
-        lz  = box.get("Lz")
-        if lz:
-            # build_summary Lz is in Å, but here the QE cell is larger (supercell)
-            # so we trust the pot.z.avg z-range instead
-            pass
+    emaxpos/eopreg define the dipole-correction sawtooth and MUST come from the
+    actual QE input.  We read them from pw.in, preferring the real run input
+    (``pw.in`` and the per-iteration ``qm_*/pw.in``) over the ``base.pw.in``
+    template.  Only if no pw.in declares emaxpos do we fall back to QE defaults
+    (emaxpos=0.5, eopreg=0.1) — and we warn loudly, because a wrong emaxpos
+    puts the vacuum reference in the wrong region.
+    """
+    emaxpos = 0.5   # QE default when emaxpos is omitted from the input
+    eopreg  = 0.1   # QE default sawtooth reset-region width (fractional)
+    source  = None
 
-    # Try pw.in for emaxpos and celldm
-    for pw_in in [os.path.join(run_dir, "base.pw.in"),
-                  os.path.join(run_dir, "pw.in"),
-                  os.path.join(run_dir, "qm_1", "pw.in")]:
+    # Candidate inputs, in order of preference: the actual run input first,
+    # the latest qm_*/pw.in next, then the base template as a last resort.
+    candidates = [os.path.join(run_dir, "pw.in")]
+    candidates += sorted(glob.glob(os.path.join(run_dir, "qm_*", "pw.in")))[::-1]
+    candidates += [os.path.join(run_dir, "base.pw.in")]
+
+    for pw_in in candidates:
         if not os.path.isfile(pw_in):
             continue
         with open(pw_in) as f:
             text = f.read()
         m = re.search(r"emaxpos\s*=\s*([\d.]+)", text)
-        if m:
-            emaxpos = float(m.group(1))
+        if not m:
+            continue  # this pw.in has no emaxpos — keep looking
+        emaxpos = float(m.group(1))
+        me = re.search(r"eopreg\s*=\s*([\d.]+)", text)
+        if me:
+            eopreg = float(me.group(1))
+        source = os.path.relpath(pw_in, run_dir)
         break
 
-    return {"emaxpos": emaxpos}
+    if source is None:
+        print(f"    WARNING: emaxpos not found in any pw.in under {run_dir}; "
+              f"falling back to QE defaults emaxpos={emaxpos}, eopreg={eopreg}")
+    else:
+        print(f"    emaxpos/eopreg read from {source}")
+
+    return {"emaxpos": emaxpos, "eopreg": eopreg, "source": source}
 
 
 def determine_regions(run_dir, z_bohr):
     """Return region boundaries (Bohr) from build_summary or heuristic."""
     cell_z    = z_bohr[-1] + (z_bohr[1] - z_bohr[0])  # full cell length
-    emaxpos   = parse_cell_info(run_dir)["emaxpos"]
-    saw_peak  = emaxpos * cell_z
+    cell_info = parse_cell_info(run_dir)
+    emaxpos   = cell_info["emaxpos"]
+    eopreg    = cell_info["eopreg"]
+    saw_peak  = emaxpos * cell_z                 # sawtooth discontinuity start
+    saw_reset_end = (emaxpos + eopreg) * cell_z  # end of the reset region
 
     # Defaults (heuristic: look for large dip in potential)
     z_top_slab = z_bohr[0] + 25.0   # fallback
-    z_el_hi    = saw_peak - 5.0      # fallback
+    z_el_hi    = saw_peak - 10.0     # fallback (leave a vacuum gap below saw)
 
     bsf = os.path.join(run_dir, "build_summary.json")
     if os.path.isfile(bsf):
@@ -330,7 +344,9 @@ def determine_regions(run_dir, z_bohr):
     return {
         "cell_z_bohr": cell_z,
         "emaxpos":     emaxpos,
+        "eopreg":      eopreg,
         "saw_peak_bohr": saw_peak,
+        "saw_reset_end_bohr": saw_reset_end,
         "z_slab_end_bohr": z_top_slab,
         "z_electrolyte_end_bohr": z_el_hi,
     }
@@ -338,21 +354,32 @@ def determine_regions(run_dir, z_bohr):
 
 def pick_vacuum_reference(z_bohr, v_ry, regions):
     """
-    Return V_vac (Ry) from the flat plateau AFTER the sawtooth peak.
-    The vacuum region is [electrolyte_end .. cell_z].
-    We skip the first ~5 Bohr of vacuum (ramp-up) and pick a flat plateau.
+    Return V_vac (Ry) from the flat vacuum plateau that lies BETWEEN the
+    electrolyte/slab surface and the dipole sawtooth discontinuity (emaxpos).
+
+    With QE's dipole correction (tefield/dipfield), the planar-averaged
+    potential has a sawtooth discontinuity at emaxpos.  The TRUE vacuum the
+    emitted electron sees is the flat plateau just OUTSIDE the surface and
+    BEFORE that discontinuity (z in [electrolyte_end .. saw_peak]).
+
+    The region AFTER emaxpos is NOT a usable vacuum reference: it is the
+    artificial reset / wrap-around branch of the sawtooth (through PBC it
+    belongs to the opposite face of the slab) and sits a full dipole step
+    away.  Using it overestimates Φ by that dipole step.
     """
     saw_peak = regions["saw_peak_bohr"]
-    cell_z   = regions["cell_z_bohr"]
+    z_el_end = regions["z_electrolyte_end_bohr"]
 
-    # flat region: from saw_peak + 3 Bohr to cell end
-    lo = saw_peak + 3.0
-    hi = cell_z
+    # flat region: a few Bohr above the surface, a few Bohr below the sawtooth
+    margin = 3.0  # Bohr — clears the surface ramp and the discontinuity edge
+    lo = z_el_end + margin
+    hi = saw_peak - margin
     mask = (z_bohr >= lo) & (z_bohr <= hi)
     if mask.sum() < 3:
-        # Fallback: last 10% of cell
-        lo = 0.9 * cell_z
-        mask = z_bohr >= lo
+        # Fallback: centred window in the electrolyte_end .. saw_peak gap
+        mid = 0.5 * (z_el_end + saw_peak)
+        lo, hi = mid - 3.0, mid + 3.0
+        mask = (z_bohr >= lo) & (z_bohr <= hi)
     v_flat = v_ry[mask]
     return v_flat.mean(), v_flat.std(), lo, hi
 
@@ -368,12 +395,13 @@ def _apply_minor_ticks(ax):
 def plot_potential(z_bohr, z_ang, v_ry, v_ev, regions, v_vac_ry,
                    v_vac_lo, v_vac_hi, fermi_ev, out_path):
     """Plot planar-averaged electrostatic potential with annotations."""
-    cell_z   = regions["cell_z_bohr"]
-    z_sl_end = regions["z_slab_end_bohr"]
-    z_el_end = regions["z_electrolyte_end_bohr"]
-    saw_peak = regions["saw_peak_bohr"]
-    v_vac_ev = v_vac_ry * RY2EV
-    phi      = v_vac_ev - fermi_ev
+    cell_z    = regions["cell_z_bohr"]
+    z_sl_end  = regions["z_slab_end_bohr"]
+    z_el_end  = regions["z_electrolyte_end_bohr"]
+    saw_peak  = regions["saw_peak_bohr"]
+    saw_reset = regions.get("saw_reset_end_bohr", saw_peak)
+    v_vac_ev  = v_vac_ry * RY2EV
+    phi       = v_vac_ev - fermi_ev
 
     # colour aliases from plot_setting
     c_line   = _C[2]   # blue  – V(z) trace
@@ -397,9 +425,12 @@ def plot_potential(z_bohr, z_ang, v_ry, v_ev, regions, v_vac_ry,
     ax = axes[0]
     ax.plot(z_bohr, v_ev, color=c_line, lw=_LW * 2, label="V(z)")
 
-    ax.axvspan(0,        z_sl_end, alpha=0.12, color=c_slab,  label="Electrode")
-    ax.axvspan(z_sl_end, z_el_end, alpha=0.08, color=c_elec,  label="Electrolyte")
-    ax.axvspan(z_el_end, cell_z,   alpha=0.10, color=c_vac,   label="Vacuum")
+    ax.axvspan(0,         z_sl_end,  alpha=0.12, color=c_slab, label="Electrode")
+    ax.axvspan(z_sl_end,  z_el_end,  alpha=0.08, color=c_elec, label="Electrolyte")
+    ax.axvspan(z_el_end,  saw_peak,  alpha=0.12, color=c_vac,  label="Vacuum (true)")
+    ax.axvspan(saw_peak,  saw_reset, alpha=0.25, color=c_saw,  label="Sawtooth reset")
+    ax.axvspan(saw_reset, cell_z,    alpha=0.06, color=c_saw,
+               label="Wrap-around (artificial)")
 
     if ps:
         ps.draw_themed_line(v_vac_ev, ax, "horizontal")
@@ -437,9 +468,11 @@ def plot_potential(z_bohr, z_ang, v_ry, v_ev, regions, v_vac_ry,
                 label=f"V$_{{vac}}$ = {v_vac_ev:.4f} eV")
     axr.axhline(fermi_ev, color=c_efermi, ls="-.", lw=_LW * 2,
                 label=f"E$_F$ = {fermi_ev:.4f} eV")
-    axr.axvspan(z_el_end, cell_z, alpha=0.10, color=c_vac)
+    axr.axvspan(z_el_end, saw_peak,  alpha=0.12, color=c_vac)
+    axr.axvspan(saw_peak, saw_reset, alpha=0.25, color=c_saw)
+    axr.axvline(saw_peak, color=c_saw, ls=":", lw=_LW * 1.5, alpha=0.7)
     axr.axvspan(v_vac_lo, v_vac_hi, alpha=0.25, color=c_vref,
-                label="Reference plateau")
+                label="Reference plateau (pre-sawtooth)")
 
     # Φ double-arrow annotation
     mid_y    = (v_vac_ev + fermi_ev) / 2
@@ -592,7 +625,9 @@ def write_summary_table(run_dir, fermi_data, regions, v_vac_ry, v_vac_std_ry,
         "",
         "── Electrostatic Potential Reference ────────────────────────",
         row("Vacuum plateau range",
-            f"{regions['saw_peak_bohr']+3:.1f}–{cell_z:.1f}", "Bohr"),
+            f"{regions['z_electrolyte_end_bohr']+3:.1f}–"
+            f"{regions['saw_peak_bohr']-3:.1f}", "Bohr",
+            "pre-sawtooth (electrolyte_end .. emaxpos)"),
         row("V_vac (mean)",   f"{v_vac_ry:.6f}", "Ry", f"{v_vac_ev:.6f} eV"),
         row("V_vac (std)",    f"{v_vac_std_ry:.6f}", "Ry",
             f"{v_vac_std_ry*RY2EV*1000:.2f} meV"),
@@ -611,7 +646,12 @@ def write_summary_table(run_dir, fermi_data, regions, v_vac_ry, v_vac_std_ry,
         "",
         "Note: pot.z.avg = planar average of total_pot_ortho.cube",
         "      = QM V_H+V_bare (ortho SCF) + V_saw + MM mobile-charge potential.",
-        "      V_vac is taken from the flat plateau after emaxpos.",
+        "      V_vac is taken from the flat vacuum plateau BEFORE the sawtooth",
+        "      discontinuity (electrolyte surface .. emaxpos).  The plateau",
+        "      after emaxpos is the artificial reset/wrap-around branch and is",
+        "      a full dipole step away -- it must NOT be used for Phi.",
+        "      E_F is QE's Fermi level (pw.out), on the SAME electrostatic-",
+        "      potential zero as the cube, so Phi = V_vac - E_F is well-defined.",
         "      SHE reference: Li et al. PCCP 17, 4647 (2015)  / Trasatti 1986.",
         "",
     ]
@@ -1015,9 +1055,10 @@ def main():
     regions = determine_regions(run_dir, z_bohr)
     print(f"    Cell z         = {regions['cell_z_bohr']:.4f} Bohr"
           f"  = {regions['cell_z_bohr']*BOHR2ANG:.4f} Å")
-    print(f"    emaxpos        = {regions['emaxpos']:.2f}")
+    print(f"    emaxpos/eopreg = {regions['emaxpos']:.2f} / {regions['eopreg']:.2f}")
     print(f"    Sawtooth peak  = {regions['saw_peak_bohr']:.2f} Bohr"
-          f"  ({regions['saw_peak_bohr']*BOHR2ANG:.2f} Å)")
+          f"  ({regions['saw_peak_bohr']*BOHR2ANG:.2f} Å)"
+          f"  reset→{regions['saw_reset_end_bohr']*BOHR2ANG:.2f} Å")
     print(f"    Slab top       = {regions['z_slab_end_bohr']:.2f} Bohr"
           f"  ({regions['z_slab_end_bohr']*BOHR2ANG:.2f} Å)")
     print(f"    Electrolyte end= {regions['z_electrolyte_end_bohr']:.2f} Bohr"
@@ -1028,7 +1069,7 @@ def main():
     v_vac_ry, v_vac_std_ry, vlo, vhi = pick_vacuum_reference(z_bohr, v_ry, regions)
     v_vac_ev = v_vac_ry * RY2EV
     print(f"    Plateau range  = {vlo:.1f}–{vhi:.1f} Bohr"
-          f"  ({vlo*BOHR2ANG:.1f}–{vhi*BOHR2ANG:.1f} Å)")
+          f"  ({vlo*BOHR2ANG:.1f}–{vhi*BOHR2ANG:.1f} Å)  [pre-sawtooth]")
     print(f"    V_vac (mean)   = {v_vac_ry:.6f} Ry  = {v_vac_ev:.4f} eV")
     print(f"    V_vac (std)    = {v_vac_std_ry:.6f} Ry  = {v_vac_std_ry*RY2EV*1000:.2f} meV")
 
