@@ -39,116 +39,85 @@ from __future__ import annotations
 
 import math
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
+
+import yaml
 
 from .bjdisp_db import load_all, build_bjdisp_table, BjdispParams
 from .species import Species
 
 
 # ---------------------------------------------------------------------------
-# Built-in LJ defaults: type_label → (epsilon [kcal/mol], sigma [Å])
+# LJ force-field database: type_label → (epsilon [kcal/mol], sigma [Å])
 #
-# Water LJ is per-model; the matching Joung-Cheatham 2008 ion column is
-# selected automatically based on ces2.water_model (TIP4P → JC TIP4P-Ew,
-# SPCE → JC SPC/E, TIP3P / TIP3PEW → JC TIP3P).  Override any entry per
-# type_label via ces2.lj_params in config.yaml.
+# All values live in   species_db/forcefields/lj_forcefield.yaml   (single
+# source of truth).  For a given ces2.water_model the loader merges the
+# referenced parameter sets:
+#     always_sets  +  water_set  +  ion_set  +  hydroxide_set
+# Per-type overrides are still applied afterwards via ces2.lj_params.
 # ---------------------------------------------------------------------------
 
-# ─── Water-O / water-H LJ (per model, type_label distinct per species file) ─
-_LJ_WATER_TIP4P_EW: Dict[str, Tuple[float, float]] = {
-    # Horn et al., J. Chem. Phys. 120, 9665 (2004)
-    "Ow":   (0.16275000, 3.16435),
-    "Hw":   (0.0000,     1.0000),    # eps=0; sigma=1 to avoid /0
-}
-_LJ_WATER_TIP3P: Dict[str, Tuple[float, float]] = {
-    # Jorgensen et al., J. Chem. Phys. 79, 926 (1983)
-    "Ow":   (0.1521,     3.1507),
-    "Hw":   (0.0000,     1.0000),
-}
-_LJ_WATER_SPCE: Dict[str, Tuple[float, float]] = {
-    # Berendsen, Grigera & Straatsma, J. Phys. Chem. 91, 6269 (1987)
-    "Ow_spce":  (0.1553, 3.166),
-    "Hw_spce":  (0.0000, 1.0000),
-}
-_LJ_WATER_TIP3P_EW: Dict[str, Tuple[float, float]] = {
-    # Price & Brooks, J. Chem. Phys. 121, 10096 (2004)
-    "Ow_tip3pew":  (0.102, 3.188),
-    "Hw_tip3pew":  (0.0000, 1.0000),
-}
-
-# Hydroxide LJ — borrows the active water-O LJ as approximation.
-# Override per type_label in ces2.lj_params for accurate work.
-def _oh_from_water(water_lj: Dict[str, Tuple[float, float]]) -> Dict[str, Tuple[float, float]]:
-    o_eps_sig = water_lj.get("Ow") or next(iter(water_lj.values()))
-    return {"O_oh": o_eps_sig, "H_oh": (0.0, 1.0)}
-
-# ─── Joung-Cheatham 2008 ion LJ (one column per matching water model) ──────
-# Reference: Joung & Cheatham, J. Phys. Chem. B 112, 9020 (2008)
-# sigma = 2 * (Rmin/2) / 2^(1/6)  — converted from Table 5
-_LJ_IONS_JC_TIP4P_EW: Dict[str, Tuple[float, float]] = {
-    "Li":    (0.10398840,  1.43969),
-    "Na":    (0.16843750,  2.18448),
-    "K":     (0.27946510,  2.83306),
-    "Rb":    (0.43314940,  3.04509),
-    "Cs":    (0.39443180,  3.36403),
-    "F":     (0.00157520,  4.52220),
-    "Cl":    (0.01166150,  4.91776),
-    "Br":    (0.03037730,  4.93202),
-    "I":     (0.04170820,  5.25987),
-}
-_LJ_IONS_JC_TIP3P: Dict[str, Tuple[float, float]] = {
-    "Li":    (0.0279,      1.8250),
-    "Na":    (0.3526418,   2.1600),
-    "K":     (0.4184,      3.3330),
-    "Rb":    (0.4748,      3.6560),
-    "Cs":    (0.5000,      4.1430),
-    "F":     (0.7530,      3.1180),
-    "Cl":    (0.7200,      4.4170),
-    "Br":    (0.7150,      4.8370),
-    "I":     (0.6130,      5.4000),
-}
-_LJ_IONS_JC_SPCE: Dict[str, Tuple[float, float]] = {
-    "Li":    (0.3367050,   1.40880),
-    "Na":    (0.3526418,   2.15952),
-    "K":     (0.4297054,   2.83840),
-    "Rb":    (0.4451081,   3.04509),
-    "Cs":    (0.0898565,   3.83159),
-    "F":     (0.0074005,   4.10219),
-    "Cl":    (0.0127850,   4.83045),
-    "Br":    (0.0269586,   4.90412),
-    "I":     (0.0427845,   5.20892),
-}
-
-# Additional common non-water/ion atoms (same regardless of water model)
-_DEFAULT_LJ_COMMON: Dict[str, Tuple[float, float]] = {
-    "C":  (0.0860, 3.3997),
-    "N":  (0.1700, 3.2500),
-    "P":  (0.2000, 3.7400),
-    "S":  (0.2500, 3.5640),
-}
+# Default location: <package>/species_db/forcefields/lj_forcefield.yaml
+_DEFAULT_LJ_FORCEFIELD = (
+    Path(__file__).resolve().parent.parent
+    / "species_db" / "forcefields" / "lj_forcefield.yaml"
+)
+# water_model used when the requested one has no entry in the YAML.
+_LJ_WATER_MODEL_FALLBACK = "TIP3P"
 
 
-def _build_lj_defaults(water_model: str) -> Dict[str, Tuple[float, float]]:
-    """Pick water LJ + JC ion params consistent with the chosen water_model.
+@lru_cache(maxsize=8)
+def _load_lj_yaml(path_str: str) -> Dict[str, Any]:
+    p = Path(path_str)
+    if not p.exists():
+        raise FileNotFoundError(f"LJ force-field database not found: {p}")
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if "sets" not in data or "water_models" not in data:
+        raise ValueError(f"{p} missing required 'sets'/'water_models' keys")
+    return data
 
-    TIP3P-Ew has no published JC ion set, so JC TIP3P is used as the
-    closest fallback (note this in production work).
+
+def _build_lj_defaults(
+    water_model: str,
+    lj_forcefield_path: Optional[Path] = None,
+) -> Dict[str, Tuple[float, float]]:
+    """Merge the LJ sets referenced by ``water_model`` into a flat label→(eps,sigma) dict.
+
+    Reads species_db/forcefields/lj_forcefield.yaml.  An unknown water_model
+    falls back to the TIP3P entry (matching the legacy hardcoded behaviour).
     """
+    path = Path(lj_forcefield_path) if lj_forcefield_path else _DEFAULT_LJ_FORCEFIELD
+    data = _load_lj_yaml(str(path))
+    sets       = data["sets"]
+    wmodels    = data["water_models"]
+    always     = data.get("always_sets", []) or []
+
     wm = water_model.upper()
-    if wm == "TIP4P":
-        water = _LJ_WATER_TIP4P_EW
-        ions  = _LJ_IONS_JC_TIP4P_EW
-    elif wm == "SPCE":
-        water = _LJ_WATER_SPCE
-        ions  = _LJ_IONS_JC_SPCE
-    elif wm == "TIP3PEW":
-        water = _LJ_WATER_TIP3P_EW
-        ions  = _LJ_IONS_JC_TIP3P    # no separate JC TIP3P-Ew set; closest match
-    else:  # TIP3P (default fallback)
-        water = _LJ_WATER_TIP3P
-        ions  = _LJ_IONS_JC_TIP3P
-    return {**water, **_oh_from_water(water), **ions, **_DEFAULT_LJ_COMMON}
+    entry = wmodels.get(wm)
+    if entry is None:
+        entry = wmodels.get(_LJ_WATER_MODEL_FALLBACK)
+        if entry is None:
+            raise KeyError(
+                f"water_model '{wm}' not in {path} and no "
+                f"'{_LJ_WATER_MODEL_FALLBACK}' fallback entry present"
+            )
+        print(f"[lammps_input_writer] water_model '{wm}' not in LJ DB; "
+              f"using '{_LJ_WATER_MODEL_FALLBACK}' sets")
+
+    set_names = list(always) + [
+        entry[k] for k in ("water_set", "ion_set", "hydroxide_set") if entry.get(k)
+    ]
+
+    merged: Dict[str, Tuple[float, float]] = {}
+    for sname in set_names:
+        if sname not in sets:
+            raise KeyError(f"LJ set '{sname}' referenced for water_model '{wm}' "
+                           f"not defined in {path}")
+        for lbl, ev in (sets[sname].get("params", {}) or {}).items():
+            merged[lbl] = (float(ev["epsilon"]), float(ev["sigma"]))
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +151,7 @@ def generate_lammps_input(
     n_mm: int,
     charged_params: Optional[Dict[str, float]] = None,
     extra_qm_bjdisp: Optional[Dict[str, BjdispParams]] = None,
+    lj_forcefield_path: Optional[Path] = None,
 ) -> Path:
     """
     Write base.in.lammps to export_dir/base.in.lammps.
@@ -216,10 +186,10 @@ def generate_lammps_input(
     sc_factor = int(rep[0]) * int(rep[1]) * int(rep[2])
 
     # ------------------------------------------------------------------ #
-    #  LJ parameter DB  (built-in defaults + user overrides)
+    #  LJ parameter DB  (YAML defaults + user overrides)
     #  water LJ + matching JC ion column auto-selected from water_model.
     # ------------------------------------------------------------------ #
-    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model)
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model, lj_forcefield_path)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
@@ -844,6 +814,7 @@ def collect_relax_ff_params(
     cfg:               Dict[str, Any],
     relax_cutoff:      float = 10.0,
     relax_kspace_acc:  float = 1.0e-4,
+    lj_forcefield_path: Optional[Path] = None,
 ) -> RelaxFFParams:
     """
     Collect a lightweight set of FF parameters for in.relax.
@@ -861,7 +832,7 @@ def collect_relax_ff_params(
     tip4p_msite = float(ces2_cfg.get("tip4p_msite", 0.125))
 
     # ---- LJ database (water + matching JC ions auto-picked from water_model) ----
-    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model)
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model, lj_forcefield_path)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
@@ -977,8 +948,9 @@ def collect_relax_ff_params(
 # ---------------------------------------------------------------------------
 # Debug helper
 # ---------------------------------------------------------------------------
-def print_lj_db(water_model: str = "TIP4P") -> None:
-    db = _build_lj_defaults(water_model)
+def print_lj_db(water_model: str = "TIP4P",
+                lj_forcefield_path: Optional[Path] = None) -> None:
+    db = _build_lj_defaults(water_model, lj_forcefield_path)
     print(f"{'Label':<12}  {'epsilon':>10}  {'sigma':>8}  (water_model={water_model})")
     print("-" * 55)
     for lbl, (eps, sig) in sorted(db.items()):

@@ -189,6 +189,8 @@ CES2-automation/
 │   ├── K_plus.yaml, Na_plus.yaml, ...  # Cation species
 │   ├── Cl_minus.yaml, OH_minus.yaml, ... # Anion species
 │   ├── TMA_plus.yaml, H3O_plus.yaml     # Polyatomic species
+│   ├── forcefields/
+│   │   └── lj_forcefield.yaml   # LJ (eps,sigma) DB: water/ion/hydroxide/common sets
 │   └── qm_params/
 │       └── IrO2.yaml            # QM slab BJ-dispersion parameters (alpha_iso, C6, s)
 ├── config_example.yaml          # Fully-annotated example config (all options)
@@ -388,7 +390,9 @@ ces2:
   bjdisp_s8: 2.10
 
   # LJ parameter overrides: type_label → {epsilon [kcal/mol], sigma [Å]}
-  # Built-in defaults for TIP4P-EW water + Smith-Dang ions are used if omitted.
+  # Defaults come from species_db/forcefields/lj_forcefield.yaml, selected by
+  # water_model (water + Joung-Cheatham ion column + hydroxide set + common).
+  # Entries here override that DB by type_label for this build only.
   # lj_params:
   #   MyAtom: { epsilon: 0.200, sigma: 3.500 }
 
@@ -528,10 +532,27 @@ Use `ces2.initial_dump` to start QM/MM from the equilibrated structure.
 
 ### Water model
 
-- **TIP4P-EW** (default): `pair_style lj/cut/tip4p/long/opt`, `kspace_style pppm/tip4p`, M-site distance 0.125 Å, Smith-Dang ion LJ parameters.
-- **TIP3P**: `pair_style lj/cut/long`, `kspace_style pppm`, Joung-Cheatham ion LJ parameters.
+- **TIP4P-EW** (default): `pair_style lj/cut/tip4p/long/opt`, `kspace_style pppm/tip4p`, M-site distance 0.125 Å.
+- **TIP3P**: `pair_style lj/cut/long`, `kspace_style pppm`.
 
 Water species is auto-derived from `ces2.water_model` when `electrolyte_recipe.water.species_id` is omitted: `TIP4P` → `water_tip4p`, `TIP3P` → `water_tip3p`.
+
+### LJ force-field database
+
+All MM Lennard-Jones `(epsilon, sigma)` values live in
+`species_db/forcefields/lj_forcefield.yaml` (see `species_db/SCHEMA.md`). For the
+active `ces2.water_model` the writer merges the referenced sets —
+`always_sets` (generic C/N/P/S) + `water_set` + `ion_set` + `hydroxide_set` — into
+the per-`type_label` table, then applies any `ces2.lj_params` overrides. Pairs are
+combined with Lorentz-Berthelot mixing.
+
+- **Ions**: Joung-Cheatham 2008, one parameter column per water model
+  (`TIP4P` → TIP4P-Ew column, `SPCE` → SPC/E, `TIP3P`/`TIP3PEW` → TIP3P).
+- **Hydroxide** (`O_oh`/`H_oh`): a dedicated set — `hydroxide_tip4p2005`
+  (de Lucas 2024) for TIP4P, `hydroxide_bonthuis2016` otherwise. This replaced an
+  earlier approximation that borrowed the water-oxygen LJ for `O_oh`, which
+  over-bound cations such as Li⁺.
+- An unknown `water_model` falls back to the `TIP3P` sets (with a warning).
 
 ### Gridforce/net convention
 

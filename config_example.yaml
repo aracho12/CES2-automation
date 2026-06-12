@@ -191,11 +191,12 @@ ces2:
   bjdisp_s8: 2.10
 
   # LJ parameters: type_label -> {epsilon [kcal/mol], sigma [Angstrom]}
-  # Built-in defaults are provided for TIP4P-EW water (Smith-Dang ions).
-  # Add entries here only if you need to override defaults or add new types.
+  # Defaults live in species_db/forcefields/lj_forcefield.yaml, auto-selected by
+  # water_model (water + Joung-Cheatham ions + hydroxide + common sets).
+  # Add entries here only if you need to override that DB or add new types.
   # lj_params:
   #   Ow:  { epsilon: 0.16275, sigma: 3.16435 }  # TIP4P-EW (already default)
-  #   K:   { epsilon: 0.20028, sigma: 3.025  }   # Smith-Dang (already default)
+  #   K:   { epsilon: 0.27946510, sigma: 2.83306 } # JC2008 TIP4P-Ew (already default)
   #   MyAtom: { epsilon: 0.200, sigma: 3.500 }    # custom
 
   # Region z-bounds for slab surface layers (adjust to match your slab geometry)

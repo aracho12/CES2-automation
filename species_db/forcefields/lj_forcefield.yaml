@@ -1,0 +1,140 @@
+schema_version: 1
+
+# Lennard-Jones force-field database (eps, sigma per type_label).
+# Single source of truth — replaces the hardcoded dicts in
+# builder/lammps_input_writer.py (_LJ_WATER_*, _LJ_IONS_JC_*,
+# _DEFAULT_LJ_COMMON, _oh_from_water).
+#
+# Resolution order for a given ces2.water_model (later wins):
+#   fallback  <  always_sets  <  water_set  <  ion_set  <  hydroxide_set
+#   <  ces2.lj_params (per-type override in config.yaml)
+# type_labels across these sets are disjoint, so order only matters vs override.
+
+units:
+  epsilon: kcal/mol
+  sigma: Angstrom
+
+mixing_rule: lorentz_berthelot
+
+fallback:
+  epsilon: 0.0
+  sigma: 1.0
+
+# Sets applied regardless of water model (generic atoms in polyatomic ions).
+always_sets:
+  - common
+
+water_models:
+  TIP4P:
+    water_set: water_tip4p_ew
+    ion_set: jc2008_tip4p_ew
+    hydroxide_set: hydroxide_tip4p2005
+
+  TIP3P:
+    water_set: water_tip3p
+    ion_set: jc2008_tip3p
+    hydroxide_set: hydroxide_bonthuis2016
+
+  SPCE:
+    water_set: water_spce
+    ion_set: jc2008_spce
+    hydroxide_set: hydroxide_bonthuis2016
+
+  TIP3PEW:
+    water_set: water_tip3p_ew
+    ion_set: jc2008_tip3p
+    hydroxide_set: hydroxide_bonthuis2016
+    note: "No dedicated JC TIP3P-Ew ion set; using JC TIP3P fallback."
+
+sets:
+  # ───────────────────────── water ─────────────────────────
+  water_tip4p_ew:
+    source: "Horn et al., J. Chem. Phys. 120, 9665 (2004)"
+    params:
+      Ow: { epsilon: 0.16275, sigma: 3.16435 }
+      Hw: { epsilon: 0.0, sigma: 1.0 }      # eps=0; sigma=1 to avoid /0
+
+  water_tip3p:
+    source: "Jorgensen et al., J. Chem. Phys. 79, 926 (1983)"
+    params:
+      Ow: { epsilon: 0.1521, sigma: 3.1507 }
+      Hw: { epsilon: 0.0, sigma: 1.0 }
+
+  water_spce:
+    source: "Berendsen, Grigera & Straatsma, J. Phys. Chem. 91, 6269 (1987)"
+    params:
+      Ow_spce: { epsilon: 0.1553, sigma: 3.166 }
+      Hw_spce: { epsilon: 0.0, sigma: 1.0 }
+
+  water_tip3p_ew:
+    source: "Price & Brooks, J. Chem. Phys. 121, 10096 (2004)"
+    params:
+      Ow_tip3pew: { epsilon: 0.102, sigma: 3.188 }
+      Hw_tip3pew: { epsilon: 0.0, sigma: 1.0 }
+
+  # ───────────────── ions: Joung-Cheatham 2008 ─────────────────
+  # Joung & Cheatham, J. Phys. Chem. B 112, 9020 (2008)
+  # sigma = 2*(Rmin/2)/2^(1/6), converted from Table 5.
+  jc2008_tip4p_ew:
+    source: "Joung & Cheatham, JPCB 112, 9020 (2008), TIP4P-Ew column"
+    params:
+      Li: { epsilon: 0.10398840, sigma: 1.43969 }
+      Na: { epsilon: 0.16843750, sigma: 2.18448 }
+      K:  { epsilon: 0.27946510, sigma: 2.83306 }
+      Rb: { epsilon: 0.43314940, sigma: 3.04509 }
+      Cs: { epsilon: 0.39443180, sigma: 3.36403 }
+      F:  { epsilon: 0.00157520, sigma: 4.52220 }
+      Cl: { epsilon: 0.01166150, sigma: 4.91776 }
+      Br: { epsilon: 0.03037730, sigma: 4.93202 }
+      I:  { epsilon: 0.04170820, sigma: 5.25987 }
+
+  jc2008_tip3p:
+    source: "Joung & Cheatham, JPCB 112, 9020 (2008), TIP3P column"
+    params:
+      Li: { epsilon: 0.0279,    sigma: 1.8250 }
+      Na: { epsilon: 0.3526418, sigma: 2.1600 }
+      K:  { epsilon: 0.4184,    sigma: 3.3330 }
+      Rb: { epsilon: 0.4748,    sigma: 3.6560 }
+      Cs: { epsilon: 0.5000,    sigma: 4.1430 }
+      F:  { epsilon: 0.7530,    sigma: 3.1180 }
+      Cl: { epsilon: 0.7200,    sigma: 4.4170 }
+      Br: { epsilon: 0.7150,    sigma: 4.8370 }
+      I:  { epsilon: 0.6130,    sigma: 5.4000 }
+
+  jc2008_spce:
+    source: "Joung & Cheatham, JPCB 112, 9020 (2008), SPC/E column"
+    params:
+      Li: { epsilon: 0.3367050, sigma: 1.40880 }
+      Na: { epsilon: 0.3526418, sigma: 2.15952 }
+      K:  { epsilon: 0.4297054, sigma: 2.83840 }
+      Rb: { epsilon: 0.4451081, sigma: 3.04509 }
+      Cs: { epsilon: 0.0898565, sigma: 3.83159 }
+      F:  { epsilon: 0.0074005, sigma: 4.10219 }
+      Cl: { epsilon: 0.0127850, sigma: 4.83045 }
+      Br: { epsilon: 0.0269586, sigma: 4.90412 }
+      I:  { epsilon: 0.0427845, sigma: 5.20892 }
+
+  # ───────────────────────── hydroxide ─────────────────────────
+  # Dedicated OH- LJ (replaces the old "borrow active water-O" approximation,
+  # which over-bound cations such as Li+ and caused ion clustering).
+  hydroxide_bonthuis2016:
+    source: "Bonthuis, Mamatkulov & Netz, J. Chem. Phys. 144, 104503 (2016)"
+    params:
+      O_oh: { epsilon: 0.01195, sigma: 3.8100 }
+      H_oh: { epsilon: 0.0, sigma: 1.0 }
+
+  hydroxide_tip4p2005:
+    source: "de Lucas et al., J. Phys. Chem. Lett. 2024, 15, 9411-9418 (fit with TIP4P/2005 water)"
+    note: "Original units eps/kB [K], sigma [Ang]; eps converted with kB = 0.00198720425864083 kcal/mol/K"
+    params:
+      O_oh: { epsilon: 0.05996, sigma: 3.4000 }
+      H_oh: { epsilon: 0.04396, sigma: 1.4430 }
+
+  # ───────────── generic atoms (polyatomic ions) ─────────────
+  common:
+    source: "generic OPLS-AA-style defaults (verify per species)"
+    params:
+      C: { epsilon: 0.0860, sigma: 3.3997 }
+      N: { epsilon: 0.1700, sigma: 3.2500 }
+      P: { epsilon: 0.2000, sigma: 3.7400 }
+      S: { epsilon: 0.2500, sigma: 3.5640 }

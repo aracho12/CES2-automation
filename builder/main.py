@@ -665,6 +665,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         n_mm=n_mm,
         charged_params=charged_params,
         extra_qm_bjdisp=_layer_db if _layer_db else None,
+        lj_forcefield_path=species_db_path / "forcefields" / "lj_forcefield.yaml",
     )
     timings["lammps_input"] = time.perf_counter() - t0
     print(f"[TIMING] lammps_input: {timings['lammps_input']:.3f} s")
@@ -756,6 +757,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
             angle_coeffs=angle_coeffs,
             cfg=cfg,
             relax_cutoff=relax_cutoff,
+            lj_forcefield_path=species_db_path / "forcefields" / "lj_forcefield.yaml",
         )
         md_out = generate_md_bundle(export_dir, md_cfg, relax_ff=relax_ff,
                                     qe_cfg=cfg.get("qe", {}))
