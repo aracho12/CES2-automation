@@ -223,8 +223,21 @@ ces2_script:
   chgplate_binary: "/home01/x3379a03/ces_share/make_rho_mino"
   np: 256                        # MPI tasks (= select × mpiprocs)
   n_qmmm_steps: 6               # total QM/MM outer-loop steps
-  adsorbate: "0"                # last 4 atoms in POSCAR are adsorbate (2 O_ads + 2 H_ads)
-                                # MDIPC excludes these from point charge correction
+
+  # ---- MDIPC slab-dipole / point-charge correction (charged systems) ----
+  # These map to the mpclayer/totlayer/adsorbate shell variables consumed by
+  # the $MDIPC step in the generated run script.
+  # mpc_layer : MPC layer position [bohr]. Leave UNSET to auto-detect from the
+  #             structure (= mean z of the charged top layer × 1/0.529177,
+  #             ≈20.93 bohr for this window — pulled up by the bridge O).
+  #             Set explicitly to reference the Ir atomic plane instead:
+  #             Ir line = 10.879830 Å × 1/0.529177 = 20.56 bohr.
+  #             (data.file slab z_min = 0, so the .dat relative z equals the
+  #              absolute z in the cube/MDIPC frame — values map directly.)
+  mpc_layer:   "20.56"          # bohr — Ir-O surface (Ir) plane
+  tot_layer:   "6"              # number of total MPC layers (Poisson solver)
+  adsorbate:   "0"             # number of adsorbate atoms MDIPC excludes from the
+                               # point-charge correction (e.g. "4" for 2 O_ads + 2 H_ads)
 
   # ---- QE parallelization flags (pw.x command-line options) ----
   # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
