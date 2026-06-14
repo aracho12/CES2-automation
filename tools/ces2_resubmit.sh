@@ -11,6 +11,8 @@
 #   1. Scan qm_N/pw.out for "JOB DONE"  → last completed QM step
 #   2. Scan mm_N/*.restart               → last completed MM step
 #   3. Patch qmmm_dftces2_charging_pts.sh with the right QMMMINISTEP / initialqm
+#      (and skipequil=1 when a pending mm_N was killed during its averaging phase,
+#       so the already-finished equilibration is not needlessly rerun)
 #   4. Patch submit_ces2.sh to skip relax stages that already produced dumps
 #   5. qsub submit_ces2.sh (unless --dry-run)
 #
@@ -110,6 +112,12 @@ echo "   last completed qm_N : $last_qm"
 echo "   last completed mm_N : $last_mm"
 
 # ---------- 3. Decide QMMMINISTEP / initialqm ----------
+# skipequil: when resuming a pending mm_N whose equilibration already finished
+# (job killed during the averaging phase), skip the multi-million-step
+# equilibration on the resumed step. Decided in §3.4 below. mm_pending marks the
+# "qm_N done, mm_N pending" branch that §3.4 inspects.
+skipequil=0
+mm_pending=0
 if (( last_qm == -1 && last_mm == -1 )); then
   qmmmini=0;  initialqm=0
   reason="fresh start"
@@ -117,6 +125,7 @@ elif (( last_qm >= 0 && last_mm == last_qm - 1 )); then
   # qm_N done, mm_N not → resume mm_N (skip re-running qm_N)
   qmmmini=$last_qm
   initialqm=1
+  mm_pending=1
   reason="qm_$last_qm done, mm_$last_qm pending"
 elif (( last_qm >= 0 && last_qm == last_mm )); then
   # Both qm_N and mm_N done → start qm_(N+1)
@@ -158,6 +167,7 @@ if (( qmmmini > 0 )); then
         echo "     Falling back to fresh start from qm_0 (cannot resume SCF without it)."
         qmmmini=0
         initialqm=0
+        mm_pending=0
         reason="$reason; QE restart missing → fresh start from qm_0"
       fi
     else
@@ -166,8 +176,38 @@ if (( qmmmini > 0 )); then
   fi
 fi
 
+# ---------- 3.4 Detect kill-during-averaging → skip redundant equilibration ----------
+# Each MM step runs two LAMMPS phases in the work dir, in order:
+#   1) equilibration (emxext) → lammps.equil.out, writes *.restart
+#   2) averaging     (emdext) → lammps.average.out, then results copied to mm_N/
+# mm_N only counts as "done" once averaging copies its restart into mm_N/. So in
+# the "mm_N pending" branch the job may have been killed *during averaging*, with
+# equilibration already finished. Re-running the multi-million-step equilibration
+# would waste hours, so detect that case and set skipequil=1 for the resumed step.
+# Signals are content-based — LAMMPS prints "Total wall time" only on a clean run
+# end — so they survive rsync'd / touched dirs where mtimes are unreliable.
+if (( mm_pending == 1 )); then
+  equil_done=0
+  avg_done=0
+  if [ -f lammps.equil.out ]   && grep -q "Total wall time" lammps.equil.out;   then equil_done=1; fi
+  if [ -f lammps.average.out ] && grep -q "Total wall time" lammps.average.out; then avg_done=1;   fi
+  if [ -f qmmm.out ]; then
+    last_phase=$(grep -aE 'Running LAMMPS\((emxext|emdext)\)' qmmm.out | tail -1 || true)
+    [ -n "$last_phase" ] && echo "   last work-dir LAMMPS phase: $last_phase"
+  fi
+  if (( equil_done == 1 && avg_done == 0 )); then
+    if ls *.restart >/dev/null 2>&1; then
+      skipequil=1
+      reason="$reason; equilibration complete, killed during averaging → skip equil"
+    else
+      echo "   ! equilibration looks complete but no *.restart in work dir —"
+      echo "     cannot skip equil safely; leaving skipequil=0 (equilibration will rerun)."
+    fi
+  fi
+fi
+
 echo "   → $reason"
-echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm"
+echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm, skipequil=$skipequil"
 
 # ---------- 3.6 Completion detection ----------
 # Read QMMMFINSTEP from qmmm script. If the next step to run is past the final
@@ -199,6 +239,9 @@ ts=$(date +%Y%m%d_%H%M%S)
 cp "$QMMM" "${QMMM}.bak.${ts}"
 sed -i.tmp "s|^QMMMINISTEP=.*|QMMMINISTEP=$qmmmini # no of initial QMMM step|" "$QMMM"
 sed -i.tmp "s|^initialqm=.*|initialqm=$initialqm #1, when the initial qm has been done.|" "$QMMM"
+# Always set skipequil explicitly (0 or 1) so a value left over from a prior
+# resubmit can't leak into this run.
+sed -i.tmp "s|^skipequil=.*|skipequil=$skipequil #1, skip equil on first MM step (resume from averaging)|" "$QMMM"
 rm -f "${QMMM}.tmp"
 
 # ---------- 5. Patch submit script (skip relax if it contains relax steps) ----------
