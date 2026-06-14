@@ -154,6 +154,7 @@ def apply_slab_charging(
     q_electrode: float,
     *,
     z_cutoff: Optional[float] = None,
+    z_cutoff_hi: Optional[float] = None,
     exclude_labels: Optional[List[str]] = None,
     slab_type_labels: Optional[List[str]] = None,
 ) -> List[float]:
@@ -166,6 +167,9 @@ def apply_slab_charging(
     q_electrode       : total charge to distribute (e, sign convention: negative = more e⁻).
     z_cutoff          : if given, only atoms with z >= z_cutoff [Å] receive charge.
                         This is the "top-layer" mode for charged-surface simulations.
+    z_cutoff_hi       : if given, only atoms with z <= z_cutoff_hi [Å] receive charge.
+                        Combine with *z_cutoff* to select a z-window (e.g. surface
+                        layer + bridging O, while excluding higher adsorbates).
     exclude_labels    : type_labels to exclude from charging (e.g. ["O_ads", "H_ads"]).
     slab_type_labels  : per-atom type_label list (same length as slab). Required when
                         *exclude_labels* is provided.
@@ -187,6 +191,8 @@ def apply_slab_charging(
     for i in range(n):
         if z_cutoff is not None and zpos[i] < z_cutoff:
             mask[i] = False
+        if z_cutoff_hi is not None and zpos[i] > z_cutoff_hi:
+            mask[i] = False
         if exclude_set and slab_type_labels is not None:
             if slab_type_labels[i] in exclude_set:
                 mask[i] = False
@@ -195,7 +201,8 @@ def apply_slab_charging(
     if n_charged == 0:
         raise ValueError(
             f"apply_slab_charging: no slab atoms selected for charging. "
-            f"z_cutoff={z_cutoff}, exclude_labels={exclude_labels}, "
+            f"z_cutoff={z_cutoff}, z_cutoff_hi={z_cutoff_hi}, "
+            f"exclude_labels={exclude_labels}, "
             f"z_range=[{float(zpos.min()):.3f}, {float(zpos.max()):.3f}]"
         )
 
@@ -230,6 +237,7 @@ def compute_charged_system_params(
     box_z_total: float,
     *,
     z_cutoff: Optional[float] = None,
+    z_cutoff_hi: Optional[float] = None,
     top_layer_tol: float = 0.5,
 ) -> Dict[str, float]:
     """
@@ -262,10 +270,19 @@ def compute_charged_system_params(
     if z_cutoff is None:
         z_cutoff = detect_top_layer_z(slab, tolerance=top_layer_tol)
 
-    n_top = int(np.sum(zpos >= z_cutoff))
+    # Top-layer selection mask (lower bound + optional upper bound).
+    sel = zpos >= z_cutoff
+    if z_cutoff_hi is not None:
+        sel = sel & (zpos <= z_cutoff_hi)
+    n_top = int(np.sum(sel))
+
+    # Actual z extent of the selected top-layer atoms — used to bracket the
+    # LAMMPS `region toplayer` block so it matches this charge assignment exactly.
+    top_z_lo = float(np.min(zpos[sel]))
+    top_z_hi = float(np.max(zpos[sel]))
 
     # Mean z of top-layer atoms → mpc_layer in bohr
-    top_z_mean = float(np.mean(zpos[zpos >= z_cutoff]))
+    top_z_mean = float(np.mean(zpos[sel]))
     mpc_layer = top_z_mean * ANG_TO_BOHR
 
     # Plate position: midpoint of slab in bohr
@@ -280,8 +297,11 @@ def compute_charged_system_params(
         "mpc_layer":   mpc_layer,
         "plate_pos":   plate_pos,
         "z_cutoff":    z_cutoff,
+        "z_cutoff_hi": z_cutoff_hi,
         "n_top_atoms": n_top,
         "top_z_mean":  top_z_mean,
+        "top_z_lo":    top_z_lo,
+        "top_z_hi":    top_z_hi,
         "slab_mid_z":  slab_mid_z,
     }
 

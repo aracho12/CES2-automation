@@ -516,12 +516,15 @@ def generate_lammps_input(
     region_cfg = ces2_cfg.get("regions", {})
 
     if charged_params and charged_params.get("z_cutoff") is not None:
-        # Auto-detected top layer: z_cutoff is the lower bound.
-        # Upper bound = top_z_mean + 0.1 Å (small margin above highest atom).
+        # Bracket the actual selected top-layer atoms with a small margin so this
+        # geometric region matches the per-atom charge assignment in data.file
+        # exactly (whether the cutoff was auto-detected or an explicit z-window).
         _z_cut = charged_params["z_cutoff"]
         _z_top_mean = charged_params.get("top_z_mean", _z_cut + 0.5)
-        z_top_lo = _z_cut
-        z_top_hi = _z_top_mean + 0.1
+        _z_top_lo_sel = charged_params.get("top_z_lo", _z_cut)
+        _z_top_hi_sel = charged_params.get("top_z_hi", _z_top_mean)
+        z_top_lo = _z_top_lo_sel - 0.1
+        z_top_hi = _z_top_hi_sel + 0.1
     else:
         z_top_lo = float(region_cfg.get("z_toplayer_lo", box.z_el_lo - 2.0))
         z_top_hi = float(region_cfg.get("z_toplayer_hi", box.z_el_lo + 0.5))

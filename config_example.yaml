@@ -24,17 +24,20 @@ cell:
 
 electrolyte_box:
   z_gap: 0.0
-  # z_el_hi = z_top_slab + thickness. The SOLVENT upper wall is fixed at
-  # z_el_hi + 5 Å during both pre-relax and QM/MM production.
-  thickness:   50.0            # [Å] water column height above slab
+  # thickness/vacuum_z must satisfy: 0.9·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
+  # ≥ z_top_slab + thickness + 5.  Otherwise the SOLVENT upper wall gets clamped
+  # below z_el_hi (water column compressed) to keep solvent out of QE's
+  # dipole-correction zone (emaxpos·c).  With default emaxpos=0.9, even
+  # (50, 20) leaves >10 Å margin between water top and z_emaxpos.
+  thickness:   45.0            # [Å] water column height above slab
   z_margin_top: 2.0
-  vacuum_z:    23.0            # [Å] vacuum gap above water for boundary p p f
+  vacuum_z:    25.0            # [Å] vacuum gap above water for boundary p p f
   z_buffer_lo:  1.0            # [Å] buffer below slab (zlo = -z_buffer_lo)
 
 packmol:
   #binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
   tolerance: 2.0
-  maxit: 200
+  maxit: 1000
   pbc: true                    # include x/y periodic images when checking Packmol distances
 
 charge_control:
@@ -44,6 +47,26 @@ charge_control:
                                 # → QM tot_charge = -1/(3*6*1) = -0.05556 (auto-calculated)
   top_layer_tolerance: 1.8      # [Å] atoms within this distance of z_max receive charge
                                 # IrO2: 1.8 includes top Ir + bridging O (0.5 for simple metals)
+                                # NOTE: ignored when top_layer_z_lo (below) is set.
+
+  # Explicit top-layer z-window (overrides top_layer_tolerance auto-detection).
+  # Values are RELATIVE z in Å with the lowest slab atom = 0 — i.e. the SAME
+  # frame as the z_avg column in *_layer_avg.dat. Slab atoms with
+  # top_layer_z_lo <= z_rel <= top_layer_z_hi are the charged top layer; the
+  # LAMMPS `region toplayer` block is auto-fitted to the selected atoms.
+  #
+  # IMPORTANT: .dat z_avg values are tolerance-AVERAGED and can sit a few
+  # hundredths of an Å off the real atom z's (and one .dat row may merge two
+  # physical sublayers). Do NOT copy the .dat value as the cutoff — give it
+  # margin. The builder prints the resolved window + n_top_atoms; check it
+  # against build/slab_supercell.vasp.
+  #
+  # Example (IrO2_2OH_2O): include the Ir-O surface layer (O + Ir) and the
+  # bridging O, but exclude the adsorbates above. The .dat lists O 10.822525 /
+  # Ir 10.879830 / bridge O 12.026905, but the real atoms sit at z_rel≈10.792
+  # (O) / 10.843,10.924 (Ir) / 12.015 (bridge O) / 12.715 (adsorbate O), so:
+  # top_layer_z_lo: 10.70       # [Å, relative] below the O layer (NOT 10.80)
+  # top_layer_z_hi: 12.40       # [Å, relative] between bridge O and adsorbate O
   # exclude_labels: ["O_ads", "H_ads"]  # uncomment if adsorbate should not be charged
 
 electrolyte_recipe:
@@ -219,8 +242,11 @@ ces2:
     shake_iter:    20      # SHAKE max iterations
     shake_maxiter: 500     # SHAKE absolute max iterations
     # ── SOLVENT upper-wall during QM/MM production ──────────────────────────
-    # The writer fixes z_wall_hi at z_el_hi + 5 Å.
+    # Defaults below match what the writer applies if omitted.
+    # wall_buffer:            5.0   # [Å] requested z_wall = z_el_hi + buffer
     # wall_K:                 1.0   # [kcal/mol/Å²] soft default; bump to 50 if solvent escapes
+    # emaxpos_safety_margin:  5.0   # [Å] hard cap: z_wall ≤ z_emaxpos − margin
+                                    # (prevents wall from sitting inside QE dipole zone)
 
 # ---- QE (Quantum ESPRESSO) settings for CES2 QM calculation ----
 qe:
@@ -313,53 +339,9 @@ ces2_script:
   #   time:       "00:00:00"
   #   comment:    "qmmm"
 
-md_relax:
-  # Disabled — running CES2 QM/MM directly from packmol coordinates.
-  # NOTE: base.in.lammps has no velocity-init / minimize / heat ramp, so
-  # packmol overlaps may cause large forces in the first MD steps.  If
-  # LAMMPS dies with "lost atoms" or NaN, re-enable md_relax.
-  enabled: false
-  # FF params are inlined automatically (no ff/ directory needed).
-  # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
-  lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)
-  data_file: "data.file"
-
-  # Stage 0: Soft pushoff — relieve extreme packmol overlaps
-  soft_cutoff:   2.0           # [Å] pair_style soft cutoff
-  soft_ramp_max: 50.0          # [kcal/mol] ramp A from 0 → this
-  soft_steps:    2000          # steps for nve/limit pushoff
-  nve_limit:     0.1           # [Å/step] max atom displacement
-
-  # Stage 1: CG minimization — remove packmol bad contacts
-  min_etol:    1.0e-4          # energy tolerance  (kcal/mol)
-  min_ftol:    1.0e-3          # force tolerance   (kcal/mol/Å)
-  min_maxiter: 1000
-  min_maxeval: 5000
-
-  # Stage 2: Gradual heating  t_start → t_target
-  t_start:     10.0            # K  (start cold → avoid explosion from dense packing)
-  t_target:   300.0            # K
-  tdamp_fs:   100.0            # fs  (Nosé-Hoover τ)
-  heat_steps:  10000           # 10 ps  at timestep_fs=1.0
-
-  # Stage 3: NVT equilibration at t_target
-  equil_steps: 30000           # 30 ps  at timestep_fs=1.0
-
-  timestep_fs: 1.0             # fs
-  dump_every:  2000
-  write_equilibrated: "equilibrated.data"
-
-  # ── SOLVENT walls during pre-relax (min/heat/equil) ─────────────────────
-  # Defaults below match what the writer applies if omitted.
-  # Upper wall is fixed at z_el_hi + 5 Å.
-  # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
-  # relax_wall_K:           1.0   # [kcal/mol/Å²] upper harmonic wall spring constant
-  # relax_wall_cutoff:      5.0   # [Å] upper harmonic wall cutoff
-  # relax_wall_lo_cutoff:   1.0   # [Å] lower harmonic wall cutoff; keep short near slab
-  #
-  # ── Reserved lower LJ93 wall parameters ─────────────────────────────────
-  # Current pre-relax generation uses a short lower harmonic wall. These are
-  # retained for future attractive wall support.
-  # relax_wall_lj_epsilon:  0.5   # [kcal/mol]  water–metal well depth (~0.3–1.0)
-  # relax_wall_lj_sigma:    3.0   # [Å]         O–surface LJ size (~2.5–3.5)
-  # relax_wall_lj_cutoff:  10.0   # [Å]         LJ93 cutoff
+# md_relax (optional MM pre-relax / pre-equilibration) is intentionally omitted.
+# When the section is absent the builder treats it as disabled — CES2 QM/MM runs
+# directly from the packmol coordinates and no pre-relax bundle is generated.
+# If the first MD steps blow up ("lost atoms" / NaN from packmol overlaps), add an
+# `md_relax:` block with `enabled: true`. See the "md_relax — Optional MD
+# pre-relaxation" section in README.md for the full list of stages and options.

@@ -561,19 +561,41 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     _top_layer_tol = float(chg_cfg.get("top_layer_tolerance", 0.5))  # Å
     _exclude_labels = list(chg_cfg.get("exclude_labels", []))  # e.g. ["O_ads","H_ads"]
 
+    # Optional explicit top-layer z-window. Values are RELATIVE z [Å]
+    # (lowest slab atom = 0), the same frame as the *_layer_avg.dat z_avg column,
+    # so you can copy the layer z values straight out of the .dat file. When
+    # top_layer_z_lo is set it OVERRIDES the top_layer_tolerance auto-detection.
+    _z_lo_rel = chg_cfg.get("top_layer_z_lo", None)
+    _z_hi_rel = chg_cfg.get("top_layer_z_hi", None)
+    _slab_z_min = float(slab_sc.positions[:, 2].min())  # relative-frame origin
+
+    z_cutoff = None
+    z_cutoff_hi = None
     if q_electrode != 0.0:
-        z_cutoff = detect_top_layer_z(slab_sc, tolerance=_top_layer_tol)
+        if _z_lo_rel is not None:
+            # Explicit window from config (relative → absolute Cartesian).
+            z_cutoff = _slab_z_min + float(_z_lo_rel)
+            if _z_hi_rel is not None:
+                z_cutoff_hi = _slab_z_min + float(_z_hi_rel)
+            print(f"[charged] explicit top-layer window: z_rel=[{float(_z_lo_rel):.3f}, "
+                  f"{('%.3f' % float(_z_hi_rel)) if _z_hi_rel is not None else 'inf'}] Å "
+                  f"→ z_abs=[{z_cutoff:.3f}, "
+                  f"{('%.3f' % z_cutoff_hi) if z_cutoff_hi is not None else 'inf'}] Å "
+                  f"(slab z_min={_slab_z_min:.3f})")
+        else:
+            z_cutoff = detect_top_layer_z(slab_sc, tolerance=_top_layer_tol)
         slab_charges = apply_slab_charging(
             slab_sc, q_electrode,
             z_cutoff=z_cutoff,
+            z_cutoff_hi=z_cutoff_hi,
             exclude_labels=_exclude_labels if _exclude_labels else None,
             slab_type_labels=slab_type_labels if _exclude_labels else None,
         )
-        print(f"[charged] top-layer z_cutoff={z_cutoff:.3f} Å, "
+        print(f"[charged] top-layer z_cutoff={z_cutoff:.3f} Å"
+              f"{('–%.3f' % z_cutoff_hi) if z_cutoff_hi is not None else ''}, "
               f"q_electrode={q_electrode}, "
               f"n_top_atoms={sum(1 for c in slab_charges if c != 0.0)}")
     else:
-        z_cutoff = None
         slab_charges = apply_slab_charging(slab_sc, q_electrode)
 
     # ── auto-calculate CES2 charged-system parameters ──────────────────────
@@ -587,6 +609,7 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     charged_params = compute_charged_system_params(
         slab_sc, q_electrode, sc_factor, _box_z_data,
         z_cutoff=z_cutoff,
+        z_cutoff_hi=z_cutoff_hi,
         top_layer_tol=_top_layer_tol,
     )
     (export_dir / "charged_system_params.json").write_text(
