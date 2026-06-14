@@ -202,12 +202,11 @@ qe:
   ecutwfc: 50.0              # Ry - kinetic energy cutoff
   ecutrho: 400.0             # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
-  smearing: "mv"             # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
   degauss: 0.0147              # Ry - smearing width
   k_points: [2, 4, 1, 0, 0, 0]      # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
-  emaxpos: 0.9               # dipole correction position (fraction of cell z)
+  emaxpos: 0.8               # dipole correction position (fraction of cell z)
   edir: 3                    # dipole/electric field direction (3 = z)
-  conv_thr: 1e-06           # SCF convergence threshold (Ry)
+  conv_thr: 1e-04           # SCF convergence threshold (Ry)
   electron_maxstep: 400    # max SCF iterations
   mixing_beta: 0.3         # charge density mixing (lower = more stable, slower)
   diagonalization: "cg"    # "cg" (stable) or "david" (faster)
