@@ -28,7 +28,7 @@ water_models:
   TIP4P:
     water_set: water_tip4p_ew
     ion_set: jc2008_tip4p_ew
-    hydroxide_set: hydroxide_tip4p2005
+    hydroxide_set: hydroxide_bonthuis2016
 
   TIP3P:
     water_set: water_tip3p
