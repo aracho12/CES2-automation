@@ -52,12 +52,21 @@ charge_control:
   # .dat value as the cutoff — give it margin. The builder prints the resolved
   # window and n_top_atoms; sanity-check that against build/slab_supercell.vasp.
   #
-  # IrO2_2OH_2O: include the Ir-O surface layer (O ≈10.792 + Ir ≈10.843/10.924)
-  # and the bridging O (≈12.015), excluding the adsorbates above (O ≈12.715, H).
-  # z_lo=10.70 sits below the O layer; z_hi=12.40 sits between bridge O and the
-  # adsorbate O. (→ n_top_atoms = 360 here; 10.80 would wrongly drop the O layer.)
-  top_layer_z_lo: 10.70         # [Å, relative] lower bound of charged top layer
-  top_layer_z_hi: 12.40         # [Å, relative] upper bound (omit for no upper bound)
+  # Unified on the Ir-O SURFACE PLANE so the MM point-charge layer (this window)
+  # and the QM monopole-localization plane (ces2_script.mpc_layer / MDIPC) sit on
+  # the SAME atoms — otherwise the net charge is stripped at one z and re-added at
+  # another, leaving a spurious dipole (q·Δz) in the QM/MM coupling.
+  # MDIPC's ±1 bohr window can only cleanly hold the Ir-O plane (surface O ≈10.792
+  # + Ir ≈10.843/10.924); bridge O (≈12.015) is >1 bohr away and CANNOT be in the
+  # same MDIPC layer, so bridge O is intentionally EXCLUDED from the explicit
+  # charge here (its electronic response is still captured in the QM density).
+  # z_lo=10.50 sits below the surface O (and above the O layer at ≈9.61);
+  # z_hi=11.40 sits between Ir and the bridge O. After build, check that
+  # charged_system_params.json → top_z_mean ≈ 10.85 Å (≈20.5 bohr) so it matches
+  # mpc_layer=20.56. (If top_z_mean comes back ≈12.5, top_layer_tolerance below
+  # took precedence — verify the explicit z-window is actually being applied.)
+  top_layer_z_lo: 10.50         # [Å, relative] lower bound of charged top layer
+  top_layer_z_hi: 11.40         # [Å, relative] upper bound (omit for no upper bound)
   # exclude_labels: ["O_ads", "H_ads"]  # uncomment if adsorbate should not be charged
 
 electrolyte_recipe:
@@ -227,17 +236,23 @@ ces2_script:
   # ---- MDIPC slab-dipole / point-charge correction (charged systems) ----
   # These map to the mpclayer/totlayer/adsorbate shell variables consumed by
   # the $MDIPC step in the generated run script.
-  # mpc_layer : MPC layer position [bohr]. Leave UNSET to auto-detect from the
-  #             structure (= mean z of the charged top layer × 1/0.529177,
-  #             ≈20.93 bohr for this window — pulled up by the bridge O).
-  #             Set explicitly to reference the Ir atomic plane instead:
-  #             Ir line = 10.879830 Å × 1/0.529177 = 20.56 bohr.
+  # mpc_layer : MPC layer position [bohr]. MUST coincide with the MM top-layer
+  #             charge plane (charge_control.top_layer_z_lo/hi) — see note there.
+  #             With the Ir-O window above, the auto value (= mean z of the charged
+  #             top layer × 1/0.529177) now lands on the Ir-O plane (≈20.5 bohr),
+  #             so leaving this UNSET would also be consistent. Set explicitly to
+  #             the Ir atomic plane: Ir line = 10.879830 Å × 1/0.529177 = 20.56 bohr.
   #             (data.file slab z_min = 0, so the .dat relative z equals the
   #              absolute z in the cube/MDIPC frame — values map directly.)
   mpc_layer:   "20.56"          # bohr — Ir-O surface (Ir) plane
+  # MDIPC neutralization is exact only when:  N_window × tot_layer = nAtoms − adsorbate
+  # where N_window = atoms within ±1 bohr of mpc_layer (= the Ir-O plane atoms).
+  # Verify against the actual cube (nAtoms differs by ±H per case: 2OH_2O=102,
+  # 4O=100, 4OH=104). For 2OH_2O: N_window=16, nAtoms=102 → adsorbate=6 gives
+  # tot_layer = (102−6)/16 = 6. Re-derive per case from the built cube.
   tot_layer:   "6"              # number of total MPC layers (Poisson solver)
-  adsorbate:   "0"             # number of adsorbate atoms MDIPC excludes from the
-                               # point-charge correction (e.g. "4" for 2 O_ads + 2 H_ads)
+  adsorbate:   "6"             # atoms excluded from the monopole denominator so
+                               # (nAtoms − adsorbate)/tot_layer = N_window (Ir-O count)
 
   # ---- QE parallelization flags (pw.x command-line options) ----
   # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
