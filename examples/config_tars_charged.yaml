@@ -8,31 +8,65 @@ input:
   vasp_file: "CONTCAR"
 
 cell:
-  require_orthogonal: true 
+  require_orthogonal: true
   supercell: [3, 6, 1]
 
 electrolyte_box:
   z_gap: 0.0
-  # z_el_hi = z_top_slab + thickness. The SOLVENT upper wall is fixed at
-  # z_el_hi + 5 Å during both pre-relax and QM/MM production.
-  thickness:   50.0            # [Å] water column height above slab
+  # thickness/vacuum_z must satisfy: 0.9·(z_top_slab + thickness + vacuum_z + z_buffer_lo)
+  # ≥ z_top_slab + thickness + 5.  Otherwise the SOLVENT upper wall gets clamped
+  # below z_el_hi (water column compressed) to keep solvent out of QE's
+  # dipole-correction zone (emaxpos·c).  With default emaxpos=0.9, even
+  # (50, 20) leaves >10 Å margin between water top and z_emaxpos.
+  thickness: 45.0              # [Å] water column height above slab
   z_margin_top: 2.0
-  vacuum_z:    30.0            # [Å] vacuum gap above water for boundary p p f
-  z_buffer_lo:  1.0            # [Å] buffer below slab (zlo = -z_buffer_lo)
+  vacuum_z: 25.0               # [Å] vacuum gap above water for boundary p p f
+  z_buffer_lo: 1.0             # [Å] buffer below slab (zlo = -z_buffer_lo)
 
 packmol:
   #binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"
   tolerance: 2.0
-  maxit: 200
-  pbc: true                    # include x/y periodic images when checking Packmol distances
+  maxit: 1000
 
 charge_control:
   q_target_total: 0.0           # total MD box charge (0 = neutral)
-  q_electrode_user_value: +1.0  # surface charge [e]: -1 = add 1 electron to MD slab
-                                # → counterion_pool adds 1 OH⁻ to compensate
+  q_electrode_user_value: -1.0  # surface charge [e]: -1 = add 1 electron to MD slab
+                                # → counterion_pool adds 1 Li⁺ to compensate
                                 # → QM tot_charge = -1/(3*6*1) = -0.05556 (auto-calculated)
   top_layer_tolerance: 1.8      # [Å] atoms within this distance of z_max receive charge
-                                # IrO2: 1.8 includes top Ir + bridging O (0.5 for simple metals)
+                                # NOTE: ignored when top_layer_z_lo (below) is set.
+                                # With adsorbates on top, z_max is the adsorbate H, so a
+                                # tolerance can't cleanly reach the Ir-O layer — use the
+                                # explicit z-window below instead.
+
+  # Explicit top-layer z-window (overrides top_layer_tolerance auto-detection).
+  # Values are RELATIVE z in Å with the lowest slab atom = 0 — the SAME frame as
+  # the z_avg column in *_layer_avg.dat. Slab atoms with
+  # top_layer_z_lo <= z_rel <= top_layer_z_hi become the charged top layer; the
+  # LAMMPS `region toplayer` block is auto-fitted to the selected atoms.
+  #
+  # IMPORTANT: the .dat z_avg values are tolerance-AVERAGED and can sit a few
+  # hundredths of an Å off the real atom z's in this CONTCAR (e.g. the O layer
+  # the .dat lists at 10.822525 actually sits at z_rel≈10.792, and the single
+  # "Ir 10.879830" row is two Ir sublayers at ≈10.843/10.924). So DON'T copy the
+  # .dat value as the cutoff — give it margin. The builder prints the resolved
+  # window and n_top_atoms; sanity-check that against build/slab_supercell.vasp.
+  #
+  # Unified on the Ir-O SURFACE PLANE so the MM point-charge layer (this window)
+  # and the QM monopole-localization plane (ces2_script.mpc_layer / MDIPC) sit on
+  # the SAME atoms — otherwise the net charge is stripped at one z and re-added at
+  # another, leaving a spurious dipole (q·Δz) in the QM/MM coupling.
+  # MDIPC's ±1 bohr window can only cleanly hold the Ir-O plane (surface O ≈10.792
+  # + Ir ≈10.843/10.924); bridge O (≈12.015) is >1 bohr away and CANNOT be in the
+  # same MDIPC layer, so bridge O is intentionally EXCLUDED from the explicit
+  # charge here (its electronic response is still captured in the QM density).
+  # z_lo=10.50 sits below the surface O (and above the O layer at ≈9.61);
+  # z_hi=11.40 sits between Ir and the bridge O. After build, check that
+  # charged_system_params.json → top_z_mean ≈ 10.85 Å (≈20.5 bohr) so it matches
+  # mpc_layer=20.56. (If top_z_mean comes back ≈12.5, top_layer_tolerance below
+  # took precedence — verify the explicit z-window is actually being applied.)
+  top_layer_z_lo: 10.50         # [Å, relative] lower bound of charged top layer
+  top_layer_z_hi: 11.40         # [Å, relative] upper bound (omit for no upper bound)
   # exclude_labels: ["O_ads", "H_ads"]  # uncomment if adsorbate should not be charged
 
 electrolyte_recipe:
@@ -51,16 +85,10 @@ electrolyte_recipe:
                                   # equilibration recovers true TIP4P-EW density
 
   # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
-  salts: 
-    - name: "LiOH"
+  salts:
+    - name: LiOH
       concentration_M: 0.1
-      stoich: { "Li_plus": 1, "OH_minus": 1 }
-
-      #- name: "TMACl"   # organic cation salt
-      #concentration_M: 0.2
-      #stoich: { "TMA_plus": 1, "Cl_minus": 1 }
-
-  # Extra explicit species counts (e.g., add a bit of OH-)
+      stoich: {Li_plus: 1, OH_minus: 1}
   extras: []
   # - species_id: "OH_minus"
   #   count: 5
@@ -69,7 +97,7 @@ electrolyte_recipe:
 
   # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
   # Put at least one 1-valent cation and one 1-valent anion here.
-  counterion_pool: ["Li_plus", "OH_minus"]
+  counterion_pool: [Li_plus, OH_minus]
 
           # counterion_pair_search: 2000
 
@@ -101,23 +129,20 @@ output:
 #
 # Example for IrO2 + adsorbed OH (atoms 99-102 in POSCAR, DFTD3 CN~1.0):
 slab:
-  type_label_overrides:
-    99:  "O_ads"
-    100: "O_ads"
-    101: "H_ads"
-    102: "H_ads"
+  bjparams_layer_file: IrO2_2OH_2O_bjparams_layer_avg
 
 # ---- CES2 QM/MM LAMMPS input generation ----
+  bjparams_source: layer_file
 ces2:
   # Water model: TIP4P (default, TIP4P-EW recommended for CES2) or TIP3P
   water_model: TIP4P
 
   # Pair-style cutoffs
-  lj_cutoff:        15.0   # Angstrom - real-space LJ cutoff
-  coulomb_cutoff:   15.0   # Angstrom - real-space Coulomb cutoff (should match lj_cutoff)
-  kspace_accuracy:  1.0e-4 # PPPM relative accuracy
-  kspace_slab:      3.0    # kspace_modify slab factor (2D slab correction)
-  tip4p_msite:      0.125  # TIP4P M-site distance (Angstrom) - 0.125 for TIP4P-EW
+  lj_cutoff: 15.0          # Angstrom - real-space LJ cutoff
+  coulomb_cutoff: 15.0     # Angstrom - real-space Coulomb cutoff (should match lj_cutoff)
+  kspace_accuracy: 1.0e-4  # PPPM relative accuracy
+  kspace_slab: 3.0         # kspace_modify slab factor (2D slab correction)
+  tip4p_msite: 0.125       # TIP4P M-site distance (Angstrom) - 0.125 for TIP4P-EW
 
   # Run prefix (used for dump and restart file names)
   prefix: "ces2"
@@ -126,7 +151,7 @@ ces2:
   # Use the equilibrated.dump produced by md_relax to start QM/MM from a
   # relaxed structure.  Timestep is read from md_relax.equil_steps.
   # Comment out (or remove) to start from the raw data.file coordinates.
-  # initial_dump: "equilibrated.dump"   # disabled — starting QM/MM directly from packmol
+  # initial_dump: "equilibrated.dump"
 
   # BJ-dispersion global damping parameters (bjdisp pair style)
   # These are the global shape parameters of the BJ damping function,
@@ -152,37 +177,39 @@ ces2:
 
   # MD run settings for the CES2 QM/MM loop
   md:
-    timestep_fs:   1.0     # fs
-    n_steps:       0       # 0 = single-point (QM/MM forces only); >0 for dynamics
-    thermo_every:  100     # print thermo every N steps
-    dump_every:    1000    # dump trajectory every N steps
-    temperature:   300.0   # K
-    t_damp_fs:     100.0   # NVT Nose-Hoover damping time, fs
+    timestep_fs: 1.0       # fs
+    n_steps: 0             # 0 = single-point (QM/MM forces only); >0 for dynamics
+    thermo_every: 100      # print thermo every N steps
+    dump_every: 1000       # dump trajectory every N steps
+    temperature: 300.0     # K
+    t_damp_fs: 100.0       # NVT Nose-Hoover damping time, fs
     restart_every: 500000  # write restart files every N steps
-    shake_tol:     1.0e-4  # SHAKE convergence tolerance
-    shake_iter:    20      # SHAKE max iterations
+    shake_tol: 1.0e-4      # SHAKE convergence tolerance
+    shake_iter: 20         # SHAKE max iterations
     shake_maxiter: 500     # SHAKE absolute max iterations
     # ── SOLVENT upper-wall during QM/MM production ──────────────────────────
-    # The writer fixes z_wall_hi at z_el_hi + 5 Å.
+    # Defaults below match what the writer applies if omitted.
+    # wall_buffer:            5.0   # [Å] requested z_wall = z_el_hi + buffer
     # wall_K:                 1.0   # [kcal/mol/Å²] soft default; bump to 50 if solvent escapes
+    # emaxpos_safety_margin:  5.0   # [Å] hard cap: z_wall ≤ z_emaxpos − margin
+                                    # (prevents wall from sitting inside QE dipole zone)
 
 # ---- QE (Quantum ESPRESSO) settings for CES2 QM calculation ----
 qe:
-  prefix:      "solute"
-  outdir:      "./solute"
-  pseudo_dir:  "/home/aracho/bin/qe/pseudo"    # directory with UPF pseudopotential files
-  ecutwfc:     50.0          # Ry - kinetic energy cutoff
-  ecutrho:     400.0         # Ry - charge density cutoff
+  prefix: "solute"
+  outdir: "./solute"
+  pseudo_dir: "/home/aracho/bin/qe/pseudo"  # directory with UPF pseudopotential files
+  ecutwfc: 50.0              # Ry - kinetic energy cutoff
+  ecutrho: 400.0             # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
-  smearing:    "mv"          # Methfessel-Paxton (mv), cold (cold), gauss (gaussian)
-  degauss:     0.0147          # Ry - smearing width
-  k_points:    [2, 4, 1, 0, 0, 0]   # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
-  emaxpos:     0.9           # dipole correction position (fraction of cell z)
-  edir:        3             # dipole/electric field direction (3 = z)
-  conv_thr:         1e-06   # SCF convergence threshold (Ry)
+  degauss: 0.0147              # Ry - smearing width
+  k_points: [2, 4, 1, 0, 0, 0]      # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
+  emaxpos: 0.8               # dipole correction position (fraction of cell z)
+  edir: 3                    # dipole/electric field direction (3 = z)
+  conv_thr: 1e-04           # SCF convergence threshold (Ry)
   electron_maxstep: 400    # max SCF iterations
-  mixing_beta:      0.3    # charge density mixing (lower = more stable, slower)
-  diagonalization:  "cg"   # "cg" (stable) or "david" (faster)
+  mixing_beta: 0.3         # charge density mixing (lower = more stable, slower)
+  diagonalization: "cg"    # "cg" (stable) or "david" (faster)
 
   # Pseudopotential set: built-in database to use when no per-element override is given.
   # Currently supported: "sssp"  (SSSP PBE library, covers most elements)
@@ -190,24 +217,41 @@ qe:
 
   # Per-element overrides (optional): takes priority over pseudo_set.
   pseudopotentials:
-    Ir: "Ir.pbe-n-kjpaw_psl.0.2.3.UPF"
-    O:  "O.pbe-n-kjpaw_psl.1.0.0.UPF"
-    H:  "H.pbe-kjpaw_psl.1.0.0.UPF"
-
-# ---- CES2 QM/MM run script generation ----
+    Ir: Ir.pbe-n-kjpaw_psl.0.2.3.UPF
+    O: O.pbe-n-kjpaw_psl.1.0.0.UPF
+    H: H.pbe-kjpaw_psl.1.0.0.UPF
 ces2_script:
-  jobname:       "ces2_qmmm"    # used for SBATCH -J and prefix= in submit script
+  jobname: "2OH2O_qp1_Li_0.1M"  # used for SBATCH -J and prefix= in submit script
   dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
-  qe_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
-  pp_binary:     "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
-  lmp_binary:    "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
-  chg2pot_binary:  "/home/mino/03.scripts/chg2pot"
-  mdipc_binary:    "/home/jthlol/program/poisson/mdipc"
+  qe_binary: "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
+  pp_binary: "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
+  lmp_binary: "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
+  chg2pot_binary: "/home/mino/03.scripts/chg2pot"
+  mdipc_binary: "/home/jthlol/program/poisson/mdipc"
   chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
-  np:            24             # MPI tasks (= select × mpiprocs)
-  n_qmmm_steps:  6              # total QM/MM outer-loop steps
-  adsorbate:   "4"              # last 4 atoms in POSCAR are adsorbate (2 O_ads + 2 H_ads)
-                                # MDIPC excludes these from point charge correction
+  np: 24                         # MPI tasks (= slurm nodes × cores; 1×24c partition)
+  n_qmmm_steps: 6               # total QM/MM outer-loop steps
+
+  # ---- MDIPC slab-dipole / point-charge correction (charged systems) ----
+  # These map to the mpclayer/totlayer/adsorbate shell variables consumed by
+  # the $MDIPC step in the generated run script.
+  # mpc_layer : MPC layer position [bohr]. MUST coincide with the MM top-layer
+  #             charge plane (charge_control.top_layer_z_lo/hi) — see note there.
+  #             With the Ir-O window above, the auto value (= mean z of the charged
+  #             top layer × 1/0.529177) now lands on the Ir-O plane (≈20.5 bohr),
+  #             so leaving this UNSET would also be consistent. Set explicitly to
+  #             the Ir atomic plane: Ir line = 10.879830 Å × 1/0.529177 = 20.56 bohr.
+  #             (data.file slab z_min = 0, so the .dat relative z equals the
+  #              absolute z in the cube/MDIPC frame — values map directly.)
+  mpc_layer:   "20.56"          # bohr — Ir-O surface (Ir) plane
+  # MDIPC neutralization is exact only when:  N_window × tot_layer = nAtoms − adsorbate
+  # where N_window = atoms within ±1 bohr of mpc_layer (= the Ir-O plane atoms).
+  # Verify against the actual cube (nAtoms differs by ±H per case: 2OH_2O=102,
+  # 4O=100, 4OH=104). For 2OH_2O: N_window=16, nAtoms=102 → adsorbate=6 gives
+  # tot_layer = (102−6)/16 = 6. Re-derive per case from the built cube.
+  tot_layer:   "6"              # number of total MPC layers (Poisson solver)
+  adsorbate:   "6"             # atoms excluded from the monopole denominator so
+                               # (nAtoms − adsorbate)/tot_layer = N_window (Ir-O count)
 
   # ---- QE parallelization flags (pw.x command-line options) ----
   # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
@@ -215,24 +259,11 @@ ces2_script:
   # ndiag : ScaLAPACK procs     — must be a perfect square (1,4,9,16,25,...)
   # Remove or comment out any flag to omit it from the mpirun command.
   npool: 4
-  ntg:   2
+  ntg: 2
   ndiag: 4
 
   # ---- Scheduler: use either 'slurm' or 'pbs' (not both) ----
-  # PBS Pro (Nurion / KISTI-style) — uncomment to use
-  # pbs:
-  #   job_name:   "ces2_qmmm"
-  #   select:     2              # number of nodes
-  #   ncpus:      64             # CPUs per node
-  #   mpiprocs:   64             # MPI ranks per node (usually == ncpus)
-  #   ompthreads: 1
-  #   walltime:   "48:0:0"
-  #   queue:      "normal"
-  #   account:    "lammps"       # -A project code
-  #   email:      "your@email.com"   # -M notification address (optional)
-  #   export_env: true           # emit #PBS -V (export environment)
-
-  # SLURM (tars / local cluster) — uncomment to use instead of pbs:
+  # SLURM (tars / local cluster) — active scheduler for this config (sbatch)
   slurm:
     account:    "members"
     partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
@@ -241,44 +272,25 @@ ces2_script:
     time:       "00:00:00"
     comment:    "qmmm"
 
-md_relax:
-  # Disabled — running CES2 QM/MM directly from packmol coordinates.
-  # NOTE: base.in.lammps has no velocity-init / minimize / heat ramp, so
-  # packmol overlaps may cause large forces in the first MD steps.  If
-  # LAMMPS dies with "lost atoms" or NaN, re-enable md_relax.
-  enabled: false
-  # FF params are inlined automatically (no ff/ directory needed).
-  # Lighter than base.in.lammps: no bjdisp, no gridforce, shorter cutoff.
-  lj_cutoff:   10.0            # LJ cutoff [Å] for relax  (base uses 12 Å)
-  data_file: "data.file"
+  # PBS Pro (Nurion / KISTI-style) — uncomment to use instead of slurm:
+  # pbs:
+  #   job_name: "2OH2O_qp1_Li_0.1M"
+  #   select: 8                  # number of nodes
+  #   ncpus: 32                  # CPUs per node
+  #   mpiprocs: 32               # MPI ranks per node (usually == ncpus)
+  #   ompthreads: 1
+  #   walltime: "48:0:0"
+  #   queue: "normal"
+  #   account: "lammps"          # -A project code
+  #   email: "aracho1211@gmail.com"        # -M notification address (optional)
+  #   export_env: true           # emit #PBS -V (export environment)
+  #   module_lines: |
+  #     module purge
+  #     module load intel/18.0.3 impi/18.0.3
 
-  # Stage 0: Soft pushoff — relieve extreme packmol overlaps
-  soft_cutoff:   2.0           # [Å] pair_style soft cutoff
-  soft_ramp_max: 50.0          # [kcal/mol] ramp A from 0 → this
-  soft_steps:    2000          # steps for nve/limit pushoff
-  nve_limit:     0.1           # [Å/step] max atom displacement
-
-  # Stage 1: CG minimization — remove packmol bad contacts
-  min_etol:    1.0e-4          # energy tolerance  (kcal/mol)
-  min_ftol:    1.0e-3          # force tolerance   (kcal/mol/Å)
-  min_maxiter: 1000
-  min_maxeval: 5000
-
-  # Stage 2: Gradual heating  t_start → t_target
-  t_start:     10.0            # K  (start cold → avoid explosion from dense packing)
-  t_target:   300.0            # K
-  tdamp_fs:   100.0            # fs  (Nosé-Hoover τ)
-  heat_steps:  10000           # 10 ps  at timestep_fs=1.0
-
-  # Stage 3: NVT equilibration at t_target
-  equil_steps: 30000           # 30 ps  at timestep_fs=1.0
-
-  timestep_fs: 1.0             # fs
-  dump_every:  2000
-  write_equilibrated: "equilibrated.data"
-
-  # ── SOLVENT walls during pre-relax (min/heat/equil) ─────────────────────
-  # Defaults below match what the writer applies if omitted.
-  # Upper wall is fixed at z_el_hi + 5 Å.
-  # wall_buffer_lo:         2.0   # [Å] requested z_wall_lo = z_top_slab + buffer
-  # relax_wall_K:           1.0   # [kcal/mol/Å²] upper harmonic wall spring constant
+# md_relax (MM pre-relax / pre-equilibration) is intentionally omitted —
+# CES2 QM/MM runs directly from the packmol coordinates here. When md_relax is
+# absent the builder treats it as disabled (no pre-relax bundle is generated).
+# If the first MD steps blow up ("lost atoms" / NaN from packmol overlaps),
+# add an `md_relax:` block with `enabled: true` — see the "md_relax — Optional
+# MD pre-relaxation" section in README.md for the full set of stages and options.
