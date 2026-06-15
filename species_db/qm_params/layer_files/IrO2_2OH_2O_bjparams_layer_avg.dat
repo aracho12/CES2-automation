@@ -1,4 +1,5 @@
 # BJ dispersion parameters — layer-averaged (z_tol = 0.20 Ang)
+# clusters: bulk 0.0 10.2, surf 10.2 12.4, ads 12.4 99.0
 # Element      N    z_avg(Ang)    ALPHAscs_avg(au)  C6_D3_avg(au)
 #------------------------------------------------------------
   O            4      0.000000          4.6190       10.5000

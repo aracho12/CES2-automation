@@ -7,6 +7,29 @@ Each entry includes the modified file, the exact diff, and the reason.
 
 ## [Unreleased]
 
+### `builder/bjdisp_db.py` — z-cluster mode for layer files
+
+**What:** Layer files may now carry a `# clusters: <name> <z_lo> <z_hi>, ...`
+header directive. When present, `parse_layer_file()` merges layer rows into one
+type per (z-band, element) with **N-weighted** averaged α/C6 (labels `O_bulk`,
+`Ir_surf`, `O_ads`, …), and `assign_layer_labels()` matches atoms by half-open
+band membership (`z_lo <= z_rel < z_hi`) instead of nearest-z. Without the
+directive the legacy per-layer behavior (`<El>_L<NN>`, `|z-z_avg|<=z_tol`) is
+unchanged. Applied to the four IrO2 layer files (e.g. 2OH_2O: 18 → 6 types;
+bare auto-drops the empty `*_ads` band → 4 types).
+
+**Why:** Collapsing 13+ per-layer O types into a few physically meaningful
+clusters (bulk / top surface / adsorbate) without breaking z-matching — a single
+averaged z_avg would otherwise fall outside `z_tol` for most atoms.
+
+```diff
++_CLUSTERS_RE = re.compile(r"clusters\s*:(.*)", re.IGNORECASE)
++# parse_layer_file: if a '# clusters:' directive is found, dispatch to
++# _build_cluster_entries() (N-weighted per-(band,element) averaging);
++# LayerEntry gains optional z_lo/z_hi; assign_layer_labels() prefers
++# band membership over nearest-z when z_lo is set.
+```
+
 ### `builder/lammps_input_writer.py` — selectable TIP3P pair style
 
 **What:** Made the TIP3P pair_style configurable via `ces2.pair_style_tip3p`.

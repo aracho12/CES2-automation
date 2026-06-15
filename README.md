@@ -354,6 +354,25 @@ slab:
 
 **Priority order:** `type_label_overrides` > layer-file label > element symbol.
 
+**Optional z-clustering (`# clusters:` directive).** By default every row becomes its
+own `type_label` (`<El>_L<NN>`). To coarsen instead — merging layers into a few
+z-bands so each (band, element) shares one averaged type — add a header directive:
+
+```
+# BJ dispersion parameters — layer-averaged (z_tol = 0.20 Ang)
+# clusters: bulk 0.0 10.2, surf 10.2 12.4, ads 12.4 99.0
+# Element  N  z_avg(Ang)  ALPHAscs_avg(au)  C6_D3_avg(au)
+  ...
+```
+
+Each cluster is `<name> <z_lo> <z_hi>` in the file's relative-z coordinate
+(lowest atom = 0), interpreted half-open `z_lo <= z < z_hi`. Rows in the same band
+are merged per element into one type (`O_bulk`, `Ir_surf`, `O_ads`, …) using
+**N-weighted averages** of α and C6, and atoms are matched by band membership
+(not nearest-z). A band with no atoms of some element simply produces no type, so
+the same directive works across systems (e.g. a bare slab yields no `*_ads`). When
+the directive is absent the loader keeps the legacy per-layer behavior unchanged.
+
 ---
 
 ### `electrolyte_box` — Simulation box geometry

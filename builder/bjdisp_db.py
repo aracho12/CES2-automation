@@ -309,19 +309,61 @@ def build_bjdisp_table(
 
 @dataclass
 class LayerEntry:
-    """One row of bjparams_layer_avg.dat → one type_label group."""
-    type_label: str     # e.g. "Ir_L01"
+    """One row of bjparams_layer_avg.dat → one type_label group.
+
+    Two matching modes (see assign_layer_labels):
+      * per-layer (default): atom matches if |z_rel - z_avg| <= z_tol
+      * cluster   (z_lo/z_hi set): atom matches if z_lo <= z_rel < z_hi
+    """
+    type_label: str     # e.g. "Ir_L01" (per-layer) or "Ir_surf" (cluster)
     element: str
     z_avg: float        # [Å] relative z (file column, lowest atom = 0)
     n_atoms: int
     params: BjdispParams
+    z_lo: Optional[float] = None   # cluster mode: inclusive lower z bound [Å]
+    z_hi: Optional[float] = None   # cluster mode: exclusive upper z bound [Å]
 
 
 _Z_TOL_RE = re.compile(r"z_tol\s*=\s*([0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)")
+_CLUSTERS_RE = re.compile(r"clusters\s*:(.*)", re.IGNORECASE)
 
 
 def _default_s_for(element: str) -> float:
     return _DEFAULT_S_BY_ELEMENT.get(element, _DEFAULT_S_FALLBACK)
+
+
+def _parse_clusters_directive(line: str) -> List[Tuple[str, float, float]]:
+    """
+    Parse a header directive of the form
+        # clusters: bulk 0.0 10.2, surf 10.2 12.4, ads 12.4 99.0
+    into [(name, z_lo, z_hi), ...].  Returns [] if the line has no directive.
+
+    Bounds are in the file's relative-z coordinate (lowest atom = 0) and are
+    interpreted half-open: z_lo <= z_rel < z_hi.
+    """
+    m = _CLUSTERS_RE.search(line)
+    if not m:
+        return []
+    out: List[Tuple[str, float, float]] = []
+    for tok in m.group(1).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        fields = tok.split()
+        if len(fields) != 3:
+            raise ValueError(
+                f"[layer file] bad '# clusters:' entry {tok!r}; "
+                f"expected '<name> <z_lo> <z_hi>'"
+            )
+        out.append((fields[0], float(fields[1]), float(fields[2])))
+    return out
+
+
+def _cluster_for_z(z: float, clusters: Sequence[Tuple[str, float, float]]) -> Optional[str]:
+    for name, lo, hi in clusters:
+        if lo <= z < hi:
+            return name
+    return None
 
 
 def parse_layer_file(
@@ -339,7 +381,16 @@ def parse_layer_file(
           Ir           8      1.226200         30.3319      305.5000
           ...
 
-    Type label scheme: <Element>_L<NN>, 1-based per-element, z-ascending.
+    Type label scheme:
+      * per-layer (default): <Element>_L<NN>, 1-based per-element, z-ascending.
+      * cluster: if the header carries a '# clusters:' directive, rows whose
+        z falls in the same band are merged per element into one type
+        <Element>_<band>, with N-weighted averaged alpha/C6.  Example:
+            # clusters: bulk 0.0 10.2, surf 10.2 12.4, ads 12.4 99.0
+        yields O_bulk, Ir_bulk, O_surf, Ir_surf, O_ads, H_ads, ... and atoms
+        are matched by z-band membership instead of nearest-z (see
+        assign_layer_labels).
+
     C6 values are converted from atomic units → kcal/mol·Å^6 at load.
     s defaults to 0.53 for H, 1.40 for everything else.
 
@@ -347,6 +398,7 @@ def parse_layer_file(
     -------
     (z_tol, entries, db):
         z_tol   : tolerance parsed from header, or *default_z_tol* if absent
+                  (unused in cluster mode, where matching is z-band based)
         entries : list of LayerEntry for atom→layer matching
         db      : {type_label: BjdispParams} for bjdisp lookup
     """
@@ -354,6 +406,7 @@ def parse_layer_file(
     text = path.read_text(encoding="utf-8")
 
     z_tol = default_z_tol
+    clusters: List[Tuple[str, float, float]] = []
     rows: List[Tuple[str, int, float, float, float]] = []  # (el, N, z, alpha_au, C6_au)
 
     for line in text.splitlines():
@@ -364,6 +417,9 @@ def parse_layer_file(
             m = _Z_TOL_RE.search(stripped)
             if m:
                 z_tol = float(m.group(1))
+            parsed = _parse_clusters_directive(stripped)
+            if parsed:
+                clusters = parsed
             continue
         parts = stripped.split()
         if len(parts) < 5:
@@ -378,6 +434,10 @@ def parse_layer_file(
         c6_au = float(parts[4])
         rows.append((el, n_atoms, z_avg, alpha_au, c6_au))
 
+    if clusters:
+        return z_tol, *_build_cluster_entries(path, rows, clusters)
+
+    # ── per-layer mode (default, backward compatible) ───────────────────────
     # Assign per-element labels in z-ascending order (stable)
     sorted_rows = sorted(enumerate(rows), key=lambda kv: (kv[1][0], kv[1][2]))
     label_by_orig_idx: Dict[int, str] = {}
@@ -408,6 +468,70 @@ def parse_layer_file(
     return z_tol, entries, db
 
 
+def _build_cluster_entries(
+    path: Path,
+    rows: Sequence[Tuple[str, int, float, float, float]],
+    clusters: Sequence[Tuple[str, float, float]],
+) -> Tuple[List[LayerEntry], Dict[str, BjdispParams]]:
+    """
+    Merge rows into one type per (cluster band, element) using N-weighted
+    averages of z, alpha and C6.  Returns (entries, db).
+    """
+    # group key -> accumulator; preserve first-seen order for stable output
+    order: List[Tuple[str, str]] = []
+    acc: Dict[Tuple[str, str], Dict[str, float]] = {}
+    bounds: Dict[str, Tuple[float, float]] = {n: (lo, hi) for n, lo, hi in clusters}
+
+    for el, n_atoms, z_avg, alpha_au, c6_au in rows:
+        band = _cluster_for_z(z_avg, clusters)
+        if band is None:
+            raise ValueError(
+                f"[layer file {path.name}] row (el={el}, z={z_avg:.3f}) falls "
+                f"outside every '# clusters:' band {[ (n,lo,hi) for n,lo,hi in clusters ]}"
+            )
+        key = (band, el)
+        if key not in acc:
+            acc[key] = {"N": 0.0, "wz": 0.0, "wa": 0.0, "wc": 0.0}
+            order.append(key)
+        a = acc[key]
+        a["N"] += n_atoms
+        a["wz"] += n_atoms * z_avg
+        a["wa"] += n_atoms * alpha_au
+        a["wc"] += n_atoms * c6_au
+
+    entries: List[LayerEntry] = []
+    db: Dict[str, BjdispParams] = {}
+    for band, el in order:
+        a = acc[(band, el)]
+        n = a["N"]
+        z_mean = a["wz"] / n
+        alpha_mean = a["wa"] / n
+        c6_mean = a["wc"] / n
+        z_lo, z_hi = bounds[band]
+        lbl = f"{el}_{band}"
+        params = BjdispParams(
+            type_label=lbl,
+            alpha_iso=alpha_mean,
+            C6=c6_mean * _AU_TO_KCALMOL_ANG6,
+            s=_default_s_for(el),
+            source=(
+                f"{path.name}: cluster {lbl} ({el}, band [{z_lo:.2f},{z_hi:.2f}) Å, "
+                f"N={int(n)}, z_avg={z_mean:.3f} Å)"
+            ),
+        )
+        db[lbl] = params
+        entries.append(LayerEntry(
+            type_label=lbl,
+            element=el,
+            z_avg=z_mean,
+            n_atoms=int(n),
+            params=params,
+            z_lo=z_lo,
+            z_hi=z_hi,
+        ))
+    return entries, db
+
+
 def assign_layer_labels(
     elements: Sequence[str],
     z_positions: Sequence[float],
@@ -415,11 +539,15 @@ def assign_layer_labels(
     z_tol: float,
 ) -> List[str]:
     """
-    For each atom (element, Cartesian z), find the matching LayerEntry.
+    For each atom (element, Cartesian z), find the matching LayerEntry,
+    where z_atom_rel = z_atom - min(z_positions).
 
-    Matching rule: same element AND |z_atom_rel - entry.z_avg| <= z_tol,
-    where z_atom_rel = z_atom - min(z_positions).  If multiple entries match,
-    the nearest by |Δz| wins.  Raises ValueError if any atom has no match.
+    Matching rule depends on the entry kind:
+      * cluster entry (z_lo/z_hi set): same element AND z_lo <= z_rel < z_hi.
+      * per-layer entry: same element AND |z_rel - entry.z_avg| <= z_tol;
+        if several match, the nearest by |Δz| wins.
+    Cluster entries take precedence when both kinds are present.
+    Raises ValueError if any atom has no match.
 
     Returns per-atom list of type_label strings.
     """
@@ -435,28 +563,41 @@ def assign_layer_labels(
 
     for i, (el, z_abs) in enumerate(zip(elements, z_positions)):
         z_rel = float(z_abs) - float(z_min)
+        matched: Optional[LayerEntry] = None
         best: Optional[Tuple[float, LayerEntry]] = None
         for e in entries:
             if e.element != el:
                 continue
-            dz = abs(z_rel - e.z_avg)
-            if dz <= z_tol and (best is None or dz < best[0]):
-                best = (dz, e)
-        if best is None:
-            # Collect available z's for this element for the error message
-            el_zs = sorted({round(e.z_avg, 3) for e in entries if e.element == el})
+            if e.z_lo is not None:
+                # cluster: z-band membership (half-open), exact precedence
+                if e.z_lo <= z_rel < e.z_hi:
+                    matched = e
+                    break
+            else:
+                dz = abs(z_rel - e.z_avg)
+                if dz <= z_tol and (best is None or dz < best[0]):
+                    best = (dz, e)
+        if matched is None and best is not None:
+            matched = best[1]
+        if matched is None:
+            # Collect available windows for this element for the error message
+            el_windows = sorted(
+                f"[{e.z_lo:.2f},{e.z_hi:.2f})" if e.z_lo is not None
+                else f"{round(e.z_avg, 3)}"
+                for e in entries if e.element == el
+            )
             misses.append(
                 f"  atom {i}: element={el}, z_rel={z_rel:.3f} Å "
-                f"(z_abs={z_abs:.3f}); available {el} layers at z_rel={el_zs}"
+                f"(z_abs={z_abs:.3f}); available {el} windows at z_rel={el_windows}"
             )
             labels.append("")
         else:
-            labels.append(best[1].type_label)
+            labels.append(matched.type_label)
 
     if misses:
         raise ValueError(
             f"[layer assignment] {len(misses)} atom(s) could not be matched "
-            f"to any layer (z_tol={z_tol} Å):\n" + "\n".join(misses[:10]) +
+            f"to any layer/cluster (z_tol={z_tol} Å):\n" + "\n".join(misses[:10]) +
             (f"\n  ... ({len(misses)-10} more)" if len(misses) > 10 else "")
         )
     return labels
