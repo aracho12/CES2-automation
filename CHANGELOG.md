@@ -7,6 +7,27 @@ Each entry includes the modified file, the exact diff, and the reason.
 
 ## [Unreleased]
 
+### `builder/main.py` — pin total box-z via `electrolyte_box.box_z_total`
+
+**What:** New optional `electrolyte_box.box_z_total` key. When set, the builder
+back-solves `vacuum_z` after packmol so the final cell-z equals the target
+exactly: `vacuum_z = box_z_total − max(z_el_hi, max_atom_z+1) − z_buffer_lo`.
+Errors if the required vacuum would fall below 10 Å. When unset, behavior is
+unchanged (fixed `vacuum_z`).
+
+**Why:** The box top is `max(z_el_hi, max_atom_z+1) + vacuum_z`, and `max_atom_z`
+drifts with packmol packing / salt concentration, so total cell-z wobbled by
+tenths of an Å between runs (e.g. 0.1 M → 85.147, 0.5 M → 85.189). Pinning it
+keeps cell-z identical across a concentration series by trading a little vacuum.
+
+```diff
++    _target_box_z = _ebox_cfg.get("box_z_total")
++    if _target_box_z is not None:
++        _base_bz = max(box.z_el_hi, max_atom_z + 1.0)
++        _req_vac = float(_target_box_z) - _base_bz - box.z_buffer_lo
++        # raise if _req_vac < 10 Å, else override box.vacuum_z = _req_vac
+```
+
 ### `builder/bjdisp_db.py` — z-cluster mode for layer files
 
 **What:** Layer files may now carry a `# clusters: <name> <z_lo> <z_hi>, ...`

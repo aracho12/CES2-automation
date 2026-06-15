@@ -33,6 +33,14 @@ electrolyte_box:
   z_margin_top: 2.0
   vacuum_z:    25.0            # [Å] vacuum gap above water for boundary p p f
   z_buffer_lo:  1.0            # [Å] buffer below slab (zlo = -z_buffer_lo)
+  # box_z_total: 85.0          # [Å] OPTIONAL: pin the total cell-z to this value.
+                               # The box top = max(z_el_hi, max_atom_z+1) + vacuum_z,
+                               # so max_atom_z (drifts with packmol packing / salt
+                               # concentration) makes total-z wobble by tenths of an Å
+                               # between runs. Set box_z_total to back-solve vacuum_z
+                               # each build so cell-z is IDENTICAL across concentrations
+                               # (vacuum auto-shrinks; errors if it would drop below 10 Å).
+                               # Overrides vacuum_z when set.
 
 packmol:
   #binary: "/Users/aracho/Dropbox/0-Research/0-My-Publications/27_Cataion_Effects_CES2/Files/.conda/bin/packmol"

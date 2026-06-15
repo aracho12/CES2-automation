@@ -452,6 +452,35 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings["ase_read_and_combine"] = time.perf_counter() - t0
     print(f"[TIMING] ase_read_and_combine: {timings['ase_read_and_combine']:.3f} s")
 
+    # ── optional: pin total box-z to electrolyte_box.box_z_total ─────────────
+    # The final box-z = max(z_el_hi, max_atom_z+1) + vacuum_z + z_buffer_lo, so
+    # max_atom_z (which drifts with packmol packing / concentration) makes the
+    # total z wobble by tenths of an Å between runs. When box_z_total is set, we
+    # back-solve vacuum_z so the total lands exactly on the target — i.e. trade a
+    # tiny bit of vacuum for a fixed cell-z across concentrations. Applied here
+    # (before charged_params + data.file) so every downstream box formula, which
+    # all read box.vacuum_z, stays consistent.
+    _target_box_z = _ebox_cfg.get("box_z_total")
+    if _target_box_z is not None:
+        import numpy as _np_bz
+        _max_atom_z_bz = float(_np_bz.max(combined.positions[:, 2]))
+        _base_bz = max(box.z_el_hi, _max_atom_z_bz + 1.0)   # z_hi without vacuum
+        _req_vac = float(_target_box_z) - _base_bz - box.z_buffer_lo
+        _MIN_VAC = 10.0  # Å — keep enough vacuum for boundary p p f / dipole zone
+        if _req_vac < _MIN_VAC:
+            raise ValueError(
+                f"electrolyte_box.box_z_total={_target_box_z} Å is too small: it "
+                f"requires vacuum_z={_req_vac:.3f} Å (< {_MIN_VAC} Å minimum). "
+                f"Need total ≥ {_base_bz + box.z_buffer_lo + _MIN_VAC:.2f} Å "
+                f"(base z_hi={_base_bz:.3f} + z_buffer_lo={box.z_buffer_lo} + "
+                f"min vacuum {_MIN_VAC}). Raise box_z_total or lower thickness."
+            )
+        _old_vac = box.vacuum_z
+        box.vacuum_z = _req_vac
+        print(f"[box-z fix] box_z_total target={float(_target_box_z):.3f} Å → "
+              f"vacuum_z {_old_vac:.3f} → {_req_vac:.3f} Å "
+              f"(base z_hi={_base_bz:.3f}, max_atom_z={_max_atom_z_bz:.3f})")
+
     # type registry
     t0 = time.perf_counter()
 

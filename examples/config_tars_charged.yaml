@@ -21,6 +21,8 @@ electrolyte_box:
   thickness: 45.0              # [Å] water column height above slab
   z_margin_top: 2.0
   vacuum_z: 25.0               # [Å] vacuum gap above water for boundary p p f
+  box_z_total: 85.0          # [Å] pin total cell-z; vacuum_z auto-shrinks each
+                                # build so cell-z is identical across concentrations (overrides vacuum_z).
   z_buffer_lo: 1.0             # [Å] buffer below slab (zlo = -z_buffer_lo)
 
 packmol:
