@@ -147,7 +147,15 @@ fi
 # (e.g. scratch cleanup, manual deletion), QE aborts with
 #   "Error in routine pw_readschemafile (1): xml data file not found".
 # Detect that case and fall back to a fresh start from qm_0.
-if (( qmmmini > 0 )); then
+# The QE restart (solute/ save dir) is only read when qmmm_dftces2_charging_pts.sh
+# injects startingwfc/startingpot = 'file', which it does ONLY for TOTCHG == 0.
+# For charged runs (TOTCHG != 0) it injects 'atomic', so the solute/ save dir is
+# never read and need not exist — checking for it there would force a spurious
+# fall-back to qm_0. Detect TOTCHG and skip the check when restart is not used.
+totchg=$(grep -E '^[[:space:]]*TOTCHG=' "$QMMM" | head -1 \
+  | sed -E "s/^[[:space:]]*TOTCHG=[\"']?([^\"'[:space:]#]*).*/\1/")
+uses_file_restart=$(awk -v c="$totchg" 'BEGIN{print (c+0==0)?1:0}')
+if (( qmmmini > 0 )) && [ "$uses_file_restart" = "1" ]; then
   qe_in=""
   for cand in base.pw.in pw.in; do
     [ -f "$cand" ] && { qe_in="$cand"; break; }
@@ -174,6 +182,8 @@ if (( qmmmini > 0 )); then
       echo "   ! Could not parse prefix/outdir from $qe_in — skipping QE restart check."
     fi
   fi
+elif (( qmmmini > 0 )); then
+  echo "   QE startingwfc/startingpot = 'atomic' (TOTCHG=${totchg:-?}) — solute/ QE save dir not needed; skipping QE restart check."
 fi
 
 # ---------- 3.4 Detect kill-during-averaging → skip redundant equilibration ----------
