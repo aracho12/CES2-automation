@@ -12,7 +12,13 @@
 #   2. Scan mm_N/*.restart               → last completed MM step
 #   3. Patch qmmm_dftces2_charging_pts.sh with the right QMMMINISTEP / initialqm
 #      (and skipequil=1 when a pending mm_N was killed during its averaging phase,
-#       so the already-finished equilibration is not needlessly rerun)
+#       so the already-finished equilibration is not needlessly rerun).
+#      Also point LAMMPSRESTART at the latest *.restart (recovering it from
+#      mm_(N-1)/ when the work dir was purged) so a resumed MM step continues the
+#      MD trajectory instead of restarting from the initial structure. This is
+#      needed for qmmm scripts generated before the runtime resume-safety patch,
+#      which on a fresh resubmit reset LAMMPSRESTART to its init value
+#      "ini.restart" and silently discarded MD progress.
 #   4. Patch submit_ces2.sh to skip relax stages that already produced dumps
 #   5. qsub submit_ces2.sh (unless --dry-run)
 #
@@ -244,6 +250,59 @@ if (( qmmmini > 0 )); then
   done
 fi
 
+# ---------- 3.7 Resolve LAMMPSRESTART for the resumed step ----------
+# Old qmmm scripts (generated before the runtime "resume safety" patch) do NOT
+# re-derive $LAMMPSRESTART at runtime: on a fresh resubmit the variable resets to
+# its init value "ini.restart", so a step>0 equilibration would restart from the
+# initial structure (ini.restart/data.file) and silently discard MD progress.
+# Patch the qmmm script's LAMMPSRESTART= line to point at the latest restart so
+# the resumed MM step continues the existing trajectory. Harmless for new scripts:
+# their runtime block re-derives LAMMPSRESTART for step>0 regardless.
+pick_latest_restart() {
+  # Print the basename of the most-recently-modified *.restart in directory $1
+  # (default "."). Selection is by mtime (`ls -t`), NOT the embedded timestep:
+  # pre-patch qmmm scripts do not accumulate restarts — they reuse the same
+  # 0..N timestep range every MM step — so the filename timestep is not monotonic
+  # across steps and mtime is the only reliable "latest". When recovering a
+  # restart by hand, copy (or `touch`) the intended one last so it is newest.
+  local dir="${1:-.}"
+  local latest
+  latest=$(ls -1t "$dir"/*.restart 2>/dev/null | head -n 1 || true)
+  [ -n "$latest" ] && basename "$latest"
+  # Always succeed: an empty result is normal (no restart yet) and must not trip
+  # `set -e` when captured via  rfile=$(pick_latest_restart ...).
+  return 0
+}
+
+restart_patch=""
+if (( qmmmini == 0 )); then
+  # Fresh start: reset to the init value in case a prior resubmit patched it.
+  restart_patch="ini.restart"
+  echo "   LAMMPSRESTART → ini.restart (fresh start)"
+else
+  rfile=$(pick_latest_restart ".")
+  if [ -z "$rfile" ]; then
+    # Work dir purged (scratch cleanup / rsync to a fresh dir): recover the latest
+    # restart archived under the previous step's mm_(N-1)/ and copy it back so both
+    # `-r $LAMMPSRESTART` and the script's `ls *.restart` timestep parse see it.
+    prev_mm="mm_$((qmmmini-1))"
+    cand=$(pick_latest_restart "$prev_mm")
+    if [ -n "$cand" ]; then
+      cp "$prev_mm/$cand" ./
+      rfile="$cand"
+      echo "   restart: none in work dir; recovered $cand from $prev_mm/"
+    fi
+  fi
+  if [ -n "$rfile" ]; then
+    restart_patch="$rfile"
+    echo "   LAMMPSRESTART → $rfile"
+  else
+    echo "   ! WARNING: no *.restart in work dir or mm_$((qmmmini-1))/ —"
+    echo "     cannot point LAMMPSRESTART at an MD restart; the resumed MM step"
+    echo "     may fall back to the initial structure (ini.restart/data.file)."
+  fi
+fi
+
 # ---------- 4. Patch qmmm script ----------
 ts=$(date +%Y%m%d_%H%M%S)
 cp "$QMMM" "${QMMM}.bak.${ts}"
@@ -252,6 +311,11 @@ sed -i.tmp "s|^initialqm=.*|initialqm=$initialqm #1, when the initial qm has bee
 # Always set skipequil explicitly (0 or 1) so a value left over from a prior
 # resubmit can't leak into this run.
 sed -i.tmp "s|^skipequil=.*|skipequil=$skipequil #1, skip equil on first MM step (resume from averaging)|" "$QMMM"
+# Point LAMMPSRESTART at the resumed step's restart (see §3.7). Only patch when we
+# resolved a target and the script actually has a LAMMPSRESTART= line.
+if [ -n "$restart_patch" ] && grep -q '^LAMMPSRESTART=' "$QMMM"; then
+  sed -i.tmp "s|^LAMMPSRESTART=.*|LAMMPSRESTART=\"$restart_patch\" # set by ces2_resubmit.sh: resume from latest restart|" "$QMMM"
+fi
 rm -f "${QMMM}.tmp"
 
 # ---------- 5. Patch submit script (skip relax if it contains relax steps) ----------
@@ -280,7 +344,7 @@ fi
 echo
 echo "==[ Patched ]=="
 echo "   $QMMM (backup: ${QMMM}.bak.${ts})"
-grep -E "^(QMMMINISTEP|QMMMFINSTEP|initialqm|skipequil|firstrun)=" "$QMMM" | sed 's/^/     /' || true
+grep -E "^(QMMMINISTEP|QMMMFINSTEP|initialqm|skipequil|firstrun|LAMMPSRESTART)=" "$QMMM" | sed 's/^/     /' || true
 if (( sub_patched == 1 )); then
   echo "   $SUB  (backup: ${SUB}.bak.${ts})"
   grep -n 'in\.relax_' "$SUB" | sed 's/^/     /' || true
