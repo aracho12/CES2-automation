@@ -34,7 +34,7 @@ Usage
       --last-steps 3 --stride 5 -o analysis/average_last3.traj
 
   # Convert every mm_N/ces2.emd.lammpstrj into a wrapped .traj in place
-  python tools/lammpstrj_to_traj.py --qmmm-wrap-each /path/to/qmmm_run_dir
+  python tools/lammpstrj_to_traj.py --mm /path/to/qmmm_run_dir
 """
 
 import argparse
@@ -828,7 +828,7 @@ def main():
         )
     )
     parser.add_argument(
-        "--qmmm-wrap-each", type=Path, default=None, metavar="RUN_DIR",
+        "--mm", dest="mm", type=Path, default=None, metavar="RUN_DIR",
         help=(
             "Convert each mm_N/*.emd.lammpstrj in a QM/MM run directory into a "
             "separate wrapped .traj next to the source file.  The default output "
@@ -869,8 +869,8 @@ def main():
     if args.max_written_frames is not None and args.max_written_frames < 1:
         parser.error("--max-written-frames must be >= 1")
 
-    if args.qmmm_average is not None and args.qmmm_wrap_each is not None:
-        parser.error("use only one of --qmmm-average or --qmmm-wrap-each")
+    if args.qmmm_average is not None and args.mm is not None:
+        parser.error("use only one of --qmmm-average or --mm")
 
     # =================================================================
     # Mode 1: --qmmm-average  (extract average trajectories from QM/MM)
@@ -908,16 +908,16 @@ def main():
         return
 
     # =================================================================
-    # Mode 2: --qmmm-wrap-each  (convert every mm_N trajectory in place)
+    # Mode 2: --mm  (convert every mm_N trajectory in place)
     # =================================================================
-    if args.qmmm_wrap_each is not None:
-        run_dir = args.qmmm_wrap_each
+    if args.mm is not None:
+        run_dir = args.mm
         if not run_dir.is_dir():
             print(f"ERROR: not a directory: {run_dir}", file=sys.stderr)
             sys.exit(1)
 
         if args.output:
-            parser.error("--output is not supported with --qmmm-wrap-each")
+            parser.error("--output is not supported with --mm")
 
         type_map = _resolve_type_map(args, search_dir=run_dir)
         convert_qmmm_wrap_each(

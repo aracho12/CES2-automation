@@ -47,8 +47,23 @@ Cube-file visualization sub-command
     --diff                  Plot difference (requires exactly 2 cube files):
                             FILE2 − FILE1.  Individual + difference profiles
                             are all overlaid on the same comparison figure.
+    --diff-only             Like --diff, but the planar-average figure shows
+                            ONLY the Δ curve (no input cubes overlaid).
+    --xrange MIN,MAX        Zoom the planar-average profile x-axis (Å)
+    --yrange MIN,MAX        Zoom the planar-average profile y-axis (display unit)
+    --no-region             Do not shade electrode/electrolyte/vacuum regions.
+                            By default, if a build_summary.json is found next to
+                            the cube, the z-axis profile is shaded into electrode
+                            (z < z_top_slab), electrolyte (z_top_slab .. z_el_hi)
+                            and vacuum (z > z_el_hi) — the same boundaries the
+                            main work-function mode uses.  (No shading on x/y
+                            axes or when build_summary.json is absent.)
     --output PREFIX         Output filename prefix (default: cubeplot_<stem>
                             placed next to the first cube file)
+
+  Each planar-averaged profile PNG is accompanied by a CSV of the same data
+  (<prefix>_avg_<axis>.csv): one coordinate column (Å) plus one value column
+  per cube, so you can re-plot or zoom any region yourself.
 
   Unit auto-detection heuristic (filename-based):
     *pot*, *v_*, *hartree*, *electro*  →  ry  (Ry → eV)
@@ -70,6 +85,14 @@ Cube-file visualization sub-command
     # Compare two potential cubes on the same 1D profile figure
     python tools/workfunction.py plot-cube run1/total_pot_ortho.cube \\
         run2/total_pot_ortho.cube --no-slice
+
+    # Difference planar-average only, zoomed to z = 20–35 Å (writes CSV too)
+    python tools/workfunction.py plot-cube run1/total_pot_ortho.cube \\
+        run2/total_pot_ortho.cube --diff --no-slice --xrange 20,35
+
+    # Plot ONLY the Δ planar-average curve (no input cubes overlaid)
+    python tools/workfunction.py plot-cube run1/total_pot_ortho.cube \\
+        run2/total_pot_ortho.cube --diff-only --no-slice
 """
 
 import sys
@@ -141,7 +164,10 @@ CUBE_CANDIDATES = ("total_pot_ortho.cube",)
 
 def load_cube(path):
     """Parse a Gaussian cube file.
-    Returns: (origin_bohr, (nx,ny,nz), (vx,vy,vz) in Bohr, data grid[nx,ny,nz])."""
+    Returns: (origin_bohr, (nx,ny,nz), (vx,vy,vz) in Bohr,
+              data grid[nx,ny,nz], atoms[natoms,3] in Bohr).
+    For a QE-generated cube the atoms ARE the QM atoms, so their coordinate
+    span marks the extent of the QM region."""
     with open(path) as f:
         f.readline(); f.readline()          # 2 comment lines
         parts  = f.readline().split()
@@ -155,13 +181,17 @@ def load_cube(path):
         nx, vx = vox(f.readline())
         ny, vy = vox(f.readline())
         nz, vz = vox(f.readline())
+        atoms = []
         for _ in range(abs(natoms)):
-            f.readline()
+            ap = f.readline().split()   # Z  charge  x  y  z   (Bohr)
+            atoms.append([float(ap[2]), float(ap[3]), float(ap[4])])
+        atoms = (np.array(atoms, dtype=np.float64).reshape(-1, 3)
+                 if atoms else np.empty((0, 3)))
         data = np.array(f.read().split(), dtype=np.float64)
 
     if data.size != nx * ny * nz:
         sys.exit(f"ERROR: cube data size mismatch. Expected {nx*ny*nz}, got {data.size}")
-    return origin, (nx, ny, nz), (vx, vy, vz), data.reshape((nx, ny, nz))
+    return origin, (nx, ny, nz), (vx, vy, vz), data.reshape((nx, ny, nz)), atoms
 
 
 def find_cube(run_dir):
@@ -181,7 +211,7 @@ def find_cube(run_dir):
 def cube_to_pot_z_avg(cube_path, out_path):
     """Planar-average a cube (Ry) along z and write pot.z.avg."""
     print(f"    Reading cube: {cube_path}")
-    origin, (nx, ny, nz), (vx, vy, vz), grid = load_cube(cube_path)
+    origin, (nx, ny, nz), (vx, vy, vz), grid, _atoms = load_cube(cube_path)
     print(f"      grid = {nx}x{ny}x{nz},  dz = {vz[2]:.5f} Bohr")
     if abs(vz[0]) > 1e-6 or abs(vz[1]) > 1e-6 or abs(vx[2]) > 1e-6 or abs(vy[2]) > 1e-6:
         print("      WARNING: non-orthogonal z axis; planar average is approximate.")
@@ -759,15 +789,103 @@ def _imshow_extent_ang(origin, nvox, vvec, h_ai, v_ai):
 
 # ── cube-plot: planar-averaged 1-D profiles ──────────────────────────────────
 
-def plot_cube_avg_profiles(entries, axis_str, out_prefix):
+def _write_avg_csv(series, unit_lbl, out_path):
+    """Write planar-averaged profile data to CSV.
+
+    series   : list of (label, coord_ang, value) tuples
+    unit_lbl : display unit string used in the value-column headers
+
+    If every series shares the same coordinate grid, a single coordinate
+    column is written followed by one value column per cube.  Otherwise each
+    cube gets its own coord,value column pair (grids differ in length/spacing).
+    """
+    coord0 = series[0][1]
+    same_grid = all(
+        len(c) == len(coord0) and np.allclose(c, coord0)
+        for _, c, _ in series
+    )
+
+    def _safe(label):
+        return re.sub(r"[\s,]+", "_", label.strip())
+
+    with open(out_path, "w") as f:
+        if same_grid:
+            heads = ["coord_ang"] + [f"{_safe(lbl)} [{unit_lbl}]"
+                                     for lbl, _, _ in series]
+            f.write(",".join(heads) + "\n")
+            for i in range(len(coord0)):
+                row = [f"{coord0[i]:.6f}"] + [f"{v[i]:.8e}"
+                                              for _, _, v in series]
+                f.write(",".join(row) + "\n")
+        else:
+            heads = []
+            for lbl, _, _ in series:
+                heads += [f"{_safe(lbl)}_coord_ang", f"{_safe(lbl)} [{unit_lbl}]"]
+            f.write(",".join(heads) + "\n")
+            nmax = max(len(c) for _, c, _ in series)
+            for i in range(nmax):
+                cells = []
+                for _, c, v in series:
+                    if i < len(c):
+                        cells += [f"{c[i]:.6f}", f"{v[i]:.8e}"]
+                    else:
+                        cells += ["", ""]
+                f.write(",".join(cells) + "\n")
+    print(f"  Saved: {out_path}")
+
+
+def _find_build_summary(start_dir):
+    """Walk up from start_dir looking for build_summary.json (a few levels)."""
+    d = os.path.abspath(start_dir)
+    for _ in range(4):
+        p = os.path.join(d, "build_summary.json")
+        if os.path.isfile(p):
+            return p
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    return None
+
+
+def cube_slab_boundaries(cube_path):
+    """Slab/electrolyte boundaries (Å) from build_summary.json next to a cube.
+
+    Returns {z_top_slab, z_el_hi, source} or None.  These are the SAME physical
+    boundaries the main work-function mode uses (box.z_top_slab / box.z_el_hi),
+    so plot-cube can shade the electrode / electrolyte / vacuum regions exactly
+    as workfunction_profile.png does — instead of the (wrong) cube atom span,
+    whose atoms can stretch across the whole MM cell.
+    """
+    bs = _find_build_summary(os.path.dirname(cube_path))
+    if not bs:
+        return None
+    try:
+        box = json.load(open(bs)).get("box", {})
+    except Exception:
+        return None
+    zt, ze = box.get("z_top_slab"), box.get("z_el_hi")
+    if zt is None or ze is None:
+        return None
+    return {"z_top_slab": float(zt), "z_el_hi": float(ze), "source": bs}
+
+
+def plot_cube_avg_profiles(entries, axis_str, out_prefix,
+                           xrange=None, yrange=None, region=None):
     """
     Plot planar-averaged 1-D profiles for one or more cube entries.
 
     Parameters
     ----------
-    entries   : list of dicts with keys label, origin, nvox, vvec, grid, unit
+    entries   : list of dicts with keys label, origin, nvox, vvec, grid, unit, atoms
     axis_str  : "x" | "y" | "z" | "all"
     out_prefix: output filename stem (axis name appended automatically)
+    xrange    : (min, max) tuple in Å to zoom the x-axis, or None for full range
+    yrange    : (min, max) tuple in display units to zoom the y-axis, or None
+    region    : {z_top_slab, z_el_hi} dict (Å) to shade electrode/electrolyte/
+                vacuum on the z-axis profile, or None for no shading
+
+    A CSV of the plotted data is written alongside each PNG.
     """
     axes_to_plot = ["x", "y", "z"] if axis_str == "all" else [axis_str]
 
@@ -776,6 +894,7 @@ def plot_cube_avg_profiles(entries, axis_str, out_prefix):
 
         fig, ax = plt.subplots(figsize=(_FW * 2.2, _FH * 1.5))
 
+        series = []  # (label, coord_ang, value) for CSV export
         for k, entry in enumerate(entries):
             _, z_ang  = _axis_coords(entry["origin"], entry["nvox"],
                                      entry["vvec"], ai)
@@ -783,15 +902,36 @@ def plot_cube_avg_profiles(entries, axis_str, out_prefix):
             avg_disp  = _convert_cube_values(avg, entry["unit"])
             ax.plot(z_ang, avg_disp, color=_C[k % len(_C)],
                     lw=_LW * 2, label=entry["label"])
+            series.append((entry["label"], z_ang, avg_disp))
+
+        # ── Electrode / electrolyte / vacuum regions (z-axis only) ─────────
+        # Boundaries come from build_summary.json (same source as the main
+        # work-function mode), NOT from the cube atom span.
+        shade = region is not None and ax_name == "z"
+        if shade:
+            zt, ze = region["z_top_slab"], region["z_el_hi"]
+            x0 = float(np.min(series[0][1]))
+            x1 = float(np.max(series[0][1]))
+            ax.axvspan(x0, zt, alpha=0.10, color=_C[1],
+                       label=f"Electrode (<{zt:.1f} Å)")
+            ax.axvspan(zt, ze, alpha=0.08, color=_C[3],
+                       label=f"Electrolyte ({zt:.1f}–{ze:.1f} Å)")
+            ax.axvspan(ze, x1, alpha=0.10, color=_C[4], label="Vacuum")
+            for xb in (zt, ze):
+                ax.axvline(xb, color=_C[5], ls=":", lw=_LW * 1.5, alpha=0.7)
 
         unit_lbl = _unit_display_label(entries[0]["unit"])
         ax.set_xlabel(f"{ax_name} (Å)", fontsize=_LS)
         ax.set_ylabel(unit_lbl, fontsize=_LS)
         ax.set_title(f"Planar-Averaged Profile  ({ax_name}-axis)",
                      fontsize=_FS, fontweight="bold")
-        if len(entries) > 1:
+        if len(entries) > 1 or shade:
             ax.legend(fontsize=_FS - 1, loc="best")
-        if ps:
+        if xrange is not None:
+            ax.set_xlim(*xrange)
+        if yrange is not None:
+            ax.set_ylim(*yrange)
+        elif ps:
             ps.set_ylim_top_margin(ax)
         _apply_minor_ticks(ax)
         fig.tight_layout()
@@ -800,6 +940,8 @@ def plot_cube_avg_profiles(entries, axis_str, out_prefix):
         fig.savefig(out, bbox_inches="tight", dpi=150)
         plt.close(fig)
         print(f"  Saved: {out}")
+
+        _write_avg_csv(series, unit_lbl, f"{out_prefix}_avg_{ax_name}.csv")
 
 
 # ── cube-plot: 2-D slice heatmap ─────────────────────────────────────────────
@@ -882,7 +1024,20 @@ def parse_cube_plot_args(argv):
     no_avg      = False
     no_slice    = False
     diff        = False
+    diff_only   = False
+    no_region   = False
     out_prefix  = None
+    xrange      = None
+    yrange      = None
+
+    def _parse_range(s, name):
+        parts = s.replace(":", ",").split(",")
+        if len(parts) != 2:
+            sys.exit(f"ERROR: --{name} needs MIN,MAX, got: {s}")
+        try:
+            return (float(parts[0]), float(parts[1]))
+        except ValueError:
+            sys.exit(f"ERROR: --{name} values must be floats, got: {s}")
 
     i = 0
     while i < len(argv):
@@ -899,12 +1054,20 @@ def parse_cube_plot_args(argv):
             i += 2
         elif a == "--unit" and i + 1 < len(argv):
             unit = argv[i + 1]; i += 2
+        elif a == "--xrange" and i + 1 < len(argv):
+            xrange = _parse_range(argv[i + 1], "xrange"); i += 2
+        elif a == "--yrange" and i + 1 < len(argv):
+            yrange = _parse_range(argv[i + 1], "yrange"); i += 2
         elif a == "--no-avg":
             no_avg = True; i += 1
         elif a == "--no-slice":
             no_slice = True; i += 1
         elif a == "--diff":
             diff = True; i += 1
+        elif a == "--diff-only":
+            diff = True; diff_only = True; i += 1
+        elif a in ("--no-region", "--no-qm-region"):
+            no_region = True; i += 1
         elif a in ("--output", "-o") and i + 1 < len(argv):
             out_prefix = argv[i + 1]; i += 2
         elif not a.startswith("--"):
@@ -933,8 +1096,9 @@ def parse_cube_plot_args(argv):
                                   "cubeplot_" + stem)
 
     return dict(files=files, axis=axis, slice_fracs=slice_fracs, unit=unit,
-                no_avg=no_avg, no_slice=no_slice, diff=diff,
-                out_prefix=out_prefix)
+                no_avg=no_avg, no_slice=no_slice, diff=diff, diff_only=diff_only,
+                no_region=no_region, out_prefix=out_prefix,
+                xrange=xrange, yrange=yrange)
 
 
 def main_plot_cube(argv_after):
@@ -957,12 +1121,13 @@ def main_plot_cube(argv_after):
     for path in files:
         unit = unit_arg if unit_arg != "auto" else _detect_cube_unit(path)
         print(f"\n  Loading: {os.path.basename(path)}  →  unit: {unit}")
-        origin, nvox, vvec, grid = load_cube(path)
+        origin, nvox, vvec, grid, atoms = load_cube(path)
         cell_ang = [nvox[i] * float(np.linalg.norm(vvec[i])) * BOHR2ANG
                     for i in range(3)]
         print(f"    grid : {nvox[0]} × {nvox[1]} × {nvox[2]}")
         print(f"    cell : {cell_ang[0]:.3f} × {cell_ang[1]:.3f} × "
               f"{cell_ang[2]:.3f} Å")
+        print(f"    atoms: {len(atoms)}  (QM atoms in cube)")
         print(f"    range: {_convert_cube_values(grid.min(), unit):.4g}"
               f" – {_convert_cube_values(grid.max(), unit):.4g}"
               f"  [{_unit_display_label(unit)}]")
@@ -970,6 +1135,7 @@ def main_plot_cube(argv_after):
             path=path,
             label=os.path.splitext(os.path.basename(path))[0],
             origin=origin, nvox=nvox, vvec=vvec, grid=grid, unit=unit,
+            atoms=atoms,
         ))
 
     # ── difference mode ───────────────────────────────────────────────────
@@ -984,10 +1150,10 @@ def main_plot_cube(argv_after):
         diff_entry = dict(
             path=None, label=diff_label,
             origin=e0["origin"], nvox=e0["nvox"], vvec=e0["vvec"],
-            grid=diff_grid, unit=e0["unit"],
+            grid=diff_grid, unit=e0["unit"], atoms=e0["atoms"],
         )
-        # For avg: show all three on one comparison figure
-        entries_for_avg   = entries + [diff_entry]
+        # For avg: difference only, or all three on one comparison figure
+        entries_for_avg   = [diff_entry] if cfg["diff_only"] else entries + [diff_entry]
         # For slices: only the difference
         entries_for_slice = [diff_entry]
         out_pfx_diff = out_pfx + "_diff"
@@ -1000,15 +1166,28 @@ def main_plot_cube(argv_after):
         entries_for_slice = entries
         out_pfx_diff      = out_pfx
 
+    # ── region shading from build_summary.json (same as main mode) ────────
+    region = None if cfg["no_region"] else cube_slab_boundaries(files[0])
+    if region:
+        print(f"  Region source    :  {os.path.relpath(region['source'])}  "
+              f"(slab<{region['z_top_slab']:.1f} Å, electrolyte<{region['z_el_hi']:.1f} Å)")
+    elif not cfg["no_region"]:
+        print("  Region source    :  (no build_summary.json found — no shading)")
+
     # ── planar-averaged profiles ──────────────────────────────────────────
     if not cfg["no_avg"]:
         print(f"\n[1] Planar-averaged profile(s)  (axis = {cfg['axis']}) ...")
         if cfg["diff"]:
-            # One comparison figure: both inputs + difference
+            # diff-only: just Δ;  otherwise both inputs + difference overlaid
+            avg_suffix = "_diff" if cfg["diff_only"] else "_comparison"
             plot_cube_avg_profiles(entries_for_avg, cfg["axis"],
-                                   out_pfx + "_comparison")
+                                   out_pfx + avg_suffix,
+                                   xrange=cfg["xrange"], yrange=cfg["yrange"],
+                                   region=region)
         else:
-            plot_cube_avg_profiles(entries, cfg["axis"], out_pfx)
+            plot_cube_avg_profiles(entries, cfg["axis"], out_pfx,
+                                   xrange=cfg["xrange"], yrange=cfg["yrange"],
+                                   region=region)
 
     # ── 2-D slice heatmaps ────────────────────────────────────────────────
     if not cfg["no_slice"]:
