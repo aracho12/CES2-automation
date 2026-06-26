@@ -40,6 +40,8 @@ Pseudopotential config (config.yaml)
     edir:        3                   # z-direction dipole correction
     conv_thr:    1.0e-8              # SCF convergence (Ry)
     mixing_beta: 0.3
+    mixing_mode: "local-TF"          # optional; e.g. 'local-TF'/'TF' for charged or
+                                     # metallic slabs. Omit → QE default ('plain').
     electron_maxstep: 400
     diagonalization: "cg"
     pseudopotentials:                # optional per-element overrides (takes priority over pseudo_set)
@@ -150,6 +152,7 @@ def generate_qe_input(
     edir        = int(  qe_cfg.get("edir",        3))
     conv_thr         = float(qe_cfg.get("conv_thr",          1.0e-8))
     mixing_beta      = float(qe_cfg.get("mixing_beta",       0.3))
+    mixing_mode      = qe_cfg.get("mixing_mode", None)  # optional; emitted only when set
     electron_maxstep = int(  qe_cfg.get("electron_maxstep",  400))
     diagonalization  = str(  qe_cfg.get("diagonalization",   "cg"))
     scf_must_converge = bool( qe_cfg.get("scf_must_converge", True))
@@ -224,6 +227,8 @@ def generate_qe_input(
     PW(f"  conv_thr          = {conv_thr:.2e},")
     PW(f"  electron_maxstep  = {electron_maxstep},")
     PW(f"  mixing_beta       = {mixing_beta},")
+    if mixing_mode:
+        PW(f"  mixing_mode       = '{mixing_mode}',")
     PW(f"  diagonalization   = '{diagonalization}',")
     PW(f"  scf_must_converge = {scf_conv_str},")
     PW( "  ! startingwfc / startingpot injected by qmmm script (= 'file' for step > 0)")
