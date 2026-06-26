@@ -55,7 +55,7 @@ Usage examples
   python tools/z_density.py md.traj --info
 
   # Process every mm_N directory in a QM/MM run and write an evolution plot
-  python tools/z_density.py --qmmm-mm /path/to/qmmm_run_dir
+  python tools/z_density.py --mm /path/to/qmmm_run_dir
 """
 
 from __future__ import annotations
@@ -1408,7 +1408,7 @@ def read_density_csv_result(
 
 def run_qmmm_mm_density(args) -> None:
     """Compute per-mm_N z-density plots and a root-level evolution plot."""
-    run_dir = args.qmmm_mm.resolve()
+    run_dir = args.mm.resolve()
     if not run_dir.is_dir():
         sys.exit(f"ERROR: not a directory: {run_dir}")
 
@@ -1586,20 +1586,20 @@ def parse_args():
             "  python tools/z_density.py ces2.emd.lammpstrj --water-density\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --all-atoms\n"
             "  python tools/z_density.py ces2.emd.lammpstrj --exclude-types 6 7\n"
-            "  python tools/z_density.py --qmmm-mm run_dir --elements O H Cs\n"
-            "  python tools/z_density.py --qmmm-mm run_dir --skip-existing\n"
+            "  python tools/z_density.py --mm run_dir --elements O H Cs\n"
+            "  python tools/z_density.py --mm run_dir --skip-existing\n"
             "  python tools/z_density.py run/ces2.emd.lammpstrj "
             '--type-map "1:H 2:O 3:Cs 4:H 5:O 6:Ir 7:O"\n'
         ),
     )
     p.add_argument("traj", type=Path, nargs="?", default=None,
                    help="Trajectory file (.lammpstrj or .traj)")
-    p.add_argument("--qmmm-mm", type=Path, default=None, metavar="RUN_DIR",
+    p.add_argument("--mm", dest="mm", type=Path, default=None, metavar="RUN_DIR",
                    help=("Process every mm_N directory in a QM/MM run. Each "
                          "mm_N gets its own z_density outputs, and RUN_DIR gets "
                          "profile-wise mm-step evolution plots."))
     p.add_argument("--skip-existing", action="store_true",
-                   help=("With --qmmm-mm, skip mm_N directories whose expected "
+                   help=("With --mm, skip mm_N directories whose expected "
                          "output files already exist and reuse their rawdata CSV "
                          "for the root-level evolution output."))
     p.add_argument("--info", action="store_true",
@@ -1668,18 +1668,18 @@ def main():
     if args.water_oxygen_labels or args.water_oxygen_types:
         args.water_density = True
 
-    if args.qmmm_mm is not None:
+    if args.mm is not None:
         if args.traj is not None:
-            sys.exit("ERROR: provide either a trajectory file or --qmmm-mm, not both.")
+            sys.exit("ERROR: provide either a trajectory file or --mm, not both.")
         if args.info:
             sys.exit("ERROR: --info is only supported for single trajectory mode.")
         if args.outdir is not None:
-            sys.exit("ERROR: --outdir is not supported with --qmmm-mm.")
+            sys.exit("ERROR: --outdir is not supported with --mm.")
         run_qmmm_mm_density(args)
         return
 
     if args.traj is None:
-        sys.exit("ERROR: trajectory file is required unless --qmmm-mm is used.")
+        sys.exit("ERROR: trajectory file is required unless --mm is used.")
 
     traj_path = args.traj.resolve()
     if not traj_path.exists():
