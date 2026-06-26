@@ -284,7 +284,9 @@ def generate_lammps_input(
     shake_tol     = float(md_cfg.get("shake_tol",    1.0e-4))
     shake_iter    = int(  md_cfg.get("shake_iter",   20))
     shake_maxiter = int(  md_cfg.get("shake_maxiter", 500))
-    z_wall_hi        = float(box.z_el_hi) + 5.0
+    z_wall_hi        = float(box.z_el_hi) + 12.0  # wall ~12 Å above electrolyte top so the
+                                                  # SOLVENT surface (onset = z_wall_hi - wall_cutoff)
+                                                  # keeps headroom and is not compressed by the wall.
 
     # Upper harmonic wall parameters for SOLVENT during QM/MM.
     wall_K           = float(md_cfg.get("wall_K",           1.0))

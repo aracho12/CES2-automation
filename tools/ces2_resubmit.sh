@@ -97,9 +97,19 @@ for d in qm_*/; do
   [ -d "$d" ] || continue
   n=${d%/}; n=${n#qm_}
   [[ "$n" =~ ^[0-9]+$ ]] || continue
-  if [ -f "${d}pw.out" ] && grep -q "JOB DONE" "${d}pw.out"; then
-    (( n > last_qm )) && last_qm=$n
+  # A qm_N step is COMPLETE only when its ortho QE run finished (qm_N/pw.out
+  # "JOB DONE"). For N>0 the step then runs a *non-ortho* QE pass, which is what
+  # actually produces the solute.pot.cube / solute.ind.cube fed to the next MM
+  # step (copied into qm_N/ only at the very end). qm_0 has no non-ortho pass
+  # (skipped), so require it only for N>0. Without this, a job killed after the
+  # ortho stage copied pw.out into qm_N/ but before non-ortho finished would be
+  # mis-detected as "qm_N done", jump to mm_N with initialqm=1, and silently
+  # reuse the stale qm_0 cubes — giving a wrong potential from mm_N onward.
+  [ -f "${d}pw.out" ] && grep -q "JOB DONE" "${d}pw.out" || continue
+  if (( n > 0 )); then
+    [ -f "${d}pw.nonortho.out" ] && grep -q "JOB DONE" "${d}pw.nonortho.out" || continue
   fi
+  (( n > last_qm )) && last_qm=$n
 done
 
 # ---------- 2. Detect last completed mm_N ----------
