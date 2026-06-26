@@ -755,9 +755,30 @@ def generate_lammps_input(
     L()
 
     if water_O_tid is not None and water_H_tid is not None:
-        b_str = f"b {water_bond_type}"  if water_bond_type  is not None else "b 1"
-        a_str = f"a {water_angle_type}" if water_angle_type is not None else "a 1"
-        L(f"# SHAKE: rigid O-H bonds and H-O-H angles for water")
+        # Collect every bond/angle type that involves a hydrogen across all MM
+        # species, so SHAKE rigidifies *all* X-H bonds — water O-H AND solute
+        # O-H such as OH- (bond type 2) — not just water. A flexible X-H bond
+        # has a ~9 fs stretch period that is unstable at the 1 fs MD timestep.
+        # Bond/angle type ids are global: build_mm_connectivity() uses the
+        # species' own type ids directly without renumbering.
+        shake_bond_types: set[int] = set()
+        shake_angle_types: set[int] = set()
+        for _sid, _ in species_order:
+            _sp = species_db[_sid]
+            for _bt, _i, _j in _sp.bonds:
+                if _sp.atoms[_i - 1].element == "H" or _sp.atoms[_j - 1].element == "H":
+                    shake_bond_types.add(_bt)
+            for _at, _i, _j, _k in _sp.angles:
+                if any(_sp.atoms[_idx - 1].element == "H" for _idx in (_i, _j, _k)):
+                    shake_angle_types.add(_at)
+        # Fallbacks: if detection finds nothing, keep the prior water-only behavior.
+        if not shake_bond_types and water_bond_type is not None:
+            shake_bond_types = {water_bond_type}
+        if not shake_angle_types and water_angle_type is not None:
+            shake_angle_types = {water_angle_type}
+        b_str = "b " + " ".join(str(t) for t in sorted(shake_bond_types)) if shake_bond_types else "b 1"
+        a_str = "a " + " ".join(str(t) for t in sorted(shake_angle_types)) if shake_angle_types else "a 1"
+        L(f"# SHAKE: rigid X-H bonds and H-O-H angles (water + solute, e.g. OH-)")
         L(f"fix   shakeH SOLVENT shake {shake_tol} {shake_iter} {shake_maxiter}"
           f" {a_str} {b_str}")
         L()
