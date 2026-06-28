@@ -164,13 +164,20 @@ fi
 #   "Error in routine pw_readschemafile (1): xml data file not found".
 # Detect that case and fall back to a fresh start from qm_0.
 # The QE restart (solute/ save dir) is only read when qmmm_dftces2_charging_pts.sh
-# injects startingwfc/startingpot = 'file', which it does ONLY for TOTCHG == 0.
-# For charged runs (TOTCHG != 0) it injects 'atomic', so the solute/ save dir is
-# never read and need not exist — checking for it there would force a spurious
-# fall-back to qm_0. Detect TOTCHG and skip the check when restart is not used.
+# injects startingwfc/startingpot = 'file'. The script does that in the TOTCHG==0
+# else-branch *only if* that branch still assigns STARTINGPOT="file"; charged runs
+# (TOTCHG != 0) always inject 'atomic'. The option-B fix patches the neutral branch
+# to 'atomic' too, so detect the ACTUAL assignment in $QMMM rather than assuming
+# TOTCHG==0 always means file-restart — otherwise a patched neutral run with no
+# solute/ save dir would be forced into a spurious (and expensive) fall-back to qm_0.
 totchg=$(grep -E '^[[:space:]]*TOTCHG=' "$QMMM" | head -1 \
   | sed -E "s/^[[:space:]]*TOTCHG=[\"']?([^\"'[:space:]#]*).*/\1/")
-uses_file_restart=$(awk -v c="$totchg" 'BEGIN{print (c+0==0)?1:0}')
+if [ "$(awk -v c="$totchg" 'BEGIN{print (c+0==0)?1:0}')" = "1" ] \
+   && grep -q 'STARTINGPOT="file"' "$QMMM"; then
+  uses_file_restart=1   # TOTCHG==0 and the script still injects startingpot='file'
+else
+  uses_file_restart=0   # charged run, or neutral branch patched to 'atomic'
+fi
 if (( qmmmini > 0 )) && [ "$uses_file_restart" = "1" ]; then
   qe_in=""
   for cand in base.pw.in pw.in; do
