@@ -8,7 +8,7 @@ atoms:
     charge: null
     xyz: [0.0, 0.0, 0.0]
     bjdisp:
-      alpha_iso: 1.695     # excel row 7: Cs+
+      alpha_iso: 15     # excel row 7: Cs+
       C6: 1777.52805             # excel row 7: Cs+ (kcal/mol*Ang^6)
       s: 1.40
 connectivity: {}
