@@ -2,6 +2,10 @@
 
 Automated builder for DFT-CES2 QM/MM simulations — generates all required input files (LAMMPS data file, QM/MM LAMMPS input, Quantum ESPRESSO input, and run scripts) from a VASP CONTCAR and a single config file.
 
+> **New to DFT-CES2?** See [`docs/`](docs/README.md) — an overview of the QM/MM
+> outer loop, a full [variable reference for the generated run script](docs/03-qmmm-script-reference.md),
+> and a [dictionary of every output file](docs/04-output-files.md).
+
 ---
 
 ## What it does
