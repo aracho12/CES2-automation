@@ -133,6 +133,7 @@ echo "   last completed mm_N : $last_mm"
 # equilibration on the resumed step. Decided in §3.4 below. mm_pending marks the
 # "qm_N done, mm_N pending" branch that §3.4 inspects.
 skipequil=0
+skiportho=0
 mm_pending=0
 if (( last_qm == -1 && last_mm == -1 )); then
   qmmmini=0;  initialqm=0
@@ -239,8 +240,36 @@ if (( mm_pending == 1 )); then
   fi
 fi
 
+# ---------- 3.45 Detect ortho-done/nonortho-pending → skip the finished ortho QM ----------
+# Each QMMM step (N>0) runs TWO full pw.x SCFs in order:
+#   1) ortho    (pauli_rep=repA.cube)  → pw.out,          archived to qm_N/
+#   2) non-ortho (pauli_rep=empty.cube) → pw.nonortho.out, archived to qm_N/
+# A step counts as "done" only when BOTH finished (see §1). So when we are about to
+# (re)start qm_$qmmmini (initialqm=0) and qm_$qmmmini/ already holds a *finished*
+# ortho pass (pw.out "JOB DONE" + its archived ortho cubes) but NO finished
+# non-ortho pass, the previous job died between the two SCFs. Re-running the ortho
+# SCF would waste ~half the per-step QM time. Set skiportho=1 so the driver reuses
+# the archived ortho result and resumes directly from the non-ortho SCF. The
+# non-ortho pass needs only empty.cube / MOBILE_final.cube (restored from
+# mm_$((qmmmini-1))/ at step start) and the qm_0 reference cubes — not the ortho
+# work-dir cubes — so this is safe. Guarded to the "start qm_(N+1)" branch only.
+if (( qmmmini > 0 && initialqm == 0 )); then
+  qd="qm_$qmmmini"
+  ortho_done=0; nonortho_done=0
+  if [ -f "$qd/pw.out" ] && grep -q "JOB DONE" "$qd/pw.out" && [ -f "$qd/solute.rho_ortho.cube" ]; then
+    ortho_done=1
+  fi
+  if [ -f "$qd/pw.nonortho.out" ] && grep -q "JOB DONE" "$qd/pw.nonortho.out"; then
+    nonortho_done=1
+  fi
+  if (( ortho_done == 1 && nonortho_done == 0 )); then
+    skiportho=1
+    reason="$reason; ortho of qm_$qmmmini already finished, non-ortho pending → skip ortho, resume from non-ortho QM"
+  fi
+fi
+
 echo "   → $reason"
-echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm, skipequil=$skipequil"
+echo "   → QMMMINISTEP=$qmmmini, initialqm=$initialqm, skipequil=$skipequil, skiportho=$skiportho"
 
 # ---------- 3.6 Completion detection ----------
 # Read QMMMFINSTEP from qmmm script. If the next step to run is past the final
@@ -320,14 +349,63 @@ else
   fi
 fi
 
+# ---------- 3.8 Ensure the driver has the skip-ortho guard ----------
+# The skiportho feature needs the driver to (a) declare `skiportho=` and (b) wrap
+# its ortho QM+PP region in `if [ ${skiportho:-0} -eq 0 ]; then ... else <reuse
+# archived ortho> fi`. New scripts (built by the current ces2_script_writer.py)
+# already contain this, marked by the CES2_SKIPORTHO_GUARD sentinel. For older
+# exports built before that change, inject the same block in place — idempotently
+# (skip if the sentinel is already present). Returns 0 if the guard is present
+# afterwards (already or injected), 1 if injection was needed but the anchors
+# could not be found (leaves the file untouched).
+ensure_skiportho_guard() {
+  local f="$1"
+  grep -q 'CES2_SKIPORTHO_GUARD' "$f" && return 0
+  # Anchors that must exist in a generated driver:
+  grep -q '^  finished=""$' "$f" || return 1
+  grep -q '# 2\. Non-orthogonalized QM by MM' "$f" || return 1
+  local var_line open_blk close_blk
+  var_line='skiportho=0 #1, skip already-finished ortho QM and resume from non-ortho QM (set by ces2_resubmit.sh)'
+  open_blk=$'  # >>> CES2_SKIPORTHO_GUARD (skip already-finished ortho QM on resume; managed by ces2_resubmit.sh)\n  if [ ${skiportho:-0} -eq 0 ]; then'
+  close_blk=$'  else\n    echo "### skiportho=1: reusing archived ortho QM (qm_$qmmmstep), resuming from non-ortho QM"\n    [ -f qm_$qmmmstep/pw.out ] && cp qm_$qmmmstep/pw.out ./pw.out\n    if [ ! -f empty.cube ] && [ -f qm_$qmmmstep/solute.rho_ortho.cube ]; then\n      cp qm_$qmmmstep/solute.rho_ortho.cube ./_zero_src.cube\n      $CUBEMULTI _zero_src.cube 0 && mv multiplied.cube empty.cube && rm -f _zero_src.cube\n    fi\n  fi\n  skiportho=0  # one-shot: only the resumed step skips ortho; later steps run ortho normally\n  # <<< CES2_SKIPORTHO_GUARD'
+  awk -v VAR="$var_line" -v OPEN="$open_blk" -v CLOSE="$close_blk" '
+    /^skipequil=/ && !se { print; print VAR; se=1; next }
+    /^  finished=""$/ && !op { print OPEN; print; op=1; next }
+    /# 2\. Non-orthogonalized QM by MM/ && op && !cl { print CLOSE; print; cl=1; next }
+    { print }
+  ' "$f" > "${f}.inj" || { rm -f "${f}.inj"; return 1; }
+  # Sanity: both markers landed and step-0 declaration got added.
+  if grep -q 'CES2_SKIPORTHO_GUARD' "${f}.inj" && grep -q '^skiportho=' "${f}.inj"; then
+    mv "${f}.inj" "$f"
+    return 0
+  fi
+  rm -f "${f}.inj"
+  return 1
+}
+
 # ---------- 4. Patch qmmm script ----------
 ts=$(date +%Y%m%d_%H%M%S)
 cp "$QMMM" "${QMMM}.bak.${ts}"
+# Make sure the skip-ortho guard exists before we try to flip its flag below.
+guard_ok=0
+if ensure_skiportho_guard "$QMMM"; then
+  guard_ok=1
+else
+  if (( skiportho == 1 )); then
+    echo "   ! WARNING: could not add skip-ortho guard to $QMMM (anchors not found);"
+    echo "     falling back to a full ortho+non-ortho re-run of qm_$qmmmini (skiportho=0)."
+    skiportho=0
+  fi
+fi
 sed -i.tmp "s|^QMMMINISTEP=.*|QMMMINISTEP=$qmmmini # no of initial QMMM step|" "$QMMM"
 sed -i.tmp "s|^initialqm=.*|initialqm=$initialqm #1, when the initial qm has been done.|" "$QMMM"
 # Always set skipequil explicitly (0 or 1) so a value left over from a prior
 # resubmit can't leak into this run.
 sed -i.tmp "s|^skipequil=.*|skipequil=$skipequil #1, skip equil on first MM step (resume from averaging)|" "$QMMM"
+# Same for skiportho (only meaningful when the guard is present).
+if (( guard_ok == 1 )); then
+  sed -i.tmp "s|^skiportho=.*|skiportho=$skiportho #1, skip already-finished ortho QM and resume from non-ortho QM (set by ces2_resubmit.sh)|" "$QMMM"
+fi
 # Point LAMMPSRESTART at the resumed step's restart (see §3.7). Only patch when we
 # resolved a target and the script actually has a LAMMPSRESTART= line.
 if [ -n "$restart_patch" ] && grep -q '^LAMMPSRESTART=' "$QMMM"; then
@@ -361,7 +439,7 @@ fi
 echo
 echo "==[ Patched ]=="
 echo "   $QMMM (backup: ${QMMM}.bak.${ts})"
-grep -E "^(QMMMINISTEP|QMMMFINSTEP|initialqm|skipequil|firstrun|LAMMPSRESTART)=" "$QMMM" | sed 's/^/     /' || true
+grep -E "^(QMMMINISTEP|QMMMFINSTEP|initialqm|skipequil|skiportho|firstrun|LAMMPSRESTART)=" "$QMMM" | sed 's/^/     /' || true
 if (( sub_patched == 1 )); then
   echo "   $SUB  (backup: ${SUB}.bak.${ts})"
   grep -n 'in\.relax_' "$SUB" | sed 's/^/     /' || true
