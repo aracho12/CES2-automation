@@ -90,6 +90,48 @@ covered by regression tests.
 **Impact:** Builds using TIP3P or SPC/E now receive the intended matching ion
 LJ parameters. TIP4P-Ew values and the documented TIP3P fallback for TIP3P-Ew
 are unchanged.
+### `builder/ces2_script_writer.py` — continuous-accumulation MD restart timeline
+
+**What:** The generated driver now COMPUTES each MM phase's `reset_timestep`
+from the step index instead of parsing the mtime-latest restart filename:
+equil of step N starts at `N*(MDEQUIL+MDAVERAGE)`, averaging at that plus
+`MDEQUIL`. Restart selection prefers the deterministically-expected filename
+(`*.<timestep>.restart`) and only falls back to mtime-latest with a WARN.
+
+**Why:** Filename/mtime parsing broke when a re-run shared a work-dir with an
+older run: absolute-timestep restart names collided (new run overwrote the old
+run's `ces2.3000000.restart` etc.), and `ls -lrt | tail` could silently resume
+from a stale trajectory. With per-step deterministic numbering the timeline is
+globally unique across the whole run (0 → 2M → … → 10M for 1M/1M × 5 steps),
+so stale files can no longer be mistaken for the current trajectory.
+Constraint: `md_equil_steps`/`md_average_steps` must stay constant over a run.
+
+### `builder/ces2_script_writer.py` + `config_example.yaml` — `qm_startingpot` (seed restart)
+
+**What:** New `ces2_script.qm_startingpot` config key (`'atomic'` default |
+`'file'`). Controls the `startingpot` injected into charged (`TOTCHG != 0`)
+`pw.in`/`pw.nonortho.in`; neutral runs keep `'file'` as before.
+
+**Why:** Heavily-charged SCF (e.g. q-20, ~20 extra e-) from atomic
+superposition oscillates or diverges for hundreds of iterations (~1 iter/hr on
+one node — observed diverging at 100–280 Ry after 100+ iters). Seeding from a
+converged charged density placed in `<export>/solute/solute.save/` cut both
+ortho and non-ortho SCF to ~10–16 iterations in the 2oh2o q-20 rollout
+(2026-07-17). QE renormalizes nelec on read, so a neighbouring charge state's
+density also works (charge-ladder). WARNING documented: never seed from a
+neutral (qm_0/PZC) density — observed to converge badly.
+
+### `tools/ces2_backup_save.sh` — snapshot/restore QE save dir (new)
+
+**What:** `ces2_backup_save.sh {backup|restore|list} <export_dir> [label]` —
+verified snapshot of `<export>/solute/solute.save/` (converged
+charge-density.dat + wfc) into `<export>/_save_backup/<label>/`, with manifest;
+refuses to copy a save that changed within the last 5 min (live SCF guard).
+
+**Why:** The driver archives only `pw.in/pw.out/*.cube` into `qm_N/` — the
+`.save` (the only seedable density) lives in the volatile outdir and is
+overwritten by every subsequent pw.x run. This tool preserves converged
+densities for the `qm_startingpot: file` seed-restart workflow.
 
 ### `builder/main.py` — pin total box-z via `electrolyte_box.box_z_total`
 

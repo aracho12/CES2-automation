@@ -372,6 +372,17 @@ def generate_ces2_scripts(
     initial_qm     = int(sc_cfg.get("initial_qm",      0))
     skip_equil     = int(sc_cfg.get("skip_equil",       0))
     skip_ortho     = int(sc_cfg.get("skip_ortho",       0))
+    # Charged-run QE initial potential: 'atomic' (default, safe from scratch) or
+    # 'file' (seed restart: reuse a converged charge-density placed in
+    # outdir/prefix.save — e.g. restored via tools/ces2_backup_save.sh from the
+    # same system or a neighbouring charge state; cuts charged-SCF from
+    # hundreds of oscillating iterations to ~10). Do NOT use 'file' with a
+    # NEUTRAL (qm_0/PZC) density in outdir — neutral-seeded charged SCF was
+    # observed to converge badly; seed from a *charged* converged density.
+    qm_startingpot = str(sc_cfg.get("qm_startingpot",  "atomic"))
+    if qm_startingpot not in ("atomic", "file"):
+        raise ValueError(
+            f"ces2_script.qm_startingpot must be 'atomic' or 'file', got {qm_startingpot!r}")
 
     # ── charged system parameters ─────────────────────────────────────────
     # Auto-calculated values from structure analysis (charged_params) are used
@@ -522,8 +533,11 @@ def generate_ces2_scripts(
     L(f'TOTCHG="{tot_chg}" # (-): put more electrons in QM system, 0 for PZC')
     # For charged systems, reading wfc/pot files generated under a different
     # charge state can trigger Cholesky decomposition errors during diag.
-    # Use atomic-orbital initial wavefunctions/potential when TOTCHG != 0.
-    L('if [ "$(echo "$TOTCHG != 0" | bc)" -eq 1 ]; then STARTINGWFC="atomic"; STARTINGPOT="atomic"; else STARTINGWFC="file"; STARTINGPOT="file"; fi')
+    # STARTINGWFC stays 'atomic' when TOTCHG != 0; STARTINGPOT follows the
+    # ces2_script.qm_startingpot config ('atomic' default, or 'file' to seed
+    # from a converged charge-density pre-placed in outdir — QE renormalizes
+    # nelec on read, so a neighbouring charge state's density also works).
+    L(f'if [ "$(echo "$TOTCHG != 0" | bc)" -eq 1 ]; then STARTINGWFC="atomic"; STARTINGPOT="{qm_startingpot}"; else STARTINGWFC="file"; STARTINGPOT="file"; fi')
     L(f"initialqm={initial_qm} #1, when the initial qm has been done.")
     L(f"skipequil={skip_equil} #1, skip equil on first MM step (resume from averaging)")
     L(f"skiportho={skip_ortho} #1, skip already-finished ortho QM and resume from non-ortho QM (set by ces2_resubmit.sh)")
@@ -1060,7 +1074,15 @@ def generate_ces2_scripts(
     L("    # (ini.restart/data.file). In a continuous run this is a no-op because")
     L("    # the variable already holds the previous step's averaging restart.")
     L("    if [ $qmmmstep -gt 0 ]; then")
-    L("      _latest_restart=`ls -lrt *.restart 2>/dev/null | tail -n 1 | awk '{print $9}'`")
+    L("      # Continuous-accumulation: the previous step's averaging ended exactly at")
+    L("      # qmmmstep*(MDEQUIL+MDAVERAGE), so prefer that deterministic filename over")
+    L("      # the mtime-latest heuristic (which stale files could fool).")
+    L('      _expected_ts=$(( qmmmstep * (MDEQUIL + MDAVERAGE) ))')
+    L('      _latest_restart=`ls *."${_expected_ts}".restart 2>/dev/null | head -n 1`')
+    L('      if [ -z "$_latest_restart" ]; then')
+    L('        _latest_restart=`ls -lrt *.restart 2>/dev/null | tail -n 1 | awk \'{print $9}\'`')
+    L('        [ -n "$_latest_restart" ] && echo "### WARN: expected *.${_expected_ts}.restart not found; falling back to mtime-latest: $_latest_restart"')
+    L("      fi")
     L("      # Robust resume: if the work-dir restarts were purged (e.g. scratch")
     L("      # cleanup or rsync to a fresh dir), recover the latest restart that")
     L("      # was archived under the previous step's mm_$((qmmmstep-1))/ directory")
@@ -1095,11 +1117,13 @@ def generate_ces2_scripts(
     L("    fi")
     L("    echo \"### Running LAMMPS(emxext) for equilibration $qmmmstep QMMM iterations\"$'\\n'")
     L("    sed -i \"s/.*run.*/run\\t\\t$MDEQUIL/\" in.lammps")
-    L("    if [ $qmmmstep -eq 0 ]; then")
-    L("        LAMMPSRESTARTtime=0")
-    L("    else")
-    L("        LAMMPSRESTARTtime=`ls -lrt *.restart | tail -n 1 | awk '{print $9}' | cut -f2 -d '.'`")
-    L("    fi")
+    L("    # Continuous-accumulation timeline: each step's start timestep is COMPUTED")
+    L("    # from the step index instead of parsed from the mtime-latest restart")
+    L("    # filename. Step N spans N*(MDEQUIL+MDAVERAGE) .. (N+1)*(MDEQUIL+MDAVERAGE),")
+    L("    # so restart numbers are globally unique across the whole run and stale")
+    L("    # files from an older run can neither collide with nor be mistaken for the")
+    L("    # current trajectory. (Requires MDEQUIL/MDAVERAGE constant over the run.)")
+    L("    LAMMPSRESTARTtime=$(( qmmmstep * (MDEQUIL + MDAVERAGE) ))")
     L("  sed -i \"s/.*reset_timestep.*/reset_timestep ${LAMMPSRESTARTtime}/\" in.lammps")
     L("  cp in.lammps in.lammps.equil ")
     L("  sed -i \"s/.*timestep.*/timestep        ${EQUILTIMESTEP}/\" in.lammps.equil")
@@ -1135,15 +1159,17 @@ def generate_ces2_scripts(
     L("  # Always remove read_dump before averaging: positions come from the equil restart file.")
     L("  # Keeping read_dump would overwrite equilibrated coords with pre-equil dump → wrong image flags.")
     L("  sed -i '/read_dump/d' in.lammps")
-    L("  LAMMPSRESTART=`ls -lrt *.restart 2>/dev/null | tail -n 1 | awk '{print $9}'`")
+    L("  # Continuous-accumulation: averaging starts exactly where equil ended, at a")
+    L("  # timestep computed from the step index (not parsed from filenames).")
+    L("  LAMMPSRESTARTtime=$(( qmmmstep * (MDEQUIL + MDAVERAGE) + MDEQUIL ))")
+    L('  LAMMPSRESTART=`ls *."${LAMMPSRESTARTtime}".restart 2>/dev/null | head -n 1`')
+    L('  if [ -z "$LAMMPSRESTART" ]; then')
+    L('    LAMMPSRESTART=`ls -lrt *.restart 2>/dev/null | tail -n 1 | awk \'{print $9}\'`')
+    L('    [ -n "$LAMMPSRESTART" ] && echo "### WARN: expected *.${LAMMPSRESTARTtime}.restart not found; falling back to mtime-latest: $LAMMPSRESTART"')
+    L("  fi")
     L('  if [ -z "$LAMMPSRESTART" ]; then')
     L('    echo "### ERROR: No restart file found for averaging step at QMMM step $qmmmstep"')
     L('    echo "### The equilibration step likely failed to produce restart files"')
-    L("    exit 1")
-    L("  fi")
-    L("  LAMMPSRESTARTtime=`echo $LAMMPSRESTART | cut -f2 -d '.'`")
-    L('  if [ -z "$LAMMPSRESTARTtime" ]; then')
-    L('    echo "### ERROR: Could not parse timestep from restart file: $LAMMPSRESTART"')
     L("    exit 1")
     L("  fi")
     L("  sed -i \"s/.*reset_timestep.*/reset_timestep ${LAMMPSRESTARTtime}/\" in.lammps")

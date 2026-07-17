@@ -324,6 +324,28 @@ ces2_script:
   np:            256             # MPI tasks (= select × mpiprocs)
   n_qmmm_steps:  6              # total QM/MM outer-loop steps
 
+  # ---- charged-run QE initial potential (seed restart) ----
+  # qm_startingpot : startingpot injected into pw.in / pw.nonortho.in when
+  #   TOTCHG != 0 (neutral runs always use 'file').
+  #   'atomic' (default) — start charged SCF from atomic superposition. Safe
+  #     from scratch, but heavily-charged SCF (e.g. ~20 extra e-) may
+  #     oscillate/diverge for hundreds of iterations.
+  #   'file' — seed from a CONVERGED charge-density pre-placed in
+  #     <export>/solute/solute.save/ (e.g. restored with
+  #     tools/ces2_backup_save.sh from the same or a neighbouring charge
+  #     state; QE renormalizes nelec on read). Cuts charged SCF to ~10 iters.
+  #     WARNING: do NOT seed from a NEUTRAL (qm_0/PZC) density — observed to
+  #     converge badly. Seed only from a converged *charged* density.
+  # qm_startingpot: "file"
+
+  # ---- MD restart timeline (continuous accumulation) ----
+  # The generated driver computes each phase's reset_timestep from the step
+  # index: step N spans N*(md_equil+md_average) .. (N+1)*(...). Restart file
+  # numbers are therefore globally unique across the whole run (0 → 2M → ...),
+  # stale restarts from an older run can never be mistaken for the current
+  # trajectory, and md_equil_steps/md_average_steps must stay CONSTANT over
+  # one run (changing them mid-run breaks the deterministic numbering).
+
   # ---- MDIPC slab-dipole / point-charge correction (charged systems) ----
   # These map to the mpclayer/totlayer/adsorbate shell variables consumed by
   # the $MDIPC step in the generated run script.
