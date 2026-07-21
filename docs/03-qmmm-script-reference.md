@@ -50,7 +50,7 @@ All tool paths come from `ces2_script.*` in `config.yaml`
 | `DFT_CES2_PATH` | Root of the DFT-CES2 distribution (LAMMPS fork + cube tools live under it). Exported so child processes see it. |
 | `LAMMPS` | The **DFT-CES2 LAMMPS fork** (`src-ind-cube/lmp_mpi`) — a stock LAMMPS will not understand the `grid` command. |
 | `QEPW`, `QEPP` | The **patched** QE `pw.x` / `pp.x` (with `dft_ces`, `rho_ces`, `pauli_rep_ces` input keys). |
-| `QEPW_FLAGS` | `pw.x` parallelization flags, e.g. `-npool 4 -ntg 2 -ndiag 4` — from `ces2_script.npool/ntg/ndiag`. `npool` must divide the k-point count; `ndiag` must be a perfect square. |
+| `QEPW_FLAGS` | `pw.x` parallelization flags (`-npool/-ntg/-ndiag`, from `ces2_script.npool/ntg/ndiag`). **Do not use — leave all three unset in the config so `QEPW_FLAGS=""`** and pw.x runs bare `mpirun -np $NP`. Production runs with flags on gave unreliable results with the CES2-patched pw.x (the q-0 PZC dataset had to be rerun flag-off), so all current datasets run flag-off. If a legacy script has flags baked in, set `QEPW_FLAGS=""` before resubmitting. |
 | `CUBEADD`, `CUBEMULTI`, `CUBESUB` | Cube-grid arithmetic (add n cubes / multiply by scalar / subtract). |
 | `BLUR` | Gaussian-blurs a cube (used for both MM repulsion and QM density; see §5). |
 | `MDDIPOLE` (`dipc2`) | Dipole correction applied to the MM charge density. |
@@ -100,7 +100,7 @@ Don't edit them by hand — rebuild instead.
 | `DIPOLEDIR` | `"3"` | `qe.edir` | Direction of the correction (1=x, 2=y, 3=z). Must match QE's `edir` (surface normal). |
 | `DIPOLEPOS` | `"0.8"` | `qe.emaxpos` | Fractional position of the sawtooth discontinuity along `DIPOLEDIR` — put it in the vacuum region. Must match QE's `emaxpos`. |
 | `TOTCHG` | `"-0.2222…"` | auto from `charge_control` (override: `ces2_script.tot_chg`) | QE `tot_charge` **per unit cell**: total electrode charge ÷ `SUPERCELLFACTOR` (e.g. −4 e over a 3×6×1 supercell → −4/18). Negative = extra electrons. `0` = PZC (potential of zero charge); the charged-system machinery below is then skipped. |
-| `STARTINGWFC` / `STARTINGPOT` | derived | QE SCF starting guess, set by the `TOTCHG` conditional on the next line: charged runs start from `atomic`; neutral runs reuse the previous step's wavefunction (`file`, from `solute/solute.save`). `file` is faster but can crash with `pw_readschemafile` if the save directory is stale or incompatible — switching that case to `atomic` is the safe fallback. |
+| `STARTINGWFC` / `STARTINGPOT` | derived | QE SCF starting guess, set by the `TOTCHG` conditional: neutral runs use `file`/`file` (reuse `solute/solute.save`); the charged branch uses `STARTINGWFC="atomic"` and `STARTINGPOT` from `ces2_script.qm_startingpot`. **For charged runs set `qm_startingpot: "file"` and seed `solute/solute.save/` with a converged charge density** — an `atomic` start on a heavily charged slab oscillates or diverges for hundreds of SCF iterations (days of walltime), while a density-seeded SCF converges in ~10–16 iterations. See *05 — Monitoring & Restart § Seeding charged SCF* for the full protocol (required files, seed-source rules, verification). Keep `STARTINGWFC="atomic"` — reading another charge state's wavefunctions risks Cholesky errors, and stale saves crash with `pw_readschemafile`. |
 
 ### Point-charge scheme (`MDIPC`) — electrostatics of the counter charge
 

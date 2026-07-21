@@ -516,7 +516,8 @@ ces2_script:
   # mpc_layer: auto              # top-layer z [bohr] for MDIPC
   # plate_pos: auto              # slab midpoint fraction for CHGPLATE
 
-  # QE parallelization flags (pw.x command-line options):
+  # QE parallelization flags — LEAVE UNSET (unreliable with the CES2-patched
+  # pw.x; all production datasets run flag-off — see docs/03 §3):
   # npool: 1                     # k-point pools (must divide n_kpoints)
   # ntg: 2                       # FFT task groups
   # ndiag: 9                     # ScaLAPACK procs (must be perfect square)
