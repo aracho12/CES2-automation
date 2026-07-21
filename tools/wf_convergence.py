@@ -147,29 +147,46 @@ def main():
         print(line)
     (args.outdir / "convergence_summary.txt").write_text("\n".join(conv_lines) + "\n")
 
-    # plot
+    # plot: left axis = metric, right axis = step-to-step delta of the metric
     if HAVE_MPL:
+        plt.rcParams["legend.frameon"] = False       # project style: no legend box
         qvals = sorted({r[2] for r in rows})
         icol = {"vrhe": 6, "phi": 4, "vshe": 5}[args.metric]
-        ylab = {"vrhe": "V_RHE (V)", "phi": "Phi (eV)",
-                "vshe": "V_SHE (V)"}[args.metric]
+        ylab = {"vrhe": r"V$_{\mathrm{RHE}}$ (V)", "phi": r"$\Phi$ (eV)",
+                "vshe": r"V$_{\mathrm{SHE}}$ (V)"}[args.metric]
+        dlab = {"vrhe": r"$\Delta$V$_{\mathrm{RHE}}$ (V)",
+                "phi": r"$\Delta\Phi$ (eV)",
+                "vshe": r"$\Delta$V$_{\mathrm{SHE}}$ (V)"}[args.metric]
         fig, axes = plt.subplots(1, len(qvals),
-                                 figsize=(4.6 * len(qvals), 4.4), squeeze=False)
+                                 figsize=(5.0 * len(qvals), 4.4), squeeze=False)
         for ax, q in zip(axes[0], qvals):
+            ax2 = ax.twinx()
+            ax2.axhspan(-0.05, 0.05, color="gray", alpha=0.10, zorder=0)
+            ax2.axhline(0, color="gray", lw=0.8, ls=":", zorder=0)
             for label, rs in bysys.items():
                 if rs[0][2] != q:
                     continue
                 rs = sorted(rs, key=lambda r: r[3])
                 cat = rs[0][1]
-                ax.plot([r[3] for r in rs], [r[icol] for r in rs], "o-",
-                        color=CAT_COLORS.get(cat, "gray"), label=cat)
-            ax.set_xlabel("QM/MM step (qm_N)")
+                col = CAT_COLORS.get(cat, "gray")
+                steps_x = [r[3] for r in rs]
+                vals = [r[icol] for r in rs]
+                ax.plot(steps_x, vals, "o-", color=col, label=cat, zorder=3)
+                if len(rs) >= 2:                       # deltas on right axis
+                    dx = steps_x[1:]
+                    dv = [b - a for a, b in zip(vals, vals[1:])]
+                    ax2.plot(dx, dv, "x--", color=col, alpha=0.55,
+                             lw=1.0, zorder=2)
+            ax.set_xlabel("QM/MM step (qm$_N$)")
             ax.set_ylabel(ylab)
+            ax2.set_ylabel(dlab)
+            dmax = 0.4
+            ax2.set_ylim(-dmax, dmax)
             ax.set_title(f"q-{q}")
             ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
             ax.legend(fontsize=8)
-        fig.suptitle(f"WF convergence vs step  ({args.metric.upper()}, "
-                     f"pH={args.ph:g})")
+        fig.suptitle(f"WF convergence vs step  (solid: {ylab.split(' ')[0]},  "
+                     f"dashed x: step delta,  band: |Δ|<0.05)")
         fig.tight_layout()
         png = args.outdir / f"wf_convergence_{args.metric}.png"
         fig.savefig(png, dpi=150)
