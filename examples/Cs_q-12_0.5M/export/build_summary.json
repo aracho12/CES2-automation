@@ -1,0 +1,57 @@
+{
+  "box": {
+    "Lx": 38.218800544800004,
+    "Ly": 38.396401405199995,
+    "Lz": 34.023399353,
+    "z_top_slab": 13.169922114802528,
+    "z_el_lo": 13.169922114802528,
+    "z_el_hi": 58.16992211480253,
+    "vacuum_z": 29.78815,
+    "z_buffer_lo": 1.0,
+    "box_z_total": 90.0,
+    "box_zlo": -1.0,
+    "box_zhi": 89.0
+  },
+  "counts": {
+    "water_tip4p": 2141,
+    "Cs_plus": 31,
+    "OH_minus": 19
+  },
+  "species_order": [
+    [
+      "water_tip4p",
+      2141
+    ],
+    [
+      "Cs_plus",
+      31
+    ],
+    [
+      "OH_minus",
+      19
+    ]
+  ],
+  "q_electrode": -12.0,
+  "q_total_final": 0.0,
+  "n_total": 8364,
+  "n_mm": 6492,
+  "n_qm": 1872,
+  "n_bonds": 4301,
+  "n_angles": 2141,
+  "n_atom_types": 11,
+  "packmol": {
+    "converged": true,
+    "obj_final": 0.0021747,
+    "iterations": 0,
+    "maxit": 1000,
+    "tolerance": 2.0,
+    "pbc_box": [
+      0.0,
+      0.0,
+      -1.0,
+      38.218800544800004,
+      38.396401405199995,
+      84.16992211480253
+    ]
+  }
+}

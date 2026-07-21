@@ -1,0 +1,11 @@
+{
+  "V_L_approx": 6.404817824284799e-23,
+  "counts": {
+    "water_tip4p": 2141,
+    "Cs_plus": 31,
+    "OH_minus": 19
+  },
+  "Q_electrode": -12.0,
+  "Q_target_total": 0.0,
+  "Q_total_final": 0.0
+}

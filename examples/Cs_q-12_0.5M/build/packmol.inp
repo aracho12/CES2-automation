@@ -1,0 +1,22 @@
+tolerance 2.0
+maxit 1000
+filetype xyz
+seed 1234
+output mm_packmol.xyz
+pbc 0.000000 0.000000 -1.000000 38.218801 38.396401 84.169922
+
+structure water_tip4p.xyz
+  number 2141
+  inside box 0.000000 0.000000 15.669922 38.218801 38.396401 58.169922
+end structure
+
+structure Cs_plus.xyz
+  number 31
+  inside box 0.000000 0.000000 17.169922 38.218801 38.396401 58.169922
+end structure
+
+structure OH_minus.xyz
+  number 19
+  inside box 0.000000 0.000000 17.169922 38.218801 38.396401 58.169922
+end structure
+

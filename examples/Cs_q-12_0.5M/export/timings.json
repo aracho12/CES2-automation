@@ -1,0 +1,17 @@
+{
+  "config_and_dirs": 0.02064100606366992,
+  "species_db_load": 0.056212436873465776,
+  "slab_supercell": 0.23702614707872272,
+  "box_meta": 0.012562197633087635,
+  "composition_and_charge": 0.002741552423685789,
+  "species_xyz_and_order": 0.1278277961537242,
+  "packmol": 2.518988633994013,
+  "ase_read_and_combine": 1.1128512262366712,
+  "types_and_connectivity": 0.3268779842182994,
+  "write_data_file": 0.07957476004958153,
+  "qm_mm_lists": 0.64794413279742,
+  "lammps_input": 0.056017444003373384,
+  "qe_input": 0.6377855869941413,
+  "ces2_scripts": 0.1539342813193798,
+  "total": 6.3996523269452155
+}

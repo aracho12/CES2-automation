@@ -18,6 +18,11 @@ packmol/
 build/
 export/
 export copy/
+# ...but keep the shipped example's build/export (examples/Cs_q-12_0.5M)
+!examples/*/build/
+!examples/*/build/**
+!examples/*/export/
+!examples/*/export/**
 
 # Input files (user-specific)
 input/

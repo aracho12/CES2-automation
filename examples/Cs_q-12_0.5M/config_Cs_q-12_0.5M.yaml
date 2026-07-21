@@ -1,8 +1,8 @@
 project:
-  workdir: "./"
+  workdir: "/ABSOLUTE/PATH/TO/Cs_q-12_0.5M"   # ← set to this machine's absolute path (export lands at workdir/export)
   seed: 1234
 
-species_db: "species_db"
+# species_db: omitted on purpose → the bundled CES2-automation/species_db is used
 
 input:
   vasp_file: "CONTCAR"
@@ -21,8 +21,7 @@ electrolyte_box:
   thickness: 45.0              # [Å] water column height above slab
   z_margin_top: 2.0
   vacuum_z: 25.0               # [Å] vacuum gap above water for boundary p p f
-  box_z_total: 85.0          # [Å] pin total cell-z; vacuum_z auto-shrinks each
-                                # build so cell-z is identical across concentrations (overrides vacuum_z).
+  box_z_total: 90.0          # [Å] pin total cell-z (vacuum auto-shrinks to hold this)
   z_buffer_lo: 1.0             # [Å] buffer below slab (zlo = -z_buffer_lo)
 
 packmol:
@@ -32,9 +31,9 @@ packmol:
 
 charge_control:
   q_target_total: 0.0           # total MD box charge (0 = neutral)
-  q_electrode_user_value: -1.0  # surface charge [e]: -1 = add 1 electron to MD slab
-                                # → counterion_pool adds 1 Li⁺ to compensate
-                                # → QM tot_charge = -1/(3*6*1) = -0.05556 (auto-calculated)
+  q_electrode_user_value: -12.0  # surface charge [e]: -2 = add 2 electrons to MD slab
+                                # → counterion_pool adds 2 Cs⁺ to compensate
+                                # → QM tot_charge = -2/(3*6*1) = -0.11111 (auto-calculated)
   top_layer_tolerance: 1.8      # [Å] atoms within this distance of z_max receive charge
                                 # NOTE: ignored when top_layer_z_lo (below) is set.
                                 # With adsorbates on top, z_max is the adsorbate H, so a
@@ -88,9 +87,9 @@ electrolyte_recipe:
 
   # Multiple salts allowed (stoich is species_id -> coefficient per formula unit)
   salts:
-    - name: LiOH
-      concentration_M: 0.1
-      stoich: {Li_plus: 1, OH_minus: 1}
+    - name: CsOH
+      concentration_M: 0.5
+      stoich: {Cs_plus: 1, OH_minus: 1}
   extras: []
   # - species_id: "OH_minus"
   #   count: 5
@@ -99,7 +98,7 @@ electrolyte_recipe:
 
   # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
   # Put at least one 1-valent cation and one 1-valent anion here.
-  counterion_pool: [Li_plus, OH_minus]
+  counterion_pool: [Cs_plus, OH_minus]
 
           # counterion_pair_search: 2000
 
@@ -131,7 +130,7 @@ output:
 #
 # Example for IrO2 + adsorbed OH (atoms 99-102 in POSCAR, DFTD3 CN~1.0):
 slab:
-  bjparams_layer_file: IrO2_2OH_2O_bjparams_layer_avg
+  bjparams_layer_file: IrO2_4OH_bjparams_layer_avg
 
 # ---- CES2 QM/MM LAMMPS input generation ----
   bjparams_source: layer_file
@@ -200,17 +199,18 @@ ces2:
 qe:
   prefix: "solute"
   outdir: "./solute"
-  pseudo_dir: "/home01/x3379a03/pseudo"     # directory with UPF pseudopotential files
+  pseudo_dir: "/home/aracho/bin/qe/pseudo"  # directory with UPF pseudopotential files
   ecutwfc: 50.0              # Ry - kinetic energy cutoff
   ecutrho: 400.0             # Ry - charge density cutoff
   occupations: "smearing"    # "smearing" or "fixed"
   degauss: 0.0147              # Ry - smearing width
-  k_points: [2, 4, 1, 0, 0, 0]      # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
+  k_points: [3, 6, 1, 0, 0, 0]      # Monkhorst-Pack: n1 n2 n3 s1 s2 s3
   emaxpos: 0.8               # dipole correction position (fraction of cell z)
   edir: 3                    # dipole/electric field direction (3 = z)
   conv_thr: 1e-04           # SCF convergence threshold (Ry)
   electron_maxstep: 400    # max SCF iterations
   mixing_beta: 0.3         # charge density mixing (lower = more stable, slower)
+  mixing_mode: 'local-TF'
   diagonalization: "cg"    # "cg" (stable) or "david" (faster)
 
   # Pseudopotential set: built-in database to use when no per-element override is given.
@@ -223,16 +223,21 @@ qe:
     O: O.pbe-n-kjpaw_psl.1.0.0.UPF
     H: H.pbe-kjpaw_psl.1.0.0.UPF
 ces2_script:
-  jobname: "2OH2O_qp1_Li_0.1M"  # used for SBATCH -J and prefix= in submit script
-  dft_ces2_path: "/home01/x3379a03/ces_share/dft-ces2-bash-test"
-  qe_binary: "/home01/x3379a03/ces_share/qe_test/bin/pw.x"
-  pp_binary: "/home01/x3379a03/ces_share/qe_test/bin/pp.x"
+  jobname: "4OH_Cs_q-12_0.5M"  # used for SBATCH -J and prefix= in submit script
+  dft_ces2_path: "/home/jthlol/dft-ces2-bash-test"
+  qe_binary: "/home/mino/02.programs/qe_CES2_mino_241105/bin/pw.x"
+  pp_binary: "/home/mino/02.programs/qe_CES2_mino_241105/bin/pp.x"
   lmp_binary: "${DFT_CES2_PATH}/MD/lammps/src-ind-cube/lmp_mpi"
-  chg2pot_binary: "/home01/x3379a03/ces_share/chg2pot"
-  mdipc_binary: "/home01/x3379a03/ces_share/mdipc"
-  chgplate_binary: "/home01/x3379a03/ces_share/make_rho_mino"
-  np: 256                        # MPI tasks (= select × mpiprocs)
-  n_qmmm_steps: 6               # total QM/MM outer-loop steps
+  chg2pot_binary: "/home/mino/03.scripts/chg2pot"
+  mdipc_binary: "/home/jthlol/program/poisson/mdipc"
+  chgplate_binary: "/home/mino/03.scripts/make_rho_mino"
+  np: 24                          # MPI tasks (= slurm nodes × cores; 1 node × 24c on tars)
+  n_qmmm_steps: 7               # total QM/MM outer-loop steps
+
+  # Charged run → seed each charged SCF from a converged charge density
+  # instead of an atomic start (atomic oscillates for hundreds of iterations;
+  # seeded converges in ~10-16). See docs/05 "Seeding charged SCF".
+  qm_startingpot: "file"
 
   # ---- MDIPC slab-dipole / point-charge correction (charged systems) ----
   # These map to the mpclayer/totlayer/adsorbate shell variables consumed by
@@ -252,43 +257,25 @@ ces2_script:
   # 4O=100, 4OH=104). For 2OH_2O: N_window=16, nAtoms=102 → adsorbate=6 gives
   # tot_layer = (102−6)/16 = 6. Re-derive per case from the built cube.
   tot_layer:   "6"              # number of total MPC layers (Poisson solver)
-  adsorbate:   "6"             # atoms excluded from the monopole denominator so
+  adsorbate:   "8"             # atoms excluded from the monopole denominator so
                                # (nAtoms − adsorbate)/tot_layer = N_window (Ir-O count)
 
-  # ---- QE parallelization flags (pw.x command-line options) ----
-  # npool : k-point pools       — must divide n_kpoints (2×4×1=8 → use 8)
-  # ntg   : FFT task groups     — divisor of (np/npool); 2~4 recommended
-  # ndiag : ScaLAPACK procs     — must be a perfect square (1,4,9,16,25,...)
-  # Remove or comment out any flag to omit it from the mpirun command.
-  npool: 4
-  ntg: 2
-  ndiag: 8
+  # ---- QE parallelization flags — DO NOT USE ----
+  # Leave npool/ntg/ndiag unset so QEPW_FLAGS="" and pw.x runs bare
+  # `mpirun -np $NP`: the flags gave unreliable results with the CES2-patched
+  # pw.x (q-0 PZC dataset had to be rerun flag-off). See docs/03 §3.
+  # npool: 4
+  # ntg: 2
+  # ndiag: 4
 
-  # ---- Scheduler: use either 'slurm' or 'pbs' (not both) ----
-  # PBS Pro (Nurion / KISTI-style) — uncomment to use
-  pbs:
-    job_name: "2OH2O_qp1_Li_0.1M"
-    select: 8                  # number of nodes
-    ncpus: 32                  # CPUs per node
-    mpiprocs: 32               # MPI ranks per node (usually == ncpus)
-    ompthreads: 1
-    walltime: "48:0:0"
-    queue: "normal"
-    account: "lammps"          # -A project code
-    email: "aracho1211@gmail.com"        # -M notification address (optional)
-    export_env: true           # emit #PBS -V (export environment)
-    module_lines: |
-      module purge
-      module load intel/18.0.3 impi/18.0.3
-
-  # SLURM (tars / local cluster) — uncomment to use instead of pbs:
-  # slurm:
-  #   account:    "members"
-  #   partition:  "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
-  #   nodes:      1
-  #   no_requeue: true
-  #   time:       "00:00:00"
-  #   comment:    "qmmm"
+  # ---- Scheduler (tars = SLURM). Submit with `sbatch submit_ces2.sh`. ----
+  slurm:
+    account: "members"
+    partition: "skylake_24c,broadwell_24c,haswell_24c_ib_sm61,haswell_24c"
+    nodes: 1
+    no_requeue: true
+    time: "00:00:00"          # no walltime limit on tars
+    comment: "qmmm"
 
 # md_relax (MM pre-relax / pre-equilibration) is intentionally omitted —
 # CES2 QM/MM runs directly from the packmol coordinates here. When md_relax is
