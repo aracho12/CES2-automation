@@ -171,7 +171,8 @@ def main():
                 col = CAT_COLORS.get(cat, "gray")
                 steps_x = [r[3] for r in rs]
                 vals = [r[icol] for r in rs]
-                ax.plot(steps_x, vals, "o-", color=col, label=cat, zorder=3)
+                ax.plot(steps_x, vals, "o-", color=col, label=cat, zorder=3,
+                        markeredgecolor="black", markeredgewidth=0.7)
                 if len(rs) >= 2:                       # deltas on right axis
                     dx = steps_x[1:]
                     dv = [b - a for a, b in zip(vals, vals[1:])]
