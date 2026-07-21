@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+wf_convergence.py — work-function convergence vs QM/MM step (qm_1..qm_N).
+
+For each system dir, finds every canonical qm_N/ holding a total_pot_ortho.cube,
+reuses the cached qm_N/workfunction.out when present (compute_vrhe.sh convention)
+or runs tools/workfunction.py to create it, then plots V_RHE (or Phi / V_SHE)
+vs step — one panel per charge state, colored by cation — and writes a CSV.
+The step-to-step delta of the last two points is the convergence indicator.
+
+Works for any surface dataset (2oh2o / 4o / 4oh / ...) — pass the system dirs.
+
+Usage:
+  wf_convergence.py SYSDIR [SYSDIR ...] -o OUTDIR
+      [--metric vrhe|phi|vshe]  (default vrhe)
+      [--ph 13.0] [--she 4.44]
+      [--recompute]             ignore cached workfunction.out
+Example:
+  wf_convergence.py 2oh2o/*_0.5M -o 2oh2o/wf_convergence
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    HAVE_MPL = True
+except Exception:
+    HAVE_MPL = False
+
+WF_TOOL = Path.home() / "bin/CES2-automation/tools/workfunction.py"
+CUBE = "total_pot_ortho.cube"
+QM_RE = re.compile(r"^qm_(\d+)$")          # canonical only (skips *.prev*, *_ref)
+PHI_RE = re.compile(r"Work function.*=\s*([-\d.]+)\s*eV")
+SHE_RE = re.compile(r"U vs SHE \[4\.44 V\]\s*=\s*([+\-\d.]+)")
+CAT_COLORS = {"Li": "#1f77b4", "Na": "#2ca02c", "K": "#ff7f0e", "Cs": "#d62728"}
+
+
+def parse_wfout(text: str):
+    phi = PHI_RE.search(text)
+    she = SHE_RE.search(text)
+    return (float(phi.group(1)) if phi else None,
+            float(she.group(1)) if she else None)
+
+
+def wf_for_step(export: Path, qmdir: Path, recompute: bool):
+    """Return (phi, vshe) for one qm_N, computing+caching if needed."""
+    wfout = qmdir / "workfunction.out"
+    if wfout.exists() and not recompute:
+        phi, she = parse_wfout(wfout.read_text())
+        if phi is not None and she is not None:
+            return phi, she
+    # compute (must run from export/ so workfunction.py finds step context)
+    res = subprocess.run(
+        [sys.executable, str(WF_TOOL), "--cube", f"{qmdir.name}/{CUBE}"],
+        cwd=export, capture_output=True, text=True)
+    log = res.stdout + res.stderr
+    wfout.write_text(log)
+    for art in ("workfunction_profile.png", "workfunction_fermi.png",
+                "workfunction_rawdata.csv", "workfunction_summary.txt"):
+        src = export / art
+        if src.exists():
+            (qmdir / art).write_bytes(src.read_bytes())
+    return parse_wfout(log)
+
+
+def sys_meta(sysdir: Path):
+    """(label, cation, q) from a system dir name like Cs_q-20_0.5M."""
+    name = sysdir.name
+    cat = name.split("_")[0]
+    m = re.search(r"q-(\d+)", name)
+    q = int(m.group(1)) if m else -1
+    return name, cat, q
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("sysdirs", nargs="+", type=Path)
+    ap.add_argument("-o", "--outdir", type=Path, required=True)
+    ap.add_argument("--metric", choices=["vrhe", "phi", "vshe"], default="vrhe")
+    ap.add_argument("--ph", type=float, default=13.0)
+    ap.add_argument("--she", type=float, default=4.44)
+    ap.add_argument("--recompute", action="store_true")
+    args = ap.parse_args()
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    shift = 0.059 * args.ph
+
+    rows = []       # (label, cation, q, step, phi, vshe, vrhe)
+    for sd in args.sysdirs:
+        export = sd / "export" if (sd / "export").is_dir() else sd
+        if not export.is_dir():
+            print(f"SKIP (no export): {sd}")
+            continue
+        label, cat, q = sys_meta(sd if (sd / "export").is_dir() else sd.parent)
+        steps = []
+        for d in sorted(export.iterdir()):
+            m = QM_RE.match(d.name)
+            if m and (d / CUBE).exists() and (d / CUBE).stat().st_size > 0:
+                steps.append((int(m.group(1)), d))
+        steps = [(n, d) for n, d in sorted(steps) if n > 0]   # skip neutral qm_0
+        if not steps:
+            print(f"PASS (no completed qm_N cubes): {label}")
+            continue
+        for n, d in steps:
+            phi, she = wf_for_step(export, d, args.recompute)
+            if phi is None or she is None:
+                print(f"WARN parse failed: {label} qm_{n}")
+                continue
+            rows.append((label, cat, q, n, phi, she, she + shift))
+            print(f"{label} qm_{n}: phi={phi:.4f}  V_SHE={she:+.4f}  "
+                  f"V_RHE={she + shift:.4f}")
+
+    if not rows:
+        sys.exit("no data")
+
+    # CSV
+    csv = args.outdir / "wf_convergence.csv"
+    with open(csv, "w") as f:
+        f.write("system,cation,q,step,phi_eV,V_SHE,V_RHE\n")
+        for r in rows:
+            f.write(",".join(str(x) for x in r) + "\n")
+
+    # convergence table (delta of last two steps per system)
+    print("\n=== step-convergence (last two steps) ===")
+    bysys = {}
+    for r in rows:
+        bysys.setdefault(r[0], []).append(r)
+    conv_lines = []
+    for label, rs in bysys.items():
+        rs = sorted(rs, key=lambda r: r[3])
+        if len(rs) >= 2:
+            dv = rs[-1][6] - rs[-2][6]
+            line = (f"{label}: qm_{rs[-2][3]}->qm_{rs[-1][3]}  "
+                    f"dV_RHE={dv:+.4f} V {'(converging)' if abs(dv) < 0.05 else ''}")
+        else:
+            line = f"{label}: only qm_{rs[0][3]} — need next step"
+        conv_lines.append(line)
+        print(line)
+    (args.outdir / "convergence_summary.txt").write_text("\n".join(conv_lines) + "\n")
+
+    # plot
+    if HAVE_MPL:
+        qvals = sorted({r[2] for r in rows})
+        icol = {"vrhe": 6, "phi": 4, "vshe": 5}[args.metric]
+        ylab = {"vrhe": "V_RHE (V)", "phi": "Phi (eV)",
+                "vshe": "V_SHE (V)"}[args.metric]
+        fig, axes = plt.subplots(1, len(qvals),
+                                 figsize=(4.6 * len(qvals), 4.4), squeeze=False)
+        for ax, q in zip(axes[0], qvals):
+            for label, rs in bysys.items():
+                if rs[0][2] != q:
+                    continue
+                rs = sorted(rs, key=lambda r: r[3])
+                cat = rs[0][1]
+                ax.plot([r[3] for r in rs], [r[icol] for r in rs], "o-",
+                        color=CAT_COLORS.get(cat, "gray"), label=cat)
+            ax.set_xlabel("QM/MM step (qm_N)")
+            ax.set_ylabel(ylab)
+            ax.set_title(f"q-{q}")
+            ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            ax.legend(fontsize=8)
+        fig.suptitle(f"WF convergence vs step  ({args.metric.upper()}, "
+                     f"pH={args.ph:g})")
+        fig.tight_layout()
+        png = args.outdir / f"wf_convergence_{args.metric}.png"
+        fig.savefig(png, dpi=150)
+        print(f"\nsaved {png}\nsaved {csv}")
+
+
+if __name__ == "__main__":
+    main()
