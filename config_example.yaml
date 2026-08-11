@@ -104,12 +104,20 @@ electrolyte_recipe:
       #concentration_M: 0.2
       #stoich: { "TMA_plus": 1, "Cl_minus": 1 }
 
-  # Extra explicit species counts (e.g., add a bit of OH-)
+  # Extra explicit species counts (e.g., add a bit of OH-).
+  # When packmol_order is omitted, active extras are packed in this exact order
+  # after water; remaining salt/counterion species follow alphabetically.
   extras: []
   # - species_id: "OH_minus"
   #   count: 5
   # - species_id: "K_plus"
   #   count: 5
+  # Chemostat variants: distinct LAMMPS types, with LJ inherited through
+  # lj_type_label in Na_plus_frac.yaml and OH_minus_frac.yaml.
+  # - species_id: "Na_plus_frac"
+  #   count: 1
+  # - species_id: "OH_minus_frac"
+  #   count: 1
 
   # Counterion pool for enforcing total charge neutrality (used to fix electrode charge)
   # Put at least one 1-valent cation and one 1-valent anion here.
@@ -123,7 +131,8 @@ electrolyte_recipe:
     ions_A: 4.0
     neutral_A: 2.0
 
-  # Optional explicit packmol structure order (default: water then sorted rest)
+  # Optional explicit packmol structure order. When omitted, the default is:
+  # water, then extras in declaration order, then remaining species sorted.
   # packmol_order: ["water_tip4p", "K_plus", "Cl_minus", "TMA_plus", "OH_minus"]
 
 output:
@@ -188,6 +197,19 @@ ces2:
   #   SPCE               — 3-site SPC/E
   #   TIP3PEW            — 3-site TIP3P-Ew (Price & Brooks 2004)
   water_model: TIP4P
+  # OH- force-field set and matching O-H distance:
+  #   auto (default) -> hydroxide_set mapped by water_model
+  #   bonthuis2016   -> use OH_minus (1.00 Angstrom; OH_minus_frac available)
+  #   tip4p2005      -> use OH_minus_tip4p2005 (0.98 Angstrom, no _frac species)
+  # The selected set supplies OH LJ. Geometry/charges come directly from the
+  # matching species YAML; tip4p2005 uses -1.0727/+0.2227 e (net -0.85 e).
+  hydroxide_model: auto
+
+  # Position of electrode/QM slab atom types and atom IDs in the LAMMPS data file.
+  # "last" preserves the historical order: MM first, electrode/QM last.
+  # "first" writes electrode/QM first, followed by MM atoms.
+  # Types within the electrode remain sorted alphabetically by type_label.
+  electrode_type_position: last
 
   # ---- Pair style for TIP3P (ignored when water_model: TIP4P) ----
   # TIP4P always uses lj/cut/tip4p/long/opt.
@@ -224,7 +246,9 @@ ces2:
   # LJ parameters: type_label -> {epsilon [kcal/mol], sigma [Angstrom]}
   # Defaults live in species_db/forcefields/lj_forcefield.yaml, auto-selected by
   # water_model (water + Joung-Cheatham ions + hydroxide + common sets).
-  # Add entries here only if you need to override that DB or add new types.
+  # For a distinct LAMMPS type with the same LJ physics, set lj_type_label on
+  # the atom in its species YAML (e.g. type_label: Na_frac, lj_type_label: Na).
+  # Add entries here only for an intentional per-build numeric override.
   # lj_params:
   #   Ow:  { epsilon: 0.16275, sigma: 3.16435 }  # TIP4P-EW (already default)
   #   K:   { epsilon: 0.27946510, sigma: 2.83306 } # JC2008 TIP4P-Ew (already default)

@@ -10,6 +10,14 @@ Required
   - xyz: [x,y,z] in Angstrom (used by PACKMOL as rigid template)
 
 Optional
+- `forcefield_set`: model identity for species with model-specific geometry or
+  charges (for example `hydroxide_bonthuis2016`). Active hydroxide species must
+  match `ces2.hydroxide_model`; mismatches fail before PACKMOL.
+- atom fields:
+  - lj_type_label: LJ alias (string). The atom keeps its own
+    `type_label`/LAMMPS type ID but inherits epsilon/sigma from the referenced
+    label in the active water-model force-field set. A matching `ces2.lj_params`
+    entry for the atom's own `type_label` overrides the inherited values.
 - charge_scheme:
   - explicit_or_zero (default): null charges -> 0.0
   - uniform_from_net_charge: distribute remaining (net_charge - sum(explicit)) uniformly over null entries
@@ -39,8 +47,14 @@ Resolution for a given `ces2.water_model` (later sets win on label collisions,
 but labels are normally disjoint):
 
 ```
-always_sets  +  water_set  +  ion_set  +  hydroxide_set  +  ces2.lj_params (config override)
+always_sets  +  water_set  +  ion_set  +  hydroxide_set
+    → species atom lj_type_label aliases
+    → ces2.lj_params overrides
 ```
+
+`lj_type_label` is resolved against the merged active water-model table. It is
+therefore preferable to copying numeric parameters when a distinct LAMMPS type
+should track an existing physical type across TIP4P/TIP3P/SPC/E variants.
 
 ## Top-level keys
 
@@ -57,6 +71,17 @@ always_sets  +  water_set  +  ion_set  +  hydroxide_set  +  ces2.lj_params (conf
   Keys are upper-case (`TIP4P`, `TIP3P`, `SPCE`, `TIP3PEW`). A `water_model` with
   no entry falls back to the `TIP3P` entry (with a warning).
 - `sets`: map `set_name → { source?, note?, params: { type_label: {epsilon, sigma} } }`.
+  The force-field database owns LJ values only. Like the separate water YAMLs,
+  each hydroxide species YAML owns its geometry, bond `r0`, atom charges, and
+  molecular `net_charge`; these values are not overwritten at runtime.
+
+Official hydroxide species are separated by model:
+
+- `OH_minus.yaml` (default Bonthuis model)
+- `OH_minus_frac.yaml` (default Bonthuis chemostat type)
+- `OH_minus_tip4p2005.yaml`
+
+There is intentionally no `OH_minus_tip4p2005_frac.yaml`.
 
 ## Example
 
@@ -71,7 +96,7 @@ water_models:
   TIP4P:
     water_set:     water_tip4p_ew
     ion_set:       jc2008_tip4p_ew
-    hydroxide_set: hydroxide_tip4p2005
+    hydroxide_set: hydroxide_bonthuis2016
 
 sets:
   jc2008_tip4p_ew:
@@ -79,8 +104,13 @@ sets:
     params:
       Li: { epsilon: 0.10398840, sigma: 1.43969 }
       # ...
+  hydroxide_bonthuis2016:
+    source: "Bonthuis et al., JCP 144, 104503 (2016)"
+    params:
+      O_oh: { epsilon: 0.01195, sigma: 3.8100 }
+      H_oh: { epsilon: 0.0, sigma: 1.0 }
+
   hydroxide_tip4p2005:
-    source: "de Lucas et al., JPCL 15, 9411 (2024)"
     params:
       O_oh: { epsilon: 0.05996, sigma: 3.4000 }
       H_oh: { epsilon: 0.04396, sigma: 1.4430 }
@@ -90,11 +120,15 @@ sets:
 
 - **New ion / generic atom**: add its `type_label` to the relevant `ion_set`
   (per water-model column) or to `common`.
-- **Swap a force-field family per category**: point a `water_models[...]` entry's
-  `*_set` at a different set name (e.g. a `hydroxide_bonthuis2016` set), or add a
-  new set and reference it. Sets are reusable across water models.
+- **Swap a force-field family per category**: set
+  `ces2.hydroxide_model: tip4p2005`, point a `water_models[...]` entry's
+  `*_set` at a different set name, or add a new set and reference it. Sets are
+  reusable across water models. `auto` follows the water-model mapping.
 - **One-off per-build tweak**: prefer `ces2.lj_params` in config — it overrides
   this DB by `type_label` without editing the shared file.
+- **Distinct type ID, same LJ physics**: set a new `type_label` plus
+  `lj_type_label: <existing-label>` in the species atom. Do not duplicate the
+  active model's numeric epsilon/sigma in the run config.
 
 Notes
 - `type_label`s here MUST match the labels used in the species YAML files

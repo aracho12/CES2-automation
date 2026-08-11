@@ -11,6 +11,9 @@ class AtomDef:
     charge: Optional[float]
     xyz: Tuple[float, float, float]
     bjdisp: Optional[Dict[str, float]] = None  # {alpha_iso, C6, s} or None
+    # Optional LJ alias: keep a distinct LAMMPS type_label while inheriting
+    # epsilon/sigma from another label in the active water-model FF database.
+    lj_type_label: Optional[str] = None
 
 @dataclass
 class Species:
@@ -24,6 +27,9 @@ class Species:
     # optional: coeffs for reference-style blocks
     bond_coeffs: Dict[int, Tuple[float, float]]  # k, r0
     angle_coeffs: Dict[int, Tuple[float, float]] # k, theta0
+    # Optional model tag for species whose geometry/charges depend on a
+    # force-field set (currently hydroxide_*).
+    forcefield_set: Optional[str] = None
 
     @property
     def natoms(self) -> int:
@@ -39,12 +45,16 @@ def load_species_yaml(path: str | Path) -> Species:
     sid = str(y["id"])
     name = str(y.get("name", sid))
     netq = float(y.get("net_charge", 0.0))
+    forcefield_set_raw = y.get("forcefield_set")
+    forcefield_set = str(forcefield_set_raw) if forcefield_set_raw is not None else None
 
     atoms_raw = y["atoms"]
     atoms: List[AtomDef] = []
     for a in atoms_raw:
         element = str(a["element"])
         type_label = str(a.get("type_label", element))
+        lj_type_label_raw = a.get("lj_type_label", None)
+        lj_type_label = str(lj_type_label_raw) if lj_type_label_raw is not None else None
         charge = a.get("charge", None)
         if charge is not None:
             charge = float(charge)
@@ -54,7 +64,14 @@ def load_species_yaml(path: str | Path) -> Species:
         bjdisp: Optional[Dict[str, float]] = None
         if isinstance(bjdisp_raw, dict):
             bjdisp = {k: float(v) for k, v in bjdisp_raw.items()}
-        atoms.append(AtomDef(element=element, type_label=type_label, charge=charge, xyz=(float(x), float(yy), float(z)), bjdisp=bjdisp))
+        atoms.append(AtomDef(
+            element=element,
+            type_label=type_label,
+            charge=charge,
+            xyz=(float(x), float(yy), float(z)),
+            bjdisp=bjdisp,
+            lj_type_label=lj_type_label,
+        ))
 
     # charge completion
     scheme = y.get("charge_scheme", "explicit_or_zero")
@@ -98,7 +115,8 @@ def load_species_yaml(path: str | Path) -> Species:
     return Species(
         id=sid, name=name, net_charge=netq,
         atoms=atoms, bonds=bonds, angles=angles,
-        bond_coeffs=bond_coeffs, angle_coeffs=angle_coeffs
+        bond_coeffs=bond_coeffs, angle_coeffs=angle_coeffs,
+        forcefield_set=forcefield_set,
     )
 
 def load_species_db(db_dir: str | Path) -> Dict[str, Species]:
@@ -110,3 +128,43 @@ def load_species_db(db_dir: str | Path) -> Dict[str, Species]:
     if not out:
         raise FileNotFoundError(f"No species YAML found in {d}")
     return out
+
+
+def validate_hydroxide_species_models(
+    counts: Dict[str, int],
+    species_db: Dict[str, Species],
+    selected_set: str,
+) -> Optional[float]:
+    """Validate active OH species and return their common YAML bond length."""
+    mismatches: List[Tuple[str, str]] = []
+    bond_lengths: set[float] = set()
+    for sid, count in counts.items():
+        if int(count) <= 0:
+            continue
+        sp = species_db[sid]
+        if sp.forcefield_set is None or not sp.forcefield_set.startswith("hydroxide_"):
+            continue
+        if sp.forcefield_set != selected_set:
+            mismatches.append((sid, sp.forcefield_set))
+            continue
+        for bond_type, i, j in sp.bonds:
+            ai, aj = sp.atoms[i - 1], sp.atoms[j - 1]
+            li = ai.lj_type_label or ai.type_label
+            lj = aj.lj_type_label or aj.type_label
+            if {li, lj} == {"O_oh", "H_oh"}:
+                if bond_type not in sp.bond_coeffs:
+                    raise KeyError(
+                        f"Species '{sid}' O_oh-H_oh bond type {bond_type} has no bond_coeff"
+                    )
+                bond_lengths.add(float(sp.bond_coeffs[bond_type][1]))
+    if mismatches:
+        details = ", ".join(f"{sid} ({model})" for sid, model in mismatches)
+        raise ValueError(
+            f"ces2.hydroxide_model selected '{selected_set}', but active species "
+            f"use a different model: {details}. Select matching species YAML IDs."
+        )
+    if len(bond_lengths) > 1:
+        raise ValueError(
+            f"Active hydroxide species have inconsistent bond lengths: {sorted(bond_lengths)}"
+        )
+    return next(iter(bond_lengths), None)

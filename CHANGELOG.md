@@ -7,6 +7,90 @@ Each entry includes the modified file, the exact diff, and the reason.
 
 ## [Unreleased]
 
+### Model-specific OH- bond lengths
+
+**What:** Added `ces2.hydroxide_model` (`auto`, `bonthuis2016`, or
+`tip4p2005`) for selecting the matching hydroxide LJ set. Geometry, bond `r0`,
+atom charges, and molecular `net_charge` reside in separate model-specific
+species YAMLs and are not overwritten at runtime.
+
+`OH_minus_tip4p2005.yaml` contains the published corrected-Hirshfeld charges
+(`O_oh = -1.0727 e`, `H_oh = +0.2227 e`, net −0.85 e) and 0.98 Å bond;
+the Bonthuis YAMLs contain integer charges and the 1.00 Å bond.
+
+**Defaults/references:** `hydroxide_bonthuis2016` uses 1.00 Å and
+`hydroxide_tip4p2005` uses 0.98 Å. `auto` preserves the existing water-model
+mapping, which currently selects Bonthuis for all supported water models.
+
+**Compatibility:** The static OH species YAML now contains the default 1.00 Å
+geometry. Existing configs without `hydroxide_model` behave as `auto`, which
+currently retains the integer charges in the OH species YAML. Selecting the
+charge-scaled TIP4P/2005 model requires matching +0.85 e counterions.
+
+**Separate species files:** `OH_minus.yaml` and `OH_minus_frac.yaml` remain the
+canonical default Bonthuis species. Added `OH_minus_tip4p2005.yaml` with its own
+model geometry and charges. A TIP4P/2005 `_frac` species is intentionally not
+provided. `forcefield_set` metadata prevents an active OH species from being
+used with the wrong selected hydroxide set.
+
+### Species-level LJ aliases for distinct LAMMPS types
+
+**What:** Species atoms may now define `lj_type_label`. The atom retains its
+distinct `type_label` and LAMMPS type ID while inheriting epsilon/sigma from the
+referenced label in the active water-model force-field set. Config-level
+`ces2.lj_params` overrides remain highest priority. The chemostat `_frac`
+species now alias their regular Na/OH counterparts.
+
+**Why:** Chemostat types must be distinguishable by LAMMPS type ID but should
+not require duplicated, water-model-specific LJ values in every run config.
+
+**Docs/config:** Updated `config_example.yaml`, README, `species_db/SCHEMA.md`,
+and the force-field database header to document the same precedence: active
+model defaults → `lj_type_label` → `ces2.lj_params`.
+
+### Preserve `extras` order in PACKMOL and MM atom types
+
+**What:** When `electrolyte_recipe.packmol_order` is omitted, active species
+listed in `extras` now follow water in declaration order. Remaining active
+salt/counterion species are appended alphabetically. Explicit `packmol_order`
+continues to take precedence.
+
+**Why:** Users can create multiple species/type variants and control their
+PACKMOL and LAMMPS type order directly through the already ordered `extras`
+list, without maintaining a duplicate `packmol_order` list.
+
+### Electrode-first or electrode-last LAMMPS atom types and atom IDs
+
+**What:** Added `ces2.electrode_type_position`, accepting `first` or `last`.
+The default `last` preserves the historical MM-first type-ID and atom-ID order.
+`first` assigns alphabetically sorted electrode/QM type labels first and writes
+the electrode/QM atoms before the MM atoms. MM bond/angle indices, QM/MM lists,
+MD relaxation groups, and CES2 scripts are updated consistently. The selected
+mapping and explicit QM/MM atom-ID ranges are saved in `build_summary.json`.
+
+The bundled Bonthuis, fractional Bonthuis, and TIP4P/2005 hydroxide species now
+declare H before O, making each OH⁻ molecule's atom IDs follow the same H→O
+order as its atom-type ordering while preserving geometry, charges, and bonds.
+
+**Why:** Some downstream LAMMPS workflows require electrode atom types to occupy
+the first type IDs, while existing CES2 inputs expect them at the end.
+
+The trajectory-conversion and water-orientation tools now document that water
+type IDs depend on this setting and should be detected from the generated
+LAMMPS input instead of assumed globally.
+
+### Correct Joung-Cheatham TIP3P and SPC/E ion values
+
+**What:** Corrected the TIP3P and SPC/E ion entries in
+`species_db/forcefields/lj_forcefield.yaml` against the Joung-Cheatham 2008
+parameter columns. This fixes several values that were rounded from, copied
+from, or mixed with a different water-model column. Representative values are
+covered by regression tests.
+
+**Impact:** Builds using TIP3P or SPC/E now receive the intended matching ion
+LJ parameters. TIP4P-Ew values and the documented TIP3P fallback for TIP3P-Ew
+are unchanged.
+
 ### `builder/main.py` — pin total box-z via `electrolyte_box.box_z_total`
 
 **What:** New optional `electrolyte_box.box_z_total` key. When set, the builder
@@ -415,15 +499,15 @@ JC SPC/E values added (from Joung-Cheatham 2008 SPC/E column):
 
 ```python
 _LJ_IONS_JC_SPCE = {
-    "Li":  (0.3367050, 1.40880),
-    "Na":  (0.3526418, 2.15952),
+    "Li":  (0.3367344, 1.40940),
+    "Na":  (0.3526418, 2.15954),
     "K":   (0.4297054, 2.83840),
-    "Rb":  (0.4451081, 3.04509),
-    "Cs":  (0.0898565, 3.83159),
-    "F":   (0.0074005, 4.10219),
+    "Rb":  (0.4451036, 3.09498),
+    "Cs":  (0.0898565, 3.60101),
+    "F":   (0.0074005, 4.02152),
     "Cl":  (0.0127850, 4.83045),
-    "Br":  (0.0269586, 4.90412),
-    "I":   (0.0427845, 5.20892),
+    "Br":  (0.0269586, 4.90172),
+    "I":   (0.0427845, 5.20107),
 }
 ```
 
@@ -440,7 +524,7 @@ the closest fallback (documented in code).
 | `water_model` | water-O LJ | Na+ LJ | Cl- LJ |
 |---|---|---|---|
 | TIP4P    | (0.16275, 3.16435) | JC TIP4P-Ew (0.168, 2.184) | JC TIP4P-Ew (0.012, 4.918) |
-| TIP3P    | (0.15210, 3.15070) | JC TIP3P    (0.353, 2.160) | JC TIP3P    (0.720, 4.417) |
+| TIP3P    | (0.15210, 3.15070) | JC TIP3P    (0.087, 2.439) | JC TIP3P    (0.036, 4.478) |
 | SPCE     | (0.15530, 3.16600) | JC SPC/E    (0.353, 2.160) | JC SPC/E    (0.013, 4.830) |
 | TIP3PEW  | (0.10200, 3.18800) | JC TIP3P fallback          | JC TIP3P fallback          |
 

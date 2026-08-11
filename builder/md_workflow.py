@@ -15,6 +15,18 @@ class MDOutputs:
     in_relax_equil: str
 
 
+def _qm_atom_range_from_summary(summary: Dict) -> tuple[Optional[int], Optional[int]]:
+    """Read the explicit QM ID range, with compatibility for older summaries."""
+    explicit = summary.get("qm_atom_id_range")
+    if isinstance(explicit, (list, tuple)) and len(explicit) == 2:
+        return int(explicit[0]), int(explicit[1])
+    n_mm = int(summary.get("n_mm", 0))
+    n_qm = int(summary.get("n_qm", 0))
+    if n_mm > 0 and n_qm > 0:
+        return n_mm + 1, n_mm + n_qm
+    return None, None
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Part 1 — in.relax_min:  soft pushoff  →  CG minimize  →  write_dump
 # Three-stage split: min → heat → equil  (one `run` per LAMMPS process)
@@ -551,11 +563,7 @@ def generate_md_bundle(
     if summary_path.exists():
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            n_mm = int(summary.get("n_mm", 0))
-            n_qm = int(summary.get("n_qm", 0))
-            if n_mm > 0 and n_qm > 0:
-                qm_lo = n_mm + 1
-                qm_hi = n_mm + n_qm
+            qm_lo, qm_hi = _qm_atom_range_from_summary(summary)
             box_info = summary.get("box", {})
             # Upper wall: top of electrolyte + 5 Å
             z_el_hi = box_info.get("z_el_hi")

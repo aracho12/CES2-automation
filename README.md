@@ -191,7 +191,7 @@ CES2-automation/
 │   ├── water_tip4p.yaml         # TIP4P water (recommended for CES2)
 │   ├── water_tip3p.yaml         # TIP3P water
 │   ├── K_plus.yaml, Na_plus.yaml, ...  # Cation species
-│   ├── Cl_minus.yaml, OH_minus.yaml, ... # Anion species
+│   ├── Cl_minus.yaml, OH_minus.yaml, OH_minus_tip4p2005.yaml, ... # Anions
 │   ├── TMA_plus.yaml, H3O_plus.yaml     # Polyatomic species
 │   ├── forcefields/
 │   │   └── lj_forcefield.yaml   # LJ (eps,sigma) DB: water/ion/hydroxide/common sets
@@ -204,7 +204,8 @@ CES2-automation/
 
 **Available species in `species_db/`:**
 Cations: `K_plus`, `Na_plus`, `Li_plus`, `Cs_plus`, `H3O_plus`, `TMA_plus`.
-Anions: `Cl_minus`, `F_minus`, `Br_minus`, `I_minus`, `OH_minus`, `CO3_2minus`, `NO3_minus`, `SO4_2minus`.
+Anions: `Cl_minus`, `F_minus`, `Br_minus`, `I_minus`, `OH_minus` (default
+Bonthuis), `OH_minus_tip4p2005`, `CO3_2minus`, `NO3_minus`, `SO4_2minus`.
 Water: `water_tip4p`, `water_tip3p`.
 
 ---
@@ -282,7 +283,8 @@ electrolyte_recipe:
     #   concentration_M: 0.2
     #   stoich: { "TMA_plus": 1, "Cl_minus": 1 }
 
-  # Extra explicit species (added on top of salt-derived counts)
+  # Extra explicit species (added on top of salt-derived counts).
+  # Their declaration order controls the default PACKMOL/type order after water.
   extras: []
   # - species_id: "OH_minus"
   #   count: 5
@@ -299,6 +301,12 @@ electrolyte_recipe:
 ```
 
 **How salt counts are calculated:** The builder converts `concentration_M` to molecule counts using the volume estimated from `water.count` and `water.density_g_per_ml`. Each formula unit generates `stoich[species_id] × n_units` molecules.
+
+Unless `packmol_order` is explicitly set, species are ordered as water first,
+then active `extras` in their declaration order, followed by any remaining
+salt- or counterion-derived species alphabetically. This same species order is
+used when assigning MM atom type IDs. An explicit `packmol_order` continues to
+override the automatic order.
 
 ---
 
@@ -397,6 +405,8 @@ electrolyte_box:
 ```yaml
 ces2:
   water_model: TIP4P             # TIP4P (default, TIP4P-EW) or TIP3P
+  hydroxide_model: auto          # auto/Bonthuis: 1.00 Å; tip4p2005: 0.98 Å
+  electrode_type_position: last  # last (default): MM first; first: electrode/QM first
   lj_cutoff: 15.0                # [Å] real-space LJ cutoff
   coulomb_cutoff: 15.0           # [Å] real-space Coulomb cutoff
   kspace_accuracy: 1.0e-4        # PPPM relative accuracy
@@ -415,6 +425,8 @@ ces2:
   # LJ parameter overrides: type_label → {epsilon [kcal/mol], sigma [Å]}
   # Defaults come from species_db/forcefields/lj_forcefield.yaml, selected by
   # water_model (water + Joung-Cheatham ion column + hydroxide set + common).
+  # For a distinct type ID with inherited LJ physics, use lj_type_label in the
+  # species YAML. Entries below are intentional per-build numeric overrides.
   # Entries here override that DB by type_label for this build only.
   # lj_params:
   #   MyAtom: { epsilon: 0.200, sigma: 3.500 }
@@ -432,6 +444,21 @@ ces2:
     shake_iter: 20
     shake_maxiter: 500
 ```
+
+`electrode_type_position` controls both LAMMPS type IDs and atom ID blocks in
+the `Atoms` section. With `last` (the default), MM atoms/types are assigned
+first and electrode/QM atoms/types follow. With `first`, electrode/QM atoms
+and types start at ID 1 and MM atoms/types follow. Bonds and angles, QM/MM ID
+lists, MD relaxation groups, and generated CES2 scripts follow the selected
+atom ordering. Electrode labels retain alphabetical
+order internally, while MM labels retain the configured species order and the
+water H-before-O convention. The resolved mapping is printed during the build
+and written to `build_summary.json` as `atom_type_registry`; explicit QM/MM
+atom ID ranges are recorded there as well.
+
+Within each molecule, atom IDs follow the `atoms` declaration in its species
+YAML. The supplied hydroxide species use H-before-O ordering, so every OH⁻
+molecule is written as `H_oh` then `O_oh` (and likewise for `_frac`).
 
 ---
 
@@ -566,15 +593,40 @@ All MM Lennard-Jones `(epsilon, sigma)` values live in
 `species_db/forcefields/lj_forcefield.yaml` (see `species_db/SCHEMA.md`). For the
 active `ces2.water_model` the writer merges the referenced sets —
 `always_sets` (generic C/N/P/S) + `water_set` + `ion_set` + `hydroxide_set` — into
-the per-`type_label` table, then applies any `ces2.lj_params` overrides. Pairs are
-combined with Lorentz-Berthelot mixing.
+the per-`type_label` table. Species `lj_type_label` aliases are materialized
+from that active table, then any `ces2.lj_params` overrides are applied. Pairs
+are combined with Lorentz-Berthelot mixing.
+
+The effective priority is active water-model sets → species `lj_type_label`
+aliases → `ces2.lj_params`.
 
 - **Ions**: Joung-Cheatham 2008, one parameter column per water model
   (`TIP4P` → TIP4P-Ew column, `SPCE` → SPC/E, `TIP3P`/`TIP3PEW` → TIP3P).
-- **Hydroxide** (`O_oh`/`H_oh`): a dedicated set — `hydroxide_tip4p2005`
-  (de Lucas 2024) for TIP4P, `hydroxide_bonthuis2016` otherwise. This replaced an
-  earlier approximation that borrowed the water-oxygen LJ for `O_oh`, which
-  over-bound cations such as Li⁺.
+- **Hydroxide** (`O_oh`/`H_oh`): all current water-model mappings use the
+  dedicated `hydroxide_bonthuis2016` set. The database also contains
+  `hydroxide_tip4p2005` as an available alternative, but it is not selected by
+  default. This replaced an earlier approximation that borrowed the
+  water-oxygen LJ for `O_oh`, which over-bound cations such as Li⁺.
+- `ces2.hydroxide_model` selects the hydroxide LJ set independently
+  of the water-model mapping (`auto`, `bonthuis2016`, or `tip4p2005`). Its
+  LJ parameters come from the force-field database; geometry, bond `r0`, atom
+  charges, and molecular `net_charge` come directly from the matching species
+  YAML. The reference values are 1.00 Å and −1.0 e for Bonthuis/FNB, and
+  0.98 Å with O/H charges −1.0727/+0.2227 e (net −0.85 e) for TIP4P/2005.
+  Because the latter is a charge-scaled Madrid-2019 model, its counterions
+  should likewise use +0.85 e rather than the default integer charges.
+
+Hydroxide models use separate species files, like the water models:
+
+| Model | Regular species ID | Fractional/chemostat species ID |
+|---|---|---|
+| Bonthuis 2016 (default) | `OH_minus` | `OH_minus_frac` |
+| TIP4P/2005 | `OH_minus_tip4p2005` | not provided |
+
+The selected `ces2.hydroxide_model` must match the `forcefield_set` declared by
+every active OH species. A mismatch is rejected before PACKMOL instead of
+silently converting one model's YAML into another. `OH_minus` and
+`OH_minus_frac` are the canonical default Bonthuis species.
 - An unknown `water_model` falls back to the `TIP3P` sets (with a warning).
 
 ### Gridforce/net convention
@@ -613,7 +665,15 @@ atoms:
       s: 1.40
 ```
 
-For polyatomic species, add `connectivity` and `coeffs` sections (see `SCHEMA.md` and existing species like `water_tip4p.yaml` or `OH_minus.yaml`).
+For polyatomic species, add `connectivity` and `coeffs` sections (see
+`SCHEMA.md` and existing species such as `water_tip4p.yaml` or
+`OH_minus.yaml`).
+
+To create a distinct LAMMPS atom type that uses an existing type's LJ
+parameters, set `lj_type_label` on the atom. For example,
+`type_label: Na_frac` with `lj_type_label: Na` receives its own type ID while
+tracking the Na parameters selected by the active water model. Explicit
+`ces2.lj_params.Na_frac` values still override this alias.
 
 ---
 

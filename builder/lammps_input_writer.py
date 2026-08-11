@@ -47,6 +47,7 @@ import yaml
 
 from .bjdisp_db import load_all, build_bjdisp_table, BjdispParams
 from .species import Species
+from .forcefield_db import resolve_hydroxide_set_name, resolve_water_model_entry
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +57,8 @@ from .species import Species
 # source of truth).  For a given ces2.water_model the loader merges the
 # referenced parameter sets:
 #     always_sets  +  water_set  +  ion_set  +  hydroxide_set
-# Per-type overrides are still applied afterwards via ces2.lj_params.
+# Species-level lj_type_label aliases are materialized next, and per-type
+# overrides are applied last via ces2.lj_params.
 # ---------------------------------------------------------------------------
 
 # Default location: <package>/species_db/forcefields/lj_forcefield.yaml
@@ -64,10 +66,6 @@ _DEFAULT_LJ_FORCEFIELD = (
     Path(__file__).resolve().parent.parent
     / "species_db" / "forcefields" / "lj_forcefield.yaml"
 )
-# water_model used when the requested one has no entry in the YAML.
-_LJ_WATER_MODEL_FALLBACK = "TIP3P"
-
-
 @lru_cache(maxsize=8)
 def _load_lj_yaml(path_str: str) -> Dict[str, Any]:
     p = Path(path_str)
@@ -82,6 +80,7 @@ def _load_lj_yaml(path_str: str) -> Dict[str, Any]:
 def _build_lj_defaults(
     water_model: str,
     lj_forcefield_path: Optional[Path] = None,
+    hydroxide_model: Optional[str] = None,
 ) -> Dict[str, Tuple[float, float]]:
     """Merge the LJ sets referenced by ``water_model`` into a flat label→(eps,sigma) dict.
 
@@ -95,20 +94,14 @@ def _build_lj_defaults(
     always     = data.get("always_sets", []) or []
 
     wm = water_model.upper()
-    entry = wmodels.get(wm)
-    if entry is None:
-        entry = wmodels.get(_LJ_WATER_MODEL_FALLBACK)
-        if entry is None:
-            raise KeyError(
-                f"water_model '{wm}' not in {path} and no "
-                f"'{_LJ_WATER_MODEL_FALLBACK}' fallback entry present"
-            )
-        print(f"[lammps_input_writer] water_model '{wm}' not in LJ DB; "
-              f"using '{_LJ_WATER_MODEL_FALLBACK}' sets")
+    entry = resolve_water_model_entry(data, wm, source=path)
 
+    hydroxide_set = resolve_hydroxide_set_name(
+        data, water_model, hydroxide_model, source=path
+    )
     set_names = list(always) + [
-        entry[k] for k in ("water_set", "ion_set", "hydroxide_set") if entry.get(k)
-    ]
+        entry[k] for k in ("water_set", "ion_set") if entry.get(k)
+    ] + [hydroxide_set]
 
     merged: Dict[str, Tuple[float, float]] = {}
     for sname in set_names:
@@ -129,6 +122,39 @@ def _lb_mix(eps_i: float, sig_i: float, eps_j: float, sig_j: float) -> Tuple[flo
 
 def _get_lj(label: str, lj_db: Dict[str, Tuple[float, float]]) -> Tuple[float, float]:
     return lj_db.get(label, (0.0, 1.0))
+
+
+def _apply_lj_type_aliases(
+    lj_db: Dict[str, Tuple[float, float]],
+    species_order: List[Tuple[str, int]],
+    species_db: Dict[str, "Species"],
+) -> None:
+    """Materialize per-atom ``lj_type_label`` aliases in the active LJ DB.
+
+    Aliases are applied before ``ces2.lj_params`` overrides, so a config-level
+    value for the distinct type_label remains authoritative.
+    """
+    aliases: Dict[str, str] = {}
+    for sid, _ in species_order:
+        for atom in species_db[sid].atoms:
+            source = atom.lj_type_label
+            if source is None:
+                continue
+            previous = aliases.get(atom.type_label)
+            if previous is not None and previous != source:
+                raise ValueError(
+                    f"Conflicting lj_type_label aliases for '{atom.type_label}': "
+                    f"'{previous}' and '{source}'"
+                )
+            aliases[atom.type_label] = source
+
+    for target, source in aliases.items():
+        if source not in lj_db:
+            raise KeyError(
+                f"LJ alias for type_label '{target}' references unknown "
+                f"lj_type_label '{source}'"
+            )
+        lj_db[target] = lj_db[source]
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +215,10 @@ def generate_lammps_input(
     #  LJ parameter DB  (YAML defaults + user overrides)
     #  water LJ + matching JC ion column auto-selected from water_model.
     # ------------------------------------------------------------------ #
-    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model, lj_forcefield_path)
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(
+        water_model, lj_forcefield_path, ces2_cfg.get("hydroxide_model")
+    )
+    _apply_lj_type_aliases(lj_db, species_order, species_db)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 
@@ -858,7 +887,10 @@ def collect_relax_ff_params(
     tip4p_msite = float(ces2_cfg.get("tip4p_msite", 0.125))
 
     # ---- LJ database (water + matching JC ions auto-picked from water_model) ----
-    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(water_model, lj_forcefield_path)
+    lj_db: Dict[str, Tuple[float, float]] = _build_lj_defaults(
+        water_model, lj_forcefield_path, ces2_cfg.get("hydroxide_model")
+    )
+    _apply_lj_type_aliases(lj_db, species_order, species_db)
     for lbl, vals in ces2_cfg.get("lj_params", {}).items():
         lj_db[lbl] = (float(vals["epsilon"]), float(vals["sigma"]))
 

@@ -8,10 +8,17 @@ import time
 from ase.io import read, write
 
 from .config import load_config
-from .species import load_species_db
+from .species import (
+    load_species_db,
+    validate_hydroxide_species_models,
+)
+from .forcefield_db import load_forcefield_db, resolve_hydroxide_set_name
 from .vasp_io import read_structure, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
 from .box import compute_box_meta
-from .composition import water_volume_L, auto_water_count, counts_from_salts, compute_total_charge, adjust_with_counterions
+from .composition import (
+    water_volume_L, auto_water_count, counts_from_salts, resolve_packmol_order,
+    compute_total_charge, adjust_with_counterions,
+)
 from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
 from .builder import (
     write_species_xyz, make_type_registry, assign_mm_types_charges_by_order,
@@ -192,6 +199,15 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings: Dict[str, float] = {}
 
     cfg = load_config(config_path).raw
+    _electrode_type_position = str(
+        cfg.get("ces2", {}).get("electrode_type_position", "last")
+    ).strip().lower()
+    if _electrode_type_position not in {"first", "last"}:
+        raise ValueError(
+            "ces2.electrode_type_position must be 'first' or 'last', "
+            f"got '{_electrode_type_position}'"
+        )
+
     workdir = Path(cfg.get("project", {}).get("workdir","./")).resolve()
     workdir_exists_before = workdir.exists()
     seed = int(cfg.get("project", {}).get("seed", 1234))
@@ -234,6 +250,16 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     _emit_config_path_warnings(cfg, workdir, species_db_path, input_path=_vasp_path)
 
     species_db = load_species_db(species_db_path)
+    _ff_path = species_db_path / "forcefields" / "lj_forcefield.yaml"
+    _ces2_cfg = cfg.get("ces2", {}) or {}
+    _ff_data = load_forcefield_db(_ff_path)
+    _hydroxide_set = resolve_hydroxide_set_name(
+        _ff_data,
+        str(_ces2_cfg.get("water_model", "TIP4P")),
+        _ces2_cfg.get("hydroxide_model"),
+        source=_ff_path,
+    )
+    _oh_bond_length = None
     timings["species_db_load"] = time.perf_counter() - t0
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
 
@@ -322,6 +348,10 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         n = int(ex["count"])
         counts[sid] = counts.get(sid, 0) + n
 
+    _oh_bond_length = validate_hydroxide_species_models(
+        counts, species_db, _hydroxide_set
+    )
+
     # charge control
     q_electrode = float(cfg.get("charge_control", {}).get("q_electrode_user_value", 0.0))
     q_target = float(cfg.get("charge_control", {}).get("q_target_total", 0.0))
@@ -368,11 +398,14 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     neutral_excl = float(z_excl.get("neutral_A", 2.0))
 
     species_order: List[Tuple[str,int]] = []
-    # packmol order: water first, then everything else sorted for reproducibility
-    # (you can override by giving explicit packmol_order in recipe)
-    order = recipe.get("packmol_order", None)
-    if order is None:
-        order = [water_sid] + sorted([sid for sid in counts.keys() if sid != water_sid])
+    # Default: water, then extras in declaration order, then remaining active
+    # species sorted for reproducibility. Explicit packmol_order overrides it.
+    order = resolve_packmol_order(
+        counts,
+        water_sid,
+        extras=recipe.get("extras", []),
+        explicit_order=recipe.get("packmol_order"),
+    )
 
     for sid in order:
         n = int(counts.get(sid, 0))
@@ -441,8 +474,12 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     t0 = time.perf_counter()
     mm = read(mm_xyz.as_posix())
     n_mm = len(mm)
+    n_qm = len(slab_sc)
 
-    combined = mm + slab_sc
+    if _electrode_type_position == "first":
+        combined = slab_sc + mm
+    else:
+        combined = mm + slab_sc
     cell = slab_sc.cell.copy()
     cell[2,2] = box.z_el_hi
     combined.set_cell(cell)
@@ -574,13 +611,19 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         _extra_label_to_element[_lbl] = _slab_syms[_sc_idx]
 
     species_ids_in_order = [sid for sid,_ in species_order]
-    type_id_by_label, label_by_type_id = make_type_registry(species_ids_in_order, species_db, slab_type_labels)
+    type_id_by_label, label_by_type_id = make_type_registry(
+        species_ids_in_order,
+        species_db,
+        slab_type_labels,
+        electrode_type_position=_electrode_type_position,
+    )
+    print(
+        f"[types] electrode_type_position={_electrode_type_position}: "
+        + ", ".join(f"{tid}={label_by_type_id[tid]}" for tid in sorted(label_by_type_id))
+    )
 
     # assign MM types/charges by order
     mm_types, mm_charges, mm_slices = assign_mm_types_charges_by_order(mm, species_order, species_db, type_id_by_label)
-
-    # connectivity
-    bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(mm_slices, species_db)
 
     # slab types/charges
     slab_types = [type_id_by_label[lbl] for lbl in slab_type_labels]
@@ -647,8 +690,23 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
           f"mpc_layer={charged_params['mpc_layer']:.4f} bohr, "
           f"plate_pos={charged_params['plate_pos']:.6f}")
 
-    atom_types = mm_types + slab_types
-    charges = mm_charges + slab_charges
+    if _electrode_type_position == "first":
+        atom_types = slab_types + mm_types
+        charges = slab_charges + mm_charges
+        qm_ids = list(range(1, n_qm + 1))
+        mm_ids = list(range(n_qm + 1, n_qm + n_mm + 1))
+        mm_atom_id_offset = n_qm
+    else:
+        atom_types = mm_types + slab_types
+        charges = mm_charges + slab_charges
+        mm_ids = list(range(1, n_mm + 1))
+        qm_ids = list(range(n_mm + 1, n_mm + n_qm + 1))
+        mm_atom_id_offset = 0
+
+    # MM connectivity must follow the same atom-ID block order.
+    bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(
+        mm_slices, species_db, atom_id_offset=mm_atom_id_offset
+    )
 
     # masses by type
     masses_by_type = masses_by_type_from_labels(label_by_type_id, type_id_by_label, species_db,
@@ -675,10 +733,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings["write_data_file"] = time.perf_counter() - t0
     print(f"[TIMING] write_data_file: {timings['write_data_file']:.3f} s")
 
-    # QM/MM lists (QM=slab)
+    # QM/MM lists (QM=slab); IDs follow electrode_type_position.
     t0 = time.perf_counter()
-    qm_ids = list(range(n_mm+1, len(combined)+1))
-    mm_ids = list(range(1, n_mm+1))
     (export_dir/"qm_atoms.txt").write_text("\n".join(map(str,qm_ids))+"\n", encoding="utf-8")
     (export_dir/"mm_atoms.txt").write_text("\n".join(map(str,mm_ids))+"\n", encoding="utf-8")
     timings["qm_mm_lists"] = time.perf_counter() - t0
@@ -755,12 +811,12 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # Generate qmmm wrapper + SLURM submit scripts
     t0 = time.perf_counter()
-    n_qm = len(slab_sc)
     generate_ces2_scripts(
         export_dir=export_dir,
         cfg=cfg,
         n_mm=n_mm,
         n_qm=n_qm,
+        electrode_atom_position=_electrode_type_position,
         species_order=species_order,
         species_db=species_db,
         water_sid=water_sid,
@@ -784,6 +840,20 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         "n_bonds": len(bonds),
         "n_angles": len(angles),
         "n_atom_types": max(atom_types) if atom_types else 0,
+        "electrode_type_position": _electrode_type_position,
+        "electrode_atom_position": _electrode_type_position,
+        "qm_atom_id_range": [qm_ids[0], qm_ids[-1]] if qm_ids else None,
+        "mm_atom_id_range": [mm_ids[0], mm_ids[-1]] if mm_ids else None,
+        "hydroxide_set": _hydroxide_set,
+        "hydroxide_oh_bond_length_A": _oh_bond_length,
+        "atom_type_registry": [
+            {
+                "type_id": tid,
+                "type_label": label_by_type_id[tid],
+                "element": type_id_to_element[tid],
+            }
+            for tid in sorted(label_by_type_id)
+        ],
         "packmol": {
             "converged":  pmol.converged,
             "obj_final":  pmol.obj_final,

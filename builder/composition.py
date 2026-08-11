@@ -50,6 +50,38 @@ def counts_from_salts(V_L: float, salts: List[dict]) -> Dict[str, int]:
             out[sid] = out.get(sid, 0) + int(coeff) * n_units
     return out
 
+
+def resolve_packmol_order(counts: Dict[str, int],
+                          water_sid: str,
+                          extras: List[dict] | None = None,
+                          explicit_order: List[str] | None = None) -> List[str]:
+    """Resolve the species order used by PACKMOL and the atom-type registry.
+
+    An explicit ``packmol_order`` remains authoritative. Otherwise water is
+    first, active species named in ``extras`` follow in declaration order, and
+    all remaining active species are appended alphabetically. Repeated species
+    IDs are emitted only once.
+    """
+    if explicit_order is not None:
+        return list(explicit_order)
+
+    active = {sid for sid, count in counts.items() if int(count) > 0}
+    order: List[str] = []
+    seen = set()
+
+    def add(sid: str) -> None:
+        if sid in active and sid not in seen:
+            order.append(sid)
+            seen.add(sid)
+
+    add(water_sid)
+    for extra in extras or []:
+        add(str(extra["species_id"]))
+    for sid in sorted(active):
+        add(sid)
+
+    return order
+
 def compute_total_charge(counts: Dict[str,int], net_charge_by_species: Dict[str,float], q_electrode: float) -> float:
     q = float(q_electrode)
     for sid, n in counts.items():

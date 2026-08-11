@@ -51,14 +51,15 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from ase.io.trajectory import Trajectory
 
 # ---------------------------------------------------------------------------
-# Default type→element mapping for CES2 system.
-# Only water types (1: Hw, 2: Ow) are fixed across all systems.
+# Default type→element mapping for legacy/default electrode-last CES2 systems.
+# For electrode_type_position=first, provide/retain the generated in.lammps so
+# auto-detection can recover the actual mapping, or pass --type-map explicitly.
 # Types 3+ depend on the electrolyte recipe and are auto-detected from
 # in.lammps. If in.lammps is unavailable, unknown types appear as "X".
 # ---------------------------------------------------------------------------
 DEFAULT_TYPE_MAP = {
-    1: "H",   # Hw (water H) — always type 1
-    2: "O",   # Ow (water O) — always type 2
+    1: "H",   # Hw (water H) with the default electrode-last ordering
+    2: "O",   # Ow (water O) with the default electrode-last ordering
 }
 
 
