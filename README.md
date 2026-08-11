@@ -456,6 +456,10 @@ water H-before-O convention. The resolved mapping is printed during the build
 and written to `build_summary.json` as `atom_type_registry`; explicit QM/MM
 atom ID ranges are recorded there as well.
 
+Within each molecule, atom IDs follow the `atoms` declaration in its species
+YAML. The supplied hydroxide species use H-before-O ordering, so every OH⁻
+molecule is written as `H_oh` then `O_oh` (and likewise for `_frac`).
+
 ---
 
 ### `qe` — Quantum ESPRESSO settings

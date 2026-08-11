@@ -18,8 +18,8 @@ FF_PATH = SPECIES_DIR / "forcefields" / "lj_forcefield.yaml"
 @pytest.mark.parametrize(
     ("model", "expected_length", "expected_oxygen_lj", "expected_charges"),
     [
-        ("bonthuis2016", 1.00, (0.01195, 3.81), (-1.0, 0.0)),
-        ("tip4p2005", 0.98, (0.05996, 3.40), (-1.0727, 0.2227)),
+        ("bonthuis2016", 1.00, (0.01195, 3.81), (0.0, -1.0)),
+        ("tip4p2005", 0.98, (0.05996, 3.40), (0.2227, -1.0727)),
     ],
 )
 def test_hydroxide_model_species_owns_geometry_charge_and_matching_lj(
@@ -43,7 +43,8 @@ def test_hydroxide_model_species_owns_geometry_charge_and_matching_lj(
     }[model]
     for sid in expected_species:
         sp = species[sid]
-        assert sp.atoms[1].xyz[2] - sp.atoms[0].xyz[2] == pytest.approx(expected_length)
+        assert [atom.element for atom in sp.atoms] == ["H", "O"]
+        assert abs(sp.atoms[1].xyz[2] - sp.atoms[0].xyz[2]) == pytest.approx(expected_length)
         assert sp.bond_coeffs[2][1] == pytest.approx(expected_length)
         assert tuple(atom.charge for atom in sp.atoms) == pytest.approx(expected_charges)
         assert sp.net_charge == pytest.approx(sum(expected_charges))

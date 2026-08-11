@@ -68,6 +68,10 @@ the electrode/QM atoms before the MM atoms. MM bond/angle indices, QM/MM lists,
 MD relaxation groups, and CES2 scripts are updated consistently. The selected
 mapping and explicit QM/MM atom-ID ranges are saved in `build_summary.json`.
 
+The bundled Bonthuis, fractional Bonthuis, and TIP4P/2005 hydroxide species now
+declare H before O, making each OH⁻ molecule's atom IDs follow the same H→O
+order as its atom-type ordering while preserving geometry, charges, and bonds.
+
 **Why:** Some downstream LAMMPS workflows require electrode atom types to occupy
 the first type IDs, while existing CES2 inputs expect them at the end.
 
