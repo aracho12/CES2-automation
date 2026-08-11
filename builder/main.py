@@ -474,8 +474,12 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     t0 = time.perf_counter()
     mm = read(mm_xyz.as_posix())
     n_mm = len(mm)
+    n_qm = len(slab_sc)
 
-    combined = mm + slab_sc
+    if _electrode_type_position == "first":
+        combined = slab_sc + mm
+    else:
+        combined = mm + slab_sc
     cell = slab_sc.cell.copy()
     cell[2,2] = box.z_el_hi
     combined.set_cell(cell)
@@ -621,9 +625,6 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     # assign MM types/charges by order
     mm_types, mm_charges, mm_slices = assign_mm_types_charges_by_order(mm, species_order, species_db, type_id_by_label)
 
-    # connectivity
-    bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(mm_slices, species_db)
-
     # slab types/charges
     slab_types = [type_id_by_label[lbl] for lbl in slab_type_labels]
 
@@ -689,8 +690,23 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
           f"mpc_layer={charged_params['mpc_layer']:.4f} bohr, "
           f"plate_pos={charged_params['plate_pos']:.6f}")
 
-    atom_types = mm_types + slab_types
-    charges = mm_charges + slab_charges
+    if _electrode_type_position == "first":
+        atom_types = slab_types + mm_types
+        charges = slab_charges + mm_charges
+        qm_ids = list(range(1, n_qm + 1))
+        mm_ids = list(range(n_qm + 1, n_qm + n_mm + 1))
+        mm_atom_id_offset = n_qm
+    else:
+        atom_types = mm_types + slab_types
+        charges = mm_charges + slab_charges
+        mm_ids = list(range(1, n_mm + 1))
+        qm_ids = list(range(n_mm + 1, n_mm + n_qm + 1))
+        mm_atom_id_offset = 0
+
+    # MM connectivity must follow the same atom-ID block order.
+    bonds, angles, bond_coeffs, angle_coeffs = build_mm_connectivity(
+        mm_slices, species_db, atom_id_offset=mm_atom_id_offset
+    )
 
     # masses by type
     masses_by_type = masses_by_type_from_labels(label_by_type_id, type_id_by_label, species_db,
@@ -717,10 +733,8 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings["write_data_file"] = time.perf_counter() - t0
     print(f"[TIMING] write_data_file: {timings['write_data_file']:.3f} s")
 
-    # QM/MM lists (QM=slab)
+    # QM/MM lists (QM=slab); IDs follow electrode_type_position.
     t0 = time.perf_counter()
-    qm_ids = list(range(n_mm+1, len(combined)+1))
-    mm_ids = list(range(1, n_mm+1))
     (export_dir/"qm_atoms.txt").write_text("\n".join(map(str,qm_ids))+"\n", encoding="utf-8")
     (export_dir/"mm_atoms.txt").write_text("\n".join(map(str,mm_ids))+"\n", encoding="utf-8")
     timings["qm_mm_lists"] = time.perf_counter() - t0
@@ -797,12 +811,12 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
 
     # Generate qmmm wrapper + SLURM submit scripts
     t0 = time.perf_counter()
-    n_qm = len(slab_sc)
     generate_ces2_scripts(
         export_dir=export_dir,
         cfg=cfg,
         n_mm=n_mm,
         n_qm=n_qm,
+        electrode_atom_position=_electrode_type_position,
         species_order=species_order,
         species_db=species_db,
         water_sid=water_sid,
@@ -827,6 +841,9 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         "n_angles": len(angles),
         "n_atom_types": max(atom_types) if atom_types else 0,
         "electrode_type_position": _electrode_type_position,
+        "electrode_atom_position": _electrode_type_position,
+        "qm_atom_id_range": [qm_ids[0], qm_ids[-1]] if qm_ids else None,
+        "mm_atom_id_range": [mm_ids[0], mm_ids[-1]] if mm_ids else None,
         "hydroxide_set": _hydroxide_set,
         "hydroxide_oh_bond_length_A": _oh_bond_length,
         "atom_type_registry": [

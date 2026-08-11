@@ -139,10 +139,13 @@ def assign_mm_types_charges_by_order(mm_atoms: Atoms,
     return types, charges, slices
 
 def build_mm_connectivity(mm_slices: List[Tuple[str,int,int]],
-                          species_db: Dict[str, Species]) -> Tuple[List[Tuple[int,int,int]], List[Tuple[int,int,int,int]],
+                          species_db: Dict[str, Species],
+                          atom_id_offset: int = 0) -> Tuple[List[Tuple[int,int,int]], List[Tuple[int,int,int,int]],
                                                                    Dict[int,Tuple[float,float]], Dict[int,Tuple[float,float]]]:
     """
-    Generate global bonds/angles (1-based indices) for MM atoms by shifting species-local connectivity.
+    Generate global bonds/angles (1-based indices) for MM atoms by shifting
+    species-local connectivity. ``atom_id_offset`` reserves leading atom IDs,
+    for example when the electrode/QM block is written before the MM block.
     Also aggregates bond/angle coeffs (max of provided; later you can override by FF system).
     """
     bonds: List[Tuple[int,int,int]] = []
@@ -160,13 +163,13 @@ def build_mm_connectivity(mm_slices: List[Tuple[str,int,int]],
             angle_coeffs.setdefault(at, (k,th))
         # connectivity
         for bt,i,j in sp.bonds:
-            gi = offset + (i-1) + 1  # to 1-based global
-            gj = offset + (j-1) + 1
+            gi = atom_id_offset + offset + (i-1) + 1  # to 1-based global
+            gj = atom_id_offset + offset + (j-1) + 1
             bonds.append((bt, gi, gj))
         for at,i,j,k in sp.angles:
-            gi = offset + (i-1) + 1
-            gj = offset + (j-1) + 1
-            gk = offset + (k-1) + 1
+            gi = atom_id_offset + offset + (i-1) + 1
+            gj = atom_id_offset + offset + (j-1) + 1
+            gk = atom_id_offset + offset + (k-1) + 1
             angles.append((at, gi, gj, gk))
 
     return bonds, angles, bond_coeffs, angle_coeffs

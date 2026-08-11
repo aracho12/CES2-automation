@@ -288,6 +288,7 @@ def generate_ces2_scripts(
     cfg: Dict[str, Any],
     n_mm: int,
     n_qm: int,
+    electrode_atom_position: str = "last",
     species_order: Optional[List[Tuple[str, Any]]] = None,
     species_db:    Optional[Dict[str, Any]]         = None,
     water_sid:     Optional[str]                    = None,
@@ -309,6 +310,7 @@ def generate_ces2_scripts(
     cfg                 : full config dict
     n_mm                : number of MM atoms (= NSOLVATOM)
     n_qm                : number of QM atoms in supercell
+    electrode_atom_position : whether QM atom IDs occupy the first or last block
     species_order       : [(species_id, count), …] in LAMMPS ordering
     species_db          : loaded species database
     water_sid           : water species_id (e.g. "water_tip4p")
@@ -320,6 +322,13 @@ def generate_ces2_scripts(
     ces2_cfg = cfg.get("ces2",        {})
     qe_cfg   = cfg.get("qe",          {})
     cell_cfg = cfg.get("cell",        {})
+    electrode_atom_position = str(electrode_atom_position).strip().lower()
+    if electrode_atom_position not in {"first", "last"}:
+        raise ValueError("electrode_atom_position must be 'first' or 'last'")
+    if electrode_atom_position == "first":
+        qm_atom_lo, qm_atom_hi = 1, n_qm
+    else:
+        qm_atom_lo, qm_atom_hi = n_mm + 1, n_mm + n_qm
 
     # ── binary paths ──────────────────────────────────────────────────────
     dft_ces2_path  = str(sc_cfg.get("dft_ces2_path",   "/path/to/dft-ces2"))
@@ -405,7 +414,7 @@ def generate_ces2_scripts(
     # Derive c_rho hat cube names from output cube filenames (strips .cube, prepends c_rho_)
     # e.g. hydrogen.cube → c_rho_hydrogen.cube, o_oh.cube → c_rho_o_oh.cube
     cube_qm_rho_hat = [
-        "c_rho_" + f.removesuffix(".cube") + ".cube"
+        "c_rho_" + (f[:-5] if f.endswith(".cube") else f) + ".cube"
         for f in mm_cube_output
     ]
     # TIP4P O gets c_rep_ naming via the special Blur_QM path (standard)
@@ -483,6 +492,8 @@ def generate_ces2_scripts(
         L("QMLMPTYPE=(FILL_IN_QM_TYPE_IDS) # type atom type index of QM system defined in LAMMPS data")
 
     L(f'NSOLVATOM="{n_mm}" # no. of MM (solvent) atoms')
+    L(f'QMATOMLO="{qm_atom_lo}" # first QM atom ID')
+    L(f'QMATOMHI="{qm_atom_hi}" # last QM atom ID')
     L(f"MMpartialCharge=({' '.join(mm_charges)})")
     L(f"MMrepA=({' '.join(mm_elements)})")
     L("unit_LAMMPS2QE=0.001686594 # Ry/a.u. to kcal/mol Angs = 592.9107")
@@ -685,14 +696,13 @@ def generate_ces2_scripts(
     L()
     L("  # Parsing solute xyz")
     L("  # Parsing dispersion force xyz")
-    L("  awk -v nsolvatom=$NSOLVATOM '{if(NF==10 && $1>nsolvatom) print $0}' $LAMMPSDATA > data.solute.temp")
+    L("  awk -v lo=$QMATOMLO -v hi=$QMATOMHI '{if(NF==10 && $1>=lo && $1<=hi) print $0}' $LAMMPSDATA > data.solute.temp")
     L("  if [ ! -s \"data.solute.temp\" ]; then")
     L("    echo \"Error: File $filename is empty. Make sure that NF=10 in Atoms section\\n\"")
     L("    exit 1")
     L("  fi ")
-    L("  forloopend=$((NSOLVATOM+nqm_extend))")
-    L("  for ((i=${NSOLVATOM}; i<${forloopend}; i++));do")
-    L("      awk -v var=$i '{if($1==var+1) print $0}' data.solute.temp >> data.solute.temp2")
+    L("  for ((i=${QMATOMLO}; i<=${QMATOMHI}; i++));do")
+    L("      awk -v var=$i '{if($1==var) print $0}' data.solute.temp >> data.solute.temp2")
     L("  done")
     L("  if [ ! -s dispf.ave ]; then")
     L("        for ((i=0; i<$nqm_extend; i++));do")

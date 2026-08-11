@@ -205,9 +205,9 @@ ces2:
   # matching species YAML; tip4p2005 uses -1.0727/+0.2227 e (net -0.85 e).
   hydroxide_model: auto
 
-  # Position of electrode/QM slab atom types in the LAMMPS type-ID registry.
-  # "last" preserves the historical order: MM types first, electrode types last.
-  # "first" assigns electrode types from ID 1, followed by MM types.
+  # Position of electrode/QM slab atom types and atom IDs in the LAMMPS data file.
+  # "last" preserves the historical order: MM first, electrode/QM last.
+  # "first" writes electrode/QM first, followed by MM atoms.
   # Types within the electrode remain sorted alphabetically by type_label.
   electrode_type_position: last
 

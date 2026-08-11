@@ -59,12 +59,14 @@ continues to take precedence.
 PACKMOL and LAMMPS type order directly through the already ordered `extras`
 list, without maintaining a duplicate `packmol_order` list.
 
-### Electrode-first or electrode-last LAMMPS atom types
+### Electrode-first or electrode-last LAMMPS atom types and atom IDs
 
 **What:** Added `ces2.electrode_type_position`, accepting `first` or `last`.
-The default `last` preserves the historical MM-first type-ID order. `first`
-assigns alphabetically sorted electrode/QM labels before the existing MM label
-sequence. The selected mapping is printed and saved in `build_summary.json`.
+The default `last` preserves the historical MM-first type-ID and atom-ID order.
+`first` assigns alphabetically sorted electrode/QM type labels first and writes
+the electrode/QM atoms before the MM atoms. MM bond/angle indices, QM/MM lists,
+MD relaxation groups, and CES2 scripts are updated consistently. The selected
+mapping and explicit QM/MM atom-ID ranges are saved in `build_summary.json`.
 
 **Why:** Some downstream LAMMPS workflows require electrode atom types to occupy
 the first type IDs, while existing CES2 inputs expect them at the end.

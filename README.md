@@ -445,13 +445,16 @@ ces2:
     shake_maxiter: 500
 ```
 
-`electrode_type_position` controls only LAMMPS type IDs; it does not reorder
-atom coordinates in the `Atoms` section. With `last` (the default), MM types
-are assigned first and electrode/QM types follow. With `first`, electrode/QM
-types start at ID 1 and MM types follow. Electrode labels retain alphabetical
+`electrode_type_position` controls both LAMMPS type IDs and atom ID blocks in
+the `Atoms` section. With `last` (the default), MM atoms/types are assigned
+first and electrode/QM atoms/types follow. With `first`, electrode/QM atoms
+and types start at ID 1 and MM atoms/types follow. Bonds and angles, QM/MM ID
+lists, MD relaxation groups, and generated CES2 scripts follow the selected
+atom ordering. Electrode labels retain alphabetical
 order internally, while MM labels retain the configured species order and the
 water H-before-O convention. The resolved mapping is printed during the build
-and written to `build_summary.json` as `atom_type_registry`.
+and written to `build_summary.json` as `atom_type_registry`; explicit QM/MM
+atom ID ranges are recorded there as well.
 
 ---
 
