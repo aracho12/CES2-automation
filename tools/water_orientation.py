@@ -170,9 +170,9 @@ def detect_water_types(lammps_input: Path) -> Tuple[Set[int], Set[int]]:
     """
     Detect water oxygen/proton LAMMPS types from generated CES2 group lines.
 
-    Preferred generated form:
-      group    OXYGEN   type 2   # Ow (water O)
-      group    PROTON   type 1   # Hw (water H)
+    Preferred generated form (IDs vary with electrode_type_position):
+      group    OXYGEN   type N   # Ow (water O)
+      group    PROTON   type M   # Hw (water H)
     """
     water_o: Set[int] = set()
     water_h: Set[int] = set()

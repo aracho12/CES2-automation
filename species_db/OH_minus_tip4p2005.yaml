@@ -1,0 +1,29 @@
+id: OH_minus_tip4p2005
+name: Hydroxide_TIP4P2005
+forcefield_set: hydroxide_tip4p2005
+net_charge: -0.85
+charge_scheme: explicit_or_zero
+atoms:
+  - element: O
+    type_label: O_oh
+    charge: -1.0727
+    xyz: [0.000000, 0.000000, 0.000000]
+    bjdisp:
+      alpha_iso: 5.582
+      C6: 176.375
+      s: 1.40
+
+  - element: H
+    type_label: H_oh
+    charge: 0.2227
+    xyz: [0.000000, 0.000000, 0.980000]
+    bjdisp:
+      alpha_iso: 6.424
+      C6: 42.716
+      s: 0.53
+connectivity:
+  bonds:
+    - [2, 1, 2]
+coeffs:
+  bond_coeffs:
+    2: [450.0, 0.98]

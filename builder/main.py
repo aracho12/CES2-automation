@@ -8,10 +8,17 @@ import time
 from ase.io import read, write
 
 from .config import load_config
-from .species import load_species_db
+from .species import (
+    load_species_db,
+    validate_hydroxide_species_models,
+)
+from .forcefield_db import load_forcefield_db, resolve_hydroxide_set_name
 from .vasp_io import read_structure, write_vasp, write_xyz, make_supercell, is_orthogonal_cell
 from .box import compute_box_meta
-from .composition import water_volume_L, auto_water_count, counts_from_salts, compute_total_charge, adjust_with_counterions
+from .composition import (
+    water_volume_L, auto_water_count, counts_from_salts, resolve_packmol_order,
+    compute_total_charge, adjust_with_counterions,
+)
 from .packmol import PackmolJob, StructureReq, write_packmol_input, run_packmol
 from .builder import (
     write_species_xyz, make_type_registry, assign_mm_types_charges_by_order,
@@ -192,6 +199,15 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     timings: Dict[str, float] = {}
 
     cfg = load_config(config_path).raw
+    _electrode_type_position = str(
+        cfg.get("ces2", {}).get("electrode_type_position", "last")
+    ).strip().lower()
+    if _electrode_type_position not in {"first", "last"}:
+        raise ValueError(
+            "ces2.electrode_type_position must be 'first' or 'last', "
+            f"got '{_electrode_type_position}'"
+        )
+
     workdir = Path(cfg.get("project", {}).get("workdir","./")).resolve()
     workdir_exists_before = workdir.exists()
     seed = int(cfg.get("project", {}).get("seed", 1234))
@@ -234,6 +250,16 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     _emit_config_path_warnings(cfg, workdir, species_db_path, input_path=_vasp_path)
 
     species_db = load_species_db(species_db_path)
+    _ff_path = species_db_path / "forcefields" / "lj_forcefield.yaml"
+    _ces2_cfg = cfg.get("ces2", {}) or {}
+    _ff_data = load_forcefield_db(_ff_path)
+    _hydroxide_set = resolve_hydroxide_set_name(
+        _ff_data,
+        str(_ces2_cfg.get("water_model", "TIP4P")),
+        _ces2_cfg.get("hydroxide_model"),
+        source=_ff_path,
+    )
+    _oh_bond_length = None
     timings["species_db_load"] = time.perf_counter() - t0
     print(f"[TIMING] species_db_load: {timings['species_db_load']:.3f} s")
 
@@ -322,6 +348,10 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         n = int(ex["count"])
         counts[sid] = counts.get(sid, 0) + n
 
+    _oh_bond_length = validate_hydroxide_species_models(
+        counts, species_db, _hydroxide_set
+    )
+
     # charge control
     q_electrode = float(cfg.get("charge_control", {}).get("q_electrode_user_value", 0.0))
     q_target = float(cfg.get("charge_control", {}).get("q_target_total", 0.0))
@@ -368,11 +398,14 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
     neutral_excl = float(z_excl.get("neutral_A", 2.0))
 
     species_order: List[Tuple[str,int]] = []
-    # packmol order: water first, then everything else sorted for reproducibility
-    # (you can override by giving explicit packmol_order in recipe)
-    order = recipe.get("packmol_order", None)
-    if order is None:
-        order = [water_sid] + sorted([sid for sid in counts.keys() if sid != water_sid])
+    # Default: water, then extras in declaration order, then remaining active
+    # species sorted for reproducibility. Explicit packmol_order overrides it.
+    order = resolve_packmol_order(
+        counts,
+        water_sid,
+        extras=recipe.get("extras", []),
+        explicit_order=recipe.get("packmol_order"),
+    )
 
     for sid in order:
         n = int(counts.get(sid, 0))
@@ -574,7 +607,16 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         _extra_label_to_element[_lbl] = _slab_syms[_sc_idx]
 
     species_ids_in_order = [sid for sid,_ in species_order]
-    type_id_by_label, label_by_type_id = make_type_registry(species_ids_in_order, species_db, slab_type_labels)
+    type_id_by_label, label_by_type_id = make_type_registry(
+        species_ids_in_order,
+        species_db,
+        slab_type_labels,
+        electrode_type_position=_electrode_type_position,
+    )
+    print(
+        f"[types] electrode_type_position={_electrode_type_position}: "
+        + ", ".join(f"{tid}={label_by_type_id[tid]}" for tid in sorted(label_by_type_id))
+    )
 
     # assign MM types/charges by order
     mm_types, mm_charges, mm_slices = assign_mm_types_charges_by_order(mm, species_order, species_db, type_id_by_label)
@@ -784,6 +826,17 @@ def run(config_path: str | Path, vasp_file: str | Path | None = None) -> Dict:
         "n_bonds": len(bonds),
         "n_angles": len(angles),
         "n_atom_types": max(atom_types) if atom_types else 0,
+        "electrode_type_position": _electrode_type_position,
+        "hydroxide_set": _hydroxide_set,
+        "hydroxide_oh_bond_length_A": _oh_bond_length,
+        "atom_type_registry": [
+            {
+                "type_id": tid,
+                "type_label": label_by_type_id[tid],
+                "element": type_id_to_element[tid],
+            }
+            for tid in sorted(label_by_type_id)
+        ],
         "packmol": {
             "converged":  pmol.converged,
             "obj_final":  pmol.obj_final,

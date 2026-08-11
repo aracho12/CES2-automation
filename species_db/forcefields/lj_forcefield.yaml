@@ -7,7 +7,7 @@ schema_version: 1
 #
 # Resolution order for a given ces2.water_model (later wins):
 #   fallback  <  always_sets  <  water_set  <  ion_set  <  hydroxide_set
-#   <  ces2.lj_params (per-type override in config.yaml)
+#   <  species atom lj_type_label alias  <  ces2.lj_params override
 # type_labels across these sets are disjoint, so order only matters vs override.
 
 units:
@@ -91,28 +91,28 @@ sets:
   jc2008_tip3p:
     source: "Joung & Cheatham, JPCB 112, 9020 (2008), TIP3P column"
     params:
-      Li: { epsilon: 0.0279,    sigma: 1.8250 }
-      Na: { epsilon: 0.3526418, sigma: 2.1600 }
-      K:  { epsilon: 0.4184,    sigma: 3.3330 }
-      Rb: { epsilon: 0.4748,    sigma: 3.6560 }
-      Cs: { epsilon: 0.5000,    sigma: 4.1430 }
-      F:  { epsilon: 0.7530,    sigma: 3.1180 }
-      Cl: { epsilon: 0.7200,    sigma: 4.4170 }
-      Br: { epsilon: 0.7150,    sigma: 4.8370 }
-      I:  { epsilon: 0.6130,    sigma: 5.4000 }
+      Li: { epsilon: 0.0279896,  sigma: 1.82634 }
+      Na: { epsilon: 0.0874393,  sigma: 2.43928 }
+      K:  { epsilon: 0.1936829,  sigma: 3.03796 }
+      Rb: { epsilon: 0.3278219,  sigma: 3.23040 }
+      Cs: { epsilon: 0.4065394,  sigma: 3.52083 }
+      F:  { epsilon: 0.0033640,  sigma: 4.10348 }
+      Cl: { epsilon: 0.0355910,  sigma: 4.47766 }
+      Br: { epsilon: 0.0586554,  sigma: 4.64693 }
+      I:  { epsilon: 0.0536816,  sigma: 5.09594 }
 
   jc2008_spce:
     source: "Joung & Cheatham, JPCB 112, 9020 (2008), SPC/E column"
     params:
-      Li: { epsilon: 0.3367050, sigma: 1.40880 }
-      Na: { epsilon: 0.3526418, sigma: 2.15952 }
+      Li: { epsilon: 0.3367344, sigma: 1.40940 }
+      Na: { epsilon: 0.3526418, sigma: 2.15954 }
       K:  { epsilon: 0.4297054, sigma: 2.83840 }
-      Rb: { epsilon: 0.4451081, sigma: 3.04509 }
-      Cs: { epsilon: 0.0898565, sigma: 3.83159 }
-      F:  { epsilon: 0.0074005, sigma: 4.10219 }
+      Rb: { epsilon: 0.4451036, sigma: 3.09498 }
+      Cs: { epsilon: 0.0898565, sigma: 3.60101 }
+      F:  { epsilon: 0.0074005, sigma: 4.02152 }
       Cl: { epsilon: 0.0127850, sigma: 4.83045 }
-      Br: { epsilon: 0.0269586, sigma: 4.90412 }
-      I:  { epsilon: 0.0427845, sigma: 5.20892 }
+      Br: { epsilon: 0.0269586, sigma: 4.90172 }
+      I:  { epsilon: 0.0427845, sigma: 5.20107 }
 
   # ───────────────────────── hydroxide ─────────────────────────
   # Dedicated OH- LJ (replaces the old "borrow active water-O" approximation,

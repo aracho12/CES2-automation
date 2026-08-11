@@ -42,14 +42,27 @@ def write_species_xyz(path: Path, sp: Species) -> None:
         lines.append(f"{a.element}  {x:.6f}  {y:.6f}  {z:.6f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-def make_type_registry(species_order: List[str], species_db: Dict[str, Species], slab_elements: List[str]) -> Tuple[Dict[str,int], Dict[int,str]]:
+def make_type_registry(
+    species_order: List[str],
+    species_db: Dict[str, Species],
+    slab_elements: List[str],
+    electrode_type_position: str = "last",
+) -> Tuple[Dict[str,int], Dict[int,str]]:
     """
     Create stable type ids:
-      - iterate species_order, then within species atoms in order, assign by atom.type_label
-      - then slab elements (alphabetical) as type_label = element symbol
+      - MM labels follow species_order, with H then O prioritized within a species
+      - electrode/slab labels are alphabetical
+      - electrode_type_position selects whether electrode labels are assigned first or last
     Returns:
       type_id_by_label, label_by_type_id
     """
+    electrode_type_position = str(electrode_type_position).strip().lower()
+    if electrode_type_position not in {"first", "last"}:
+        raise ValueError(
+            "ces2.electrode_type_position must be 'first' or 'last', "
+            f"got '{electrode_type_position}'"
+        )
+
     type_id_by_label: Dict[str,int] = {}
     label_by_type_id: Dict[int,str] = {}
     next_id = 1
@@ -63,24 +76,33 @@ def make_type_registry(species_order: List[str], species_db: Dict[str, Species],
 
     # MM types: iterate species in the given order, but within each species
     # we optionally prioritize hydrogen-like labels first, then oxygen-like,
-    # then everything else. This ensures, e.g., for TIP3P water that H is
-    # type 1, O is type 2, and any additional MM atom types (ions, organics)
-    # follow as 3, 4, ... while QM slab elements are appended afterwards.
+    # then everything else. With electrode_type_position="last", this ensures,
+    # e.g. for TIP3P water that H is type 1 and O is type 2. With "first", the
+    # same MM-relative order is retained after the electrode types.
     element_priority = {
         "H": 0,
         "O": 1,
     }
 
-    for sid in species_order:
-        sp = species_db[sid]
-        # Stable sort: by (priority, original_index)
-        indexed_atoms = list(enumerate(sp.atoms))
-        indexed_atoms.sort(key=lambda t: (element_priority.get(t[1].element, 10), t[0]))
-        for _, a in indexed_atoms:
-            add_label(a.type_label)
+    def add_mm_labels() -> None:
+        for sid in species_order:
+            sp = species_db[sid]
+            # Stable sort: by (priority, original_index)
+            indexed_atoms = list(enumerate(sp.atoms))
+            indexed_atoms.sort(key=lambda t: (element_priority.get(t[1].element, 10), t[0]))
+            for _, a in indexed_atoms:
+                add_label(a.type_label)
 
-    for el in sorted(set(slab_elements)):
-        add_label(el)
+    def add_electrode_labels() -> None:
+        for label in sorted(set(slab_elements)):
+            add_label(label)
+
+    if electrode_type_position == "first":
+        add_electrode_labels()
+        add_mm_labels()
+    else:
+        add_mm_labels()
+        add_electrode_labels()
 
     return type_id_by_label, label_by_type_id
 
