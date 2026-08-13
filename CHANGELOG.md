@@ -641,3 +641,18 @@ block that lists the auto-detected formats, both supported config keys
 **Why:** Surfaces the new format-detection behaviour and the
 `structure_file` / `format` keys in the example so users discover them
 without reading the source.
+
+## 2026-08-13
+- `tools/ces2_preflight.sh`: read-only pre-submit audit for export dirs.
+  Catches (a) machine-profile contamination — driver binaries/pseudo_dir
+  existence on the current host, NP vs scheduler allocation, scheduler-type
+  mismatch (foreign #PBS/#SBATCH template); (b) charge three-consistency
+  (TOTCHG vs data.file ion imbalance vs electrode `set group top charge`,
+  MMrepA-derived type map); (c) state sanity — INISTEP/FINSTEP/initialqm
+  traps, qm_0 reference archive, continuation c_rho ensemble, restart
+  presence + mtime-vs-timestep ordering (rsync-scrambled mtimes fool the
+  driver's mtime-latest fallback), charged-run SCF seed 3-file set.
+  Exit 0/1/2 = pass/warn/fail. Motivated by a production near-miss: a
+  fresh build whose config carried another server's machine profile
+  (NP=256, /home01 binaries+pseudo) passed a charge-focused audit and
+  reached the queue; the script fails it with 8 errors.
