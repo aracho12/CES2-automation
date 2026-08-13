@@ -24,3 +24,5 @@ builder and tools. Written for people running DFT-CES2 for the first time.
 | [05 — Monitoring & restart](05-monitoring-and-restart.md) | Reading `qmmm.out`, restart files, `ces2_resubmit.sh`, common crashes |
 | [06 — Analysis tools](06-analysis-tools.md) | The `tools/` scripts: work function, z-density, RDF, water orientation, … |
 | [Glossary](glossary.md) | SAW potential, blur, PZC, ortho vs. non-ortho, and other jargon |
+- [07 — Server profiles & migration (nurion↔tars)](07-server-profiles-and-migration.md)
+- [08 — New charge state / clone checklist](08-new-charge-state-checklist.md)
