@@ -111,6 +111,7 @@ def scan_segment(trj: Path, cat_t: int, ow_t: int, hw_t: int,
     """Parse one lammpstrj ONCE -> npz cache. Returns dict of arrays.
 
     Cached: timesteps[F], box_z[2], cat[F,Nc,3], ow[F,No,3], hw[F,Nh,3],
+            ooh[F,Noh,3] (solution OH- oxygens, type 5),
             slab_top_z (scalar; slab is frozen in the MM run), box_xy[2].
     """
     cache = trj.with_suffix(trj.suffix + ".multi.npz")
@@ -123,6 +124,8 @@ def scan_segment(trj: Path, cat_t: int, ow_t: int, hw_t: int,
     cat_f: List[np.ndarray] = []
     ow_f: List[np.ndarray] = []
     hw_f: List[np.ndarray] = []
+    ooh_f: List[np.ndarray] = []          # solution OH- oxygens (type 5)
+    OOH_T = 5
     slab_top = None
     box_xy = box_z = None
 
@@ -153,6 +156,7 @@ def scan_segment(trj: Path, cat_t: int, ow_t: int, hw_t: int,
             cat_f.append(xyz[types == cat_t])
             ow_f.append(xyz[types == ow_t])
             hw_f.append(xyz[types == hw_t])
+            ooh_f.append(xyz[types == OOH_T])
             if slab_top is None:
                 m = np.isin(types, slab_types)
                 slab_top = float(xyz[m][:, 2].max()) if m.any() else float(zlo)
@@ -163,6 +167,7 @@ def scan_segment(trj: Path, cat_t: int, ow_t: int, hw_t: int,
         "cat": np.stack(cat_f).astype(np.float32),
         "ow": np.stack(ow_f).astype(np.float32),
         "hw": np.stack(hw_f).astype(np.float32),
+        "ooh": np.stack(ooh_f).astype(np.float32),
         "slab_top_z": np.float64(slab_top),
         "box_xy": box_xy.astype(np.float64),
         "box_z": box_z.astype(np.float64),

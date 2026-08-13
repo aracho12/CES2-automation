@@ -41,7 +41,22 @@ CUBE = "total_pot_ortho.cube"
 QM_RE = re.compile(r"^qm_(\d+)$")          # canonical only (skips *.prev*, *_ref)
 PHI_RE = re.compile(r"Work function.*=\s*([-\d.]+)\s*eV")
 SHE_RE = re.compile(r"U vs SHE \[4\.44 V\]\s*=\s*([+\-\d.]+)")
-CAT_COLORS = {"Li": "#1f77b4", "Na": "#2ca02c", "K": "#ff7f0e", "Cs": "#d62728"}
+
+# --- figure formatting convention (2026-08-07, project standard) ---
+import matplotlib as _mpl
+_mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "Liberation Sans",
+                        "Nimbus Sans", "DejaVu Sans"],
+    "axes.spines.top": False, "axes.spines.right": True,   # dual-axis: right spine stays
+    "axes.labelsize": 14, "xtick.labelsize": 12, "ytick.labelsize": 12,
+    "xtick.major.size": 6.0, "ytick.major.size": 6.0,
+    "xtick.minor.size": 3.5, "ytick.minor.size": 3.5,
+    "xtick.major.width": 1.0, "ytick.major.width": 1.0,
+    "xtick.minor.width": 0.8, "ytick.minor.width": 0.8,
+})
+
+CAT_COLORS = {"Li": "#CA4420", "Na": "#EDAF3C", "K": "#419395", "Cs": "#15389D"}
 
 
 def parse_wfout(text: str):
@@ -157,9 +172,16 @@ def main():
         dlab = {"vrhe": r"$\Delta$V$_{\mathrm{RHE}}$ (V)",
                 "phi": r"$\Delta\Phi$ (eV)",
                 "vshe": r"$\Delta$V$_{\mathrm{SHE}}$ (V)"}[args.metric]
-        fig, axes = plt.subplots(1, len(qvals),
-                                 figsize=(5.0 * len(qvals), 4.4), squeeze=False)
-        for ax, q in zip(axes[0], qvals):
+        # layout: up to 3 panels in one row; 4+ wraps into 2 columns (e.g. 2x2)
+        ncol = len(qvals) if len(qvals) <= 3 else (len(qvals) + 1) // 2
+        nrow = -(-len(qvals) // ncol)
+        fig, axes = plt.subplots(nrow, ncol,
+                                 figsize=(max(5.0 * ncol, 8.0), 4.4 * nrow),
+                                 squeeze=False)
+        flat = [a for row in axes for a in row]
+        for a in flat[len(qvals):]:
+            a.set_visible(False)
+        for ax, q in zip(flat, qvals):
             ax2 = ax.twinx()
             ax2.axhspan(-0.05, 0.05, color="gray", alpha=0.10, zorder=0)
             ax2.axhline(0, color="gray", lw=0.8, ls=":", zorder=0)
@@ -184,12 +206,22 @@ def main():
             dmax = 0.4
             ax2.set_ylim(-dmax, dmax)
             ax.set_title(f"q-{q}")
-            ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            allsteps = sorted({r[3] for rs in bysys.values() for r in rs
+                               if rs[0][2] == q})
+            if len(allsteps) == 1:      # single-step panel: keep integer axis
+                ax.set_xlim(allsteps[0] - 0.5, allsteps[0] + 0.5)
+                ax.set_xticks(allsteps)  # FixedLocator; no MaxNLocator override
+            else:
+                ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
             ax.legend(fontsize=8)
-        fig.suptitle(f"WF convergence vs step  (solid: {ylab.split(' ')[0]},  "
+        # dataset (parent dir) also labels the figure title
+        dataset = Path(args.sysdirs[0]).resolve().parent.name
+        _surf = {"2oh2o": "IrO$_2$(2OH+2O)", "4o": "IrO$_2$(4O)",
+                 "4oh": "IrO$_2$(4OH)"}.get(dataset, dataset)
+        fig.suptitle(f"{_surf} — WF convergence vs step  (solid: {ylab.split(' ')[0]},  "
                      f"dashed x: step delta,  band: |Δ|<0.05)")
         fig.tight_layout()
-        png = args.outdir / f"wf_convergence_{args.metric}.png"
+        png = args.outdir / f"{dataset}_wf_convergence_{args.metric}.png"
         fig.savefig(png, dpi=150)
         print(f"\nsaved {png}\nsaved {csv}")
 
