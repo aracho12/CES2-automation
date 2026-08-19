@@ -148,6 +148,15 @@ PYEOF
   nfail=$((nfail + $(printf '%s' "$pyout" | grep -c '\[FAIL\]')))
   nwarn=$((nwarn + $(printf '%s' "$pyout" | grep -c '\[WARN\]')))
 
+  # ---------- 4b. k-mesh consistency (campaign standard 3x6x1) ----------
+  local kmesh
+  kmesh=$(grep -A1 K_POINTS "$E/base.pw.in" 2>/dev/null | tail -1 | tr -s ' ' | sed 's/^ //; s/ 0 0 0.*//')
+  if [ -n "$kmesh" ]; then
+    if [ "$kmesh" = "3 6 1" ]; then pass "k-mesh $kmesh (campaign standard)"
+    else warn "k-mesh [$kmesh] differs from campaign standard 3x6x1 — WF offset <~30 mV measured, but flag for Methods"
+    fi
+  fi
+
   # ---------- 5. step-state sanity ----------
   say "[INFO] steps: INISTEP=$INI FINSTEP=$FIN initialqm=$IQM skipequil=$SKEQ"
   [ -n "$INI" ] && [ -n "$FIN" ] && [ "$INI" -gt "$FIN" ] && fail "INISTEP > FINSTEP"
