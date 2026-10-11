@@ -17,10 +17,13 @@ build → inspect export → preflight → submit → live-verify (first hours)
       their paths in a **machine profile** ([07 §1](07-server-profiles-and-migration.md)).
 - [ ] A relaxed VASP `CONTCAR` of the slab, with the adsorbate/surface atoms
       you will label in `slab:` ([README §slab](../README.md)).
-- [ ] Decide the **campaign standards** once and write them down: k-mesh,
-      pseudopotential set, QE flags (keep `QEPW_FLAGS` empty), the force-field
-      snapshot (`species_db` path or git hash), `NP`, walltime. Every system
-      of a dataset must share them ([05 §7](05-monitoring-and-restart.md)).
+- [ ] Decide the **campaign standards** once and write them into a
+      `campaign.yaml` at the top of the dataset (template:
+      `campaign_example.yaml`): k-mesh, QE flags (keep `QEPW_FLAGS` empty),
+      the force-field snapshot (`species_db` path or git hash, plus a
+      fingerprint preflight can test), `NP`, site rules for the submit
+      script. Every system of a dataset must share them
+      ([05 §7](05-monitoring-and-restart.md)); preflight enforces the file.
 
 ## 1. Build the run directory
 
@@ -88,11 +91,22 @@ everything after.
 ```
 exit 0 = PASS, 1 = warnings, **2 = FAIL → do not submit**. It checks: binaries
 and pseudopotentials exist on this host, `NP` vs the scheduler request and
-the scheduler type of the submit header, charge three-consistency
-(`TOTCHG` / ion imbalance / electrode charge), k-mesh vs the campaign
-standard, `INISTEP`/`FINSTEP`/`initialqm`/`skipequil` traps, `qm_0`
-reference, restart presence and mtime order, the seed 3-file set. Read the
-warnings — they are the cases it cannot decide for you.
+the scheduler type of the submit header, charge three-consistency read from
+the generated files (`TOTCHG` × supercell vs the net charge of the MM atoms
+in `data.file` vs the electrode charge in `data.file` vs `set group top
+charge` × the atoms inside `region toplayer`), the seed 3-file set **and the
+seed's charge state** (`tot_charge` in its xml vs this run's `TOTCHG`),
+`INISTEP`/`FINSTEP`/`initialqm`/`skipequil` traps, `qm_0` reference, restart
+presence and mtime order. Read the warnings — they are the cases it cannot
+decide for you.
+
+**Campaign standards.** Put a `campaign.yaml` (copy `campaign_example.yaml`
+from the repo root) in the dataset's top folder: preflight finds it by
+searching upward from `export/` and additionally checks the k-mesh, `NP`,
+`QEPW_FLAGS`, any force-field fingerprints (regex + expected value in a
+generated file, e.g. the OH⁻ bond length of the pinned species DB) and
+required substrings of the submit script (node exclusions). Without the file
+those values are reported but not judged.
 
 ## 4. Submit
 

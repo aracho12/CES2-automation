@@ -10,7 +10,7 @@ for and what to watch out for.
 
 | Tool | Purpose | Notes |
 |---|---|---|
-| `ces2_preflight.sh <sys_or_export>…` | **Pre-submit audit.** Host reality (binaries, pseudo_dir, NP vs allocation, scheduler header), charge three-consistency, k-mesh, step-state traps, restarts, seed files | exit 2 = do not submit. Read-only. [02 §3](02-first-run.md), [08](08-new-charge-state-checklist.md) |
+| `ces2_preflight.sh <sys_or_export>…` | **Pre-submit audit.** Host reality (binaries, pseudo_dir, NP vs allocation, scheduler header), charge three-consistency from the generated files, seed files + seed charge state, step-state traps, restarts; with a `campaign.yaml` also k-mesh, `QEPW_FLAGS`, `NP`, force-field fingerprints, submit-script requirements | exit 2 = do not submit. Read-only. `$CES2_CAMPAIGN` or upward search for `campaign.yaml`/`.json`. [02 §3](02-first-run.md), [08](08-new-charge-state-checklist.md) |
 | `ces2_resubmit.sh` | **Resume a killed chain.** Detects the last completed phase, patches `QMMMINISTEP`/`initialqm`/`skipequil`/`LAMMPSRESTART`, submits | run inside `export/`; self-chaining is PBS-only, on SLURM `sbatch` yourself. [05 §3](05-monitoring-and-restart.md) |
 | `ces2_backup_save.sh backup\|restore\|list <export> [label]` | **Snapshot the volatile QE `.save`** (converged charge density = SCF seed) to `<export>/_save_backup/<label>/` | refuses while a live job writes the directory. [05 §6.5](05-monitoring-and-restart.md) |
 | `configure.sh [--master\|--variant]` | Interactive wizard for config YAMLs (master = structure/physics, variant = salt/charge/job name) | [README §Master/Variant](../README.md) |
@@ -60,8 +60,9 @@ representative ([05 §7](05-monitoring-and-restart.md)). `V_RHE = V_SHE +
    `pair_style lj/cut/tip4p/long` in `in.lammps`) in any electrostatics
    computed from trajectories — Poisson profiles, site potentials, fields,
    dipoles. Putting it on O over-weights the water dipole/quadrupole and
-   flipped the sign of a cation-trend conclusion once. OH⁻ carries its full
-   charge on O in the default species.
+   flipped the sign of a cation-trend conclusion once. For every other
+   species take the per-site charges from the species YAML you built with
+   (e.g. whether OH⁻ puts its whole charge on O), not from memory.
 3. **Sharp z* cuts bias large ions.** A first-layer boundary at the water-O
    peak sits ~0.3 Å too low for Cs⁺ relative to K⁺ purely from ionic radius,
    so "who adsorbs more" can flip with a 0.2 Å shift. For adsorption
@@ -74,11 +75,14 @@ representative ([05 §7](05-monitoring-and-restart.md)). `V_RHE = V_SHE +
    cutoff. For residence times use the normalized
    `δC = (C − <h>)/(1 − <h>)` and quote its 1/e time, or compare
    `tau_cont`. (Same caveat for the coordination `tau_int`.)
-5. **Sanity anchors** for a 0.5 M alkali hydroxide at an oxide surface: water
-   first peak ≈ slab top + 1.8 Å; `r_c` Li ≈ 2.6, Na ≈ 3.2, K ≈ 3.5,
-   Cs ≈ 3.9 Å; bulk `n_coord` Li ≈ 3–4 … Cs ≈ 7–8. If these are off,
-   suspect the type map (`--lammps-input`, group comments in `in.lammps`)
-   before the physics.
+5. **Sanity anchors.** Before interpreting anything, compare the tool's
+   `[layer] [rdf] [coord]` lines with known values: the water-O first peak
+   sits ~1.8 Å above the outermost slab atom for a TIP4P-type water on an
+   oxide; `r_c` (first RDF minimum) and the bulk coordination number should
+   match the literature for your ion (one alkali-hydroxide campaign saw
+   `r_c` Li ≈ 2.6 … Cs ≈ 3.9 Å, `n_coord` Li ≈ 3–4 … Cs ≈ 7–8). If they are
+   off, suspect the type map (`--lammps-input`, group comments in
+   `in.lammps`) before the physics.
 6. **Adsorption statistics are sensitive to the QM k-mesh** even when the
    work function is not: compare adsorption only between runs with the same
    mesh ([09 A9](09-failure-catalog.md)).

@@ -197,7 +197,10 @@ CES2-automation/
 │   │   └── lj_forcefield.yaml   # LJ (eps,sigma) DB: water/ion/hydroxide/common sets
 │   └── qm_params/
 │       └── IrO2.yaml            # QM slab BJ-dispersion parameters (alpha_iso, C6, s)
+├── tools/                       # preflight, resubmit, save backup, analysis (docs/06)
+├── docs/                        # running, monitoring, restarting, failure catalog
 ├── config_example.yaml          # Fully-annotated example config (all options)
+├── campaign_example.yaml        # Dataset-wide standards checked by tools/ces2_preflight.sh
 ├── run_builder.py               # CLI entry point
 └── requirements.txt
 ```

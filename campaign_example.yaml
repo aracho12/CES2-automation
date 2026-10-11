@@ -1,0 +1,50 @@
+# campaign.yaml — standards shared by every system of one dataset.
+#
+# tools/ces2_preflight.sh reads this file ($CES2_CAMPAIGN, or the first
+# campaign.yaml / campaign.json found in the export directory or up to four
+# parent directories) and FAILs a system that deviates. Every key is optional:
+# omit a key to skip that check. Values here are examples — set your own.
+#
+# Why: a dataset is only comparable if every system was built the same way.
+# Mixed k-meshes, a force-field file that moved on between builds, or QE
+# parallel flags on some systems corrupted comparisons before anyone noticed.
+
+name: "example campaign"          # free text, reported only
+
+# K_POINTS automatic mesh expected in base.pw.in (FAIL on mismatch)
+kmesh: "3 6 1"
+
+# Expected QEPW_FLAGS in the driver. "" = pw.x runs bare (recommended for the
+# CES2-patched pw.x, see docs/03 §3). FAIL on mismatch.
+qepw_flags: ""
+
+# Expected NP (MPI ranks) in the driver. WARN on mismatch (the FAIL for
+# NP != scheduler allocation is always on).
+np: 24
+
+# Force-field / input fingerprints: a regex with ONE capture group applied to a
+# generated file, and the value the group must have (numeric values are
+# compared as numbers, otherwise as strings). FAIL on mismatch or if absent.
+fingerprints:
+  - about: "OH- O-H bond r0 of the pinned force field"
+    file: base.in.lammps
+    pattern: '^bond_coeff\s+2\s+\S+\s+(\S+)'
+    expect: 0.97
+  - about: "plane-wave cutoff"
+    file: base.pw.in
+    pattern: 'ecutwfc\s*=\s*([0-9.]+)'
+    expect: 50
+  - about: "water model line"
+    file: base.in.lammps
+    pattern: '^pair_style\s+(\S+)'
+    expect: hybrid/overlay
+
+# Substrings that must appear in submit_ces2.sh (site rules such as node
+# exclusions for MD-containing jobs). FAIL if absent.
+submit_must_contain:
+  - "--exclude=node16,node17,node18,node19,node20"
+
+# Seed charge tolerance: a charge-density seed whose charge state differs from
+# this run by more than this many electrons (total, not per QM cell) gets the
+# "far seed" warning (docs/05 §6.3). Default 2.
+seed_gap_warn_e: 2

@@ -108,6 +108,7 @@ from the live run, not from the intent.**
 22. **Every incident becomes a catalog row** in [09](09-failure-catalog.md):
     signature, cause, fix, verification. A protocol that lives only in one
     person's memory (or one agent's session) is lost at the next hand-over.
-23. **Machine-checkable beats prose.** When a rule can be expressed as a check
-    (k-mesh in `base.pw.in`, `bond_coeff` of the pinned force field, nelec of
-    the seed), add it to `ces2_preflight.sh` rather than to a checklist.
+23. **Machine-checkable beats prose.** When a rule can be expressed as a check,
+    add it to `ces2_preflight.sh` (or, for a dataset-wide standard, to its
+    `campaign.yaml` — k-mesh, flags, force-field fingerprints, submit-script
+    requirements) rather than to a checklist.

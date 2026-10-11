@@ -92,9 +92,12 @@ base.in.lammps`) = campaign snapshot | `QEPW_FLAGS=""` | submit: right
 scheduler header for THIS machine, job name, partition/queue, any site node
 exclusions (see your machine profile, 07).
 
-`tools/ces2_preflight.sh` automates everything in this line except the seed
-charge and the force-field fingerprint; run it anyway, then check those two
-by hand.
+`tools/ces2_preflight.sh` automates this whole line: the charge
+consistency is read from `data.file`/`base.in.lammps` (any electrolyte, any
+supercell), the seed charge from the seed's xml, and k-mesh / flags /
+force-field fingerprints / submit requirements from the dataset's
+`campaign.yaml` (template `campaign_example.yaml`; without the file those are
+reported, not judged).
 
 ## Post-start LIVE verification (within the first hours — mandatory)
 

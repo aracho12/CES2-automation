@@ -206,9 +206,10 @@ driver (`grep -n 'QMMMFINSTEP' qmmm_dftces2_charging_pts.sh`) before deciding
 
 **Always run charged systems (`TOTCHG ≠ 0`) with a charge-density seed.** An
 `atomic`-superposition start on a charged slab oscillates or diverges for
-hundreds of SCF iterations — observed repeatedly in production (q-20: ~1
-iter/hr, one cation diverging to ~200 Ry, one hung; q-12: 170 iterations / 75 h
-plateaued at 1e-3 vs thr 1e-4). A seeded SCF converges in **~10–20 iterations**.
+hundreds of SCF iterations — observed repeatedly in production (a −20 e
+electrode: ~1 iteration/hour, one system diverging to ~200 Ry, one hung; a
+−12 e electrode: 170 iterations / 75 h plateaued at 1e-3 vs thr 1e-4). A
+seeded SCF converges in **~10–20 iterations**.
 
 **New builds:** set `ces2_script.qm_startingpot: "file"` in the config (see
 `config_example.yaml`). **Existing scripts:** patch the `TOTCHG` conditional in
@@ -245,19 +246,21 @@ another charge state's wavefunctions risks Cholesky errors.
    converges badly.
 6. Same QE version on both ends (schema compatibility).
 
-**Verify the seed's charge before submitting** — `grep nelec
-solute/solute.save/data-file-schema.xml`. Expected
-`nelec = nelec(neutral slab) − TOTCHG` (e.g. 698 − (−1.111) = 699.111). A seed
-whose nelec belongs to a different charge state than the one you are running
-is exactly rule 4; it is the one case preflight cannot catch by file presence
-alone.
+**The seed's charge state is checked by preflight**: it compares
+`<tot_charge>` in the seed's `data-file-schema.xml` with this run's `TOTCHG`
+(PASS when equal; WARN for a neighbouring charge within `seed_gap_warn_e`,
+default 2 e total; WARN "far seed" beyond that; FAIL for a neutral density
+under a charged run) and reports `nelec` against
+`nelec(neutral slab) − TOTCHG` when `qm_0/pw.out` is present. By hand:
+`grep 'tot_charge\|nelec' <outdir>/<prefix>.save/data-file-schema.xml`.
 
 ### 6.3 The noise-floor wall (seed too far away)
 
 Signal: `estimated scf accuracy` sits flat or wanders at **3·10⁻⁴ – 7·10⁻⁴ Ry
-for 40+ iterations** (30 min per iteration on one node) while the total energy
-jitters by ~1 mRy. This is not slow convergence; it never gets below the
-floor. Remedy, in the order that has worked:
+for 40+ iterations** (tens of minutes per iteration on one node for a
+~10⁶-point grid) while the total energy jitters by ~1 mRy. This is not slow
+convergence; it never gets below the floor. Remedy, in the order that has
+worked:
 
 1. **Swap the seed** for a closer one (§6.2 rule 2, then 3). This fixed every
    occurrence so far; mixing changes alone did not.
@@ -308,8 +311,10 @@ The loop has no automatic criterion; adopt a step when:
   — a mean over a drifting series is biased.
 
 Every QM step of one dataset must share the same k-mesh, pseudopotentials,
-QE flags and force field; `pw.out`'s `number of k points` line is the quick
-fingerprint for the first of these (see [04](04-output-files.md#qm-stage)).
+QE flags and force field. Declare them once in the dataset's `campaign.yaml`
+(template `campaign_example.yaml`) so `ces2_preflight.sh` enforces them on
+every submit; `pw.out`'s `number of k points` line is the quick after-the-fact
+fingerprint for the mesh (see [04](04-output-files.md#qm-stage)).
 
 ## 8. Common failures
 

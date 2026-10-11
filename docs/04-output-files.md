@@ -114,7 +114,7 @@ Each step runs `pw.x` **twice** (when `QMTYPE="scf"`, step > 0):
 | Line | Tells you |
 |---|---|
 | `Program PWSCF v.6.3 starts on <date> at <time>` / `This run was terminated on: <time> <date>` | the **true** elapsed time (difference of the two) |
-| `number of k points= 10` | the k-mesh actually used (10 → 3×6×1 and 6 → 2×4×1 in a 2×2 IrO₂(110) cell with Γ-included meshes); must be identical for every step of a dataset |
+| `number of k points= N` | the k-mesh actually used (the count depends on mesh and cell symmetry — record the value your campaign's mesh gives, e.g. one 2×2 oxide cell gave 10 for 3×6×1 and 6 for 2×4×1); must be identical for every step of a dataset |
 | `K-points division: npool = N` | parallel flags were applied (`N > 1`) — they should not be ([03 §3](03-qmmm-script-reference.md)) |
 | `The initial density is read from file` | the SCF seed loaded ([05 §6](05-monitoring-and-restart.md)) |
 | `Initial potential from superposition of free atoms` | atomic start — on a charged system this means the seed was not read |

@@ -7,6 +7,31 @@ Each entry includes the modified file, the exact diff, and the reason.
 
 ## [Unreleased]
 
+### preflight: general charge audit, seed charge-state check, campaign file
+
+**What:** `tools/ces2_preflight.sh` no longer carries campaign constants. The
+charge three-consistency is read from the generated files for any
+electrolyte and supercell: `TOTCHG` x `SUPERCELL` vs the net charge of the
+non-QM atoms in `data.file` vs the slab charge in `data.file` vs
+`set group top charge` x the atoms inside `region toplayer` (fallback
+`charged_system_params.json:n_top_atoms`). The SCF seed is checked by charge
+state (`<tot_charge>` in the seed xml vs `TOTCHG`: PASS / neighbouring-charge
+WARN / far-seed WARN / neutral-for-charged FAIL) with `nelec` reported
+against `qm_0/pw.out`; QE `prefix`/`outdir` come from `base.pw.in`; the
+neutral branch is checked too. Dataset standards (k-mesh, `QEPW_FLAGS`, `NP`,
+regex fingerprints on generated files, required submit-script substrings)
+come from an optional `campaign.yaml`/`.json` (`$CES2_CAMPAIGN` or upward
+search from `export/`); `campaign_example.yaml` documents the keys. PBS
+`select=` allocations are compared with `NP`; a `LAMMPSRESTART` naming a
+missing file warns.
+
+**Why:** the previous version hard-coded supercell 18, alkali cation types,
+top-layer atom counts and a 3x6x1 mesh, so it only audited one campaign; the
+seed's charge state (the cause of the noise-floor SCF walls) was not checked
+at all. Verified on 40 production exports: no new false FAIL, far-seed
+warnings on the +4 e ladder seeds, neutral-seed FAIL on nurion-staged
+charged exports.
+
 ### Docs: operations knowledge moved into the repo (2026-10-11)
 
 **What:** `docs/05` (monitoring, phase detection, stale-file rule, hang vs

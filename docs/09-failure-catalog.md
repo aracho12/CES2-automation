@@ -51,9 +51,10 @@ Resume variables are explained in [05 §4](05-monitoring-and-restart.md) and
 - **Signature:** `estimated scf accuracy` wanders between ~3·10⁻⁴ and 7·10⁻⁴
   from iteration ~25 onward, total energy jitter ~1 mRy; `conv_thr` 10⁻⁴ never
   reached. Seed **was** read (`initial density is read from file`).
-- **Cause:** seed density from a charge state too far away (±4 e ladder), e.g.
-  a q-20 density on a q-16 run (`nelec` 699.111 vs the correct 698.889 in the
-  seed's xml). Mixing tweaks alone did not fix it in any case so far.
+- **Cause:** seed density from a charge state too far away (a 4 e gap on the
+  charge ladder in every case seen; the seed xml's `tot_charge`/`nelec`
+  belong to the other state). Mixing tweaks alone did not fix it in any case
+  so far. Preflight now warns on such a seed.
 - **Fix:** swap the seed for the same charge state (any cation) or ±1–2 e
   same cation; add `mixing_beta 0.05`, `mixing_ndim 16`. Park the stalled
   save first. ([05 §6.3](05-monitoring-and-restart.md))
@@ -94,7 +95,8 @@ Resume variables are explained in [05 §4](05-monitoring-and-restart.md) and
 
 ### A9. Different `number of k points` between steps of one chain
 - **Signature:** `grep 'number of k points' qm_*/pw.out` shows two values
-  (e.g. 10 for a 3×6×1 mesh, 6 for 2×4×1 in a 2×2 IrO₂(110) cell).
+  across the steps of one chain (the count itself depends on mesh and cell
+  symmetry; what matters is that it changes).
 - **Cause:** `base.pw.in` edited or rebuilt with a different mesh mid-chain;
   a config copied from another campaign.
 - **Impact:** work-function offsets of tens of mV; adsorption statistics in
