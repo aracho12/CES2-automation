@@ -7,6 +7,22 @@ Each entry includes the modified file, the exact diff, and the reason.
 
 ## [Unreleased]
 
+### Docs: operations knowledge moved into the repo (2026-10-11)
+
+**What:** `docs/05` (monitoring, phase detection, stale-file rule, hang vs
+slow, resume table, chain extension, SCF seeding incl. seed-quality order,
+noise-floor wall, `solute.EXIT`, convergence criteria), `docs/02` (golden
+path build → preflight → submit → live-verify → resume → analyze), `docs/06`
+(current `tools/` inventory + MM-analysis guardrails), new `docs/09`
+(failure catalog: signature → cause → fix → verify) and `docs/10`
+(automation safety rules). Log fingerprints added to `docs/04`; driver
+variants, resource sizing and login-node limits to `docs/07`; quarantine
+rule, seed-nelec and k-mesh/force-field checks to `docs/08`.
+
+**Why:** these protocols lived in one user's session notes; every rule
+corresponds to a production incident and is needed by anyone (or any
+automation) operating a chain.
+
 ### Model-specific OH- bond lengths
 
 **What:** Added `ces2.hydroxide_model` (`auto`, `bonthuis2016`, or

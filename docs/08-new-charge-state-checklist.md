@@ -42,6 +42,13 @@ A mismatch does NOT crash — it silently runs a different physical system
   `ces2.*.restart`, `data.md`, `in.lammps`, `in.lammps.equil`, root
   ensemble cubes (`c_rho_*` etc.), root trajectories. A surviving restart
   resurrects the old box via restart→data.md conversion.
+- **Contamination quarantine:** if any one file copied from the source
+  turns out to be foreign (another machine's scheduler header, binaries,
+  `pseudo_dir`, `NP`, flags; a different force-field snapshot), audit
+  **every** other file from that source before trusting it — a symptom-level
+  fix leaves the rest armed ([10 §2](10-automation-safety.md)).
+- Extending a **finished** chain of the same system is a different
+  operation (four header lines, restart naming): [05 §5](05-monitoring-and-restart.md).
 
 ## qm_0 reuse (always do this — saves half a day per system)
 
@@ -77,10 +84,17 @@ never copy wfc*.dat.
 ## Pre-submit audit (run it, don't trust memory)
 
 One line per system: TOTCHG | data.file "ncat-nOH=net" & slab Q |
-base.in.lammps top charge ×288 | INI/FIN/initialqm/skipequil | seed 3/3 |
-qm_0 present | zero ces2.*.restart & data.md | submit: right scheduler
-header for THIS machine, job name, partition/queue, any site node
+base.in.lammps top charge ×288 | INI/FIN/initialqm/skipequil | seed 3/3
+and seed `nelec` = nelec_neutral − TOTCHG ([05 §6.2](05-monitoring-and-restart.md)) |
+qm_0 present | zero ces2.*.restart & data.md | k-mesh in `base.pw.in` =
+campaign standard | force-field fingerprint (e.g. `grep "bond_coeff 2"
+base.in.lammps`) = campaign snapshot | `QEPW_FLAGS=""` | submit: right
+scheduler header for THIS machine, job name, partition/queue, any site node
 exclusions (see your machine profile, 07).
+
+`tools/ces2_preflight.sh` automates everything in this line except the seed
+charge and the force-field fingerprint; run it anyway, then check those two
+by hand.
 
 ## Post-start LIVE verification (within the first hours — mandatory)
 

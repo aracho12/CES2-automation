@@ -18,6 +18,9 @@ For each cluster you use, record (once) the answers to:
 | Required modules / environment | submit script preamble |
 | Per-user job/CPU limits, unhealthy nodes to exclude | submit headers; queue planning |
 | Does `tools/ces2_resubmit.sh` self-chaining work? (needs PBS `depend=`) | on SLURM it is a no-op — chain with `--dependency=afterok:<id>` |
+| Driver variant: does `QMMMFINSTEP=N` run `mm_N` after `qm_N`, or exit before the MD leg? | decides what `FIN` to set when extending ([05 §5.6](05-monitoring-and-restart.md)) |
+| Login-node limits (per-user CPU cap, thread defaults) | pin `OMP_NUM_THREADS` for on-node analysis; submit anything heavier |
+| Nodes/partitions with known launch hangs | the exclusion set for every MD-containing job ([09 B1](09-failure-catalog.md)) |
 
 Keep one healthy `submit_ces2.sh` per machine as the template; for a new
 system copy it and change only the job name. **Never reuse a submit header
@@ -33,6 +36,21 @@ qm_1 (the first charged SCF) is the most expensive QM of a chain; later steps
 seed from their predecessor and are much cheaper. If you have short-lived
 access to a large allocation, converging qm_1 there and continuing the
 MD-heavy remainder on your workhorse machine is the highest-value split.
+
+### Resource sizing (measured once, ~100-atom QM cell, ~8300 MM atoms)
+
+The two phases scale very differently, so "more nodes" mostly buys wall
+time on the QM side and wastes node-hours on the MM side:
+
+| Phase | 1 node → 2 → 4 → 8 nodes (32 c each) | Verdict |
+|---|---|---|
+| MM (LAMMPS) | parallel efficiency 100 → 85 → 65 → **46 %** (node-h per step ×2.2 at 8 nodes) | 2 nodes is the sweet spot when the walltime allows (~36 h per 2 M + 2 M steps) |
+| QM (pw.x SCF) | 4 → 8 nodes ≈ 79 % efficient (1.6× speed-up) | 4 nodes unless a charged `qm_1` must fit a short walltime |
+
+A QM@4 / MM@2 phase split (separate jobs alternating through the
+`initialqm` resume mechanism) saved ~32–36 % node-hours in a pilot at the
+cost of twice the queue waits. On a single-node-per-job cluster none of this
+applies: one node runs everything and a step takes ~2 days.
 
 ## 3. Hand-off recipe: qm_1 converged on machine A → continue on machine B
 
@@ -100,5 +118,5 @@ rest of the step justifies the queue slot. Never let it grind to
 | LAMMPS (`$DFT_CES2_PATH/MD/lammps/src-ind-cube/lmp_mpi`) | `DFT_CES2_PATH=/home01/x3379a03/ces_share/dft-ces2-bash-test` | `DFT_CES2_PATH=/home/jthlol/dft-ces2-bash-test` |
 | pseudo_dir | `/home01/x3379a03/pseudo` | `/home/aracho/bin/qe/pseudo` |
 | Modules | `intel/18.0.3 impi/18.0.3` | system default |
-| Quirks | resubmit self-chaining OK | MD jobs exclude node19,node20 (SHAKE-launch hangs); per-user run limit; head-node CPU cap |
+| Quirks | resubmit self-chaining OK; driver exits **before** the MD leg at `qmmmstep ≥ QMMMFINSTEP` (set `FIN=N+1` to get `mm_N`) | MD jobs exclude node16–20 (whole `haswell_24c_ib_sm61` partition: LAMMPS launch hangs; pw.x fine there); driver runs `qm_N` **and** `mm_N` at `FIN=N`; members QOS max 6 jobs/user; login node capped at 2 cores/user; shared `debug`/`nehalem` partitions used only with permission |
 | Step timing (100-atom QM cell) | qm_1 cold: hours–1 day | ortho ~14 h + nonortho ~13 h; MD ~18 h (~1.9 d/step) |

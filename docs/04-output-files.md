@@ -59,6 +59,16 @@ each step the important ones are copied into `qm_N/` / `mm_N/`.
 | `dispf.ave` | LAMMPS (`fix ave/atom` dump) | Time-averaged dispersion forces on the slab atoms; converted to Ry/bohr and injected into the next `pw.in` at `###dispf`. |
 | `data.solute`, `data.dispforce`, `data.solute.temp*`, `solute.temp` | wrapper (awk) | Scratch used to extract slab positions + averaged forces from `data.file`/`dispf.ave`. Disposable. |
 
+#### `lammps.*.out` fingerprints
+
+| Line | Tells you |
+|---|---|
+| `read_data data.md` (after a restart conversion) vs `read_data data.file` | which structure the MD started from — `data.file` is only right for the very first MD of a fresh build ([05 §5.3](05-monitoring-and-restart.md)) |
+| `DFT-CES: solute.ind.cube with jellium potential has been parsed` | the induction cube was parsed correctly. If instead you see `Grid file will be parsed: solute.ind.cube`, the run is invalid ([09 B2](09-failure-catalog.md)) |
+| `Finding SHAKE clusters ...` followed by thermo `Step` lines | normal launch; the same line with **no** `Step` line and a frozen mtime is the launch-hang signature ([05 §2.4](05-monitoring-and-restart.md)) |
+| thermo `Step` rows | progress: compare with `MDEQUIL` / `MDAVERAGE` |
+| `Loop time of …` / `Total wall time` | the run finished |
+
 ### MM → QM cubes (solvent density pipeline)
 
 | File | Written by | Meaning |
@@ -98,6 +108,20 @@ Each step runs `pw.x` **twice** (when `QMTYPE="scf"`, step > 0):
 | `v_md.cube` | patched `pw.x` (`dft_ces.f90`) | Poisson-solved potential of the MM density (`rho_ces`) on the QM grid — what the QM electrons feel from the solvent (diagnostic). |
 | `total_pot_ortho.cube` / `total_pot_nonortho.cube` | wrapper (cube tools) | **Total** electrostatic potential (QM + MM): input for work-function analysis. `workfunction.py` reads `total_pot_ortho.cube`. |
 | `ref_solute.rho.cube`, `ref_solute.pot.cube` | step 0 only | Reference density/potential of the bare neutral slab (`qm_0`); later steps subtract these to isolate solvent/charging effects. |
+
+#### `pw.out` fingerprints (what to grep)
+
+| Line | Tells you |
+|---|---|
+| `Program PWSCF v.6.3 starts on <date> at <time>` / `This run was terminated on: <time> <date>` | the **true** elapsed time (difference of the two) |
+| `number of k points= 10` | the k-mesh actually used (10 → 3×6×1 and 6 → 2×4×1 in a 2×2 IrO₂(110) cell with Γ-included meshes); must be identical for every step of a dataset |
+| `K-points division: npool = N` | parallel flags were applied (`N > 1`) — they should not be ([03 §3](03-qmmm-script-reference.md)) |
+| `The initial density is read from file` | the SCF seed loaded ([05 §6](05-monitoring-and-restart.md)) |
+| `Initial potential from superposition of free atoms` | atomic start — on a charged system this means the seed was not read |
+| `estimated scf accuracy < X Ry` | one per iteration; count = iterations so far; compare `X` with `conv_thr` |
+| `convergence has been achieved in N iterations` → `JOB DONE.` | the run the driver checks for (ortho leg only) |
+| `electrons : … CPU … WALL` | SCF wall time — reliable |
+| `PWSCF : … CPU … WALL` | **unreliable** in this build (inflated 2–4×); never use it for timing |
 
 ### Charged-system intermediates (only when `TOTCHG ≠ 0`)
 
@@ -152,7 +176,11 @@ typically run per-`mm_N`, so their `*.csv`/`*.png` may appear here too.
 
 **Safe to delete once the run is finished** (largest first):
 
-- `solute/` — QE wavefunctions, often the single biggest item
+- `solute/` — QE wavefunctions, often the single biggest item. **First** snapshot
+  the converged density with `tools/ces2_backup_save.sh backup <export> <label>`
+  (the 3-file set `charge-density.dat`, `data-file-schema.xml`, `paw.txt`,
+  ~180 MB): it is the SCF seed for every later run of this charge state
+  ([05 §6](05-monitoring-and-restart.md)). The `wfc*.dat` files can go.
 - older `ces2.*.restart` files (keep the newest)
 - all top-level `*.cube` — working copies; everything analysis-worthy was
   archived into `qm_N/`/`mm_N`
